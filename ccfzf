@@ -561,6 +561,15 @@ dump_state() {
 
 row_index() { awk -F'\t' -v p="$1" '$1 == p { print NR; exit }' <<<"$all_rows"; }
 
+# A command is started through an *interactive* shell, and the cd into the
+# project happens inside it. `$SHELL -c` reads no rc file (zsh takes only
+# .zshenv), so hooks and exports set up in .zshrc never ran for the command:
+# claude inherited whatever the shell that launched ccfzf had — the previous
+# project's OTEL_RESOURCE_ATTRIBUTES, for instance. Doing the cd after the rc
+# file is read fires chpwd hooks for the picked directory, and an rc that cd's
+# on its own (SSH_STARTDIR and the like) can no longer steal the directory back.
+in_dir() { printf 'cd -- %q && %s' "$1" "$2"; }
+
 dump_state
 
 all_rows=$rows
@@ -598,7 +607,7 @@ except OSError:
   cmd="$CLAUDE_CMD --resume $(printf '%q' "$session_id")$claude_tail"
   cmd=${cmd% }
   if ((kiosk)); then
-    (cd "$dir" && exec "$SHELL" -c "$cmd") || true
+    (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
     rows=$(python3 -c "$PY" projects "$MARKS" "$index")
     all_rows=$rows
     dump_state
@@ -611,7 +620,7 @@ except OSError:
     exit 0
   else
     cd "$dir"
-    exec "$SHELL" -c "$cmd"
+    exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
   fi
 fi
 
@@ -730,7 +739,7 @@ while :; do
   kiosk_prev=$(cut -f1 <<<"$srows")
   kiosk_used=$sid
   if [[ -n $cmd ]]; then
-    (cd "$dir" && exec "$SHELL" -c "$cmd") || true
+    (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
   else
     (cd "$dir" && exec "$SHELL") || true
   fi
@@ -753,6 +762,6 @@ if ((print_mode)); then
 else
   cd "$dir"
   # without the widget the parent directory cannot be changed, so run a shell
-  [[ -n $cmd ]] && exec "$SHELL" -c "$cmd"
+  [[ -n $cmd ]] && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
   exec "$SHELL"
 fi

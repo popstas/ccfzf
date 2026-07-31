@@ -114,6 +114,8 @@ Start a new session and the cursor lands on the session that was actually create
 
 `esc` goes back to the project list, `esc` again quits. Not compatible with `--print`, which exists precisely to hand a command back to the shell.
 
+Picked commands run in an interactive shell (`$SHELL -ic 'cd <dir> && <cmd>'`), so your rc file is read and the `cd` fires its `chpwd` hooks for the project directory. Without that a command started from ccfzf would inherit the environment of the shell you pressed the key in — a per-directory variable would still name the project you came from. The cost is one rc load per launch; `--print` needs none of this, because there the `cd` happens in your own shell.
+
 ## Configuration
 
 | Variable | Default | Meaning |
