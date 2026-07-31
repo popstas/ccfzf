@@ -574,9 +574,23 @@ posbind=""
 if [[ -n $session_id ]]; then
   sess_file=$(ls -1 "$HOME"/.claude/projects/*/"$session_id".jsonl 2>/dev/null | head -1 || true)
   [[ -n $sess_file ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
+  # cwd is not reliably on line 1 — recent transcripts open with a run of meta
+  # records (mode, last-prompt, permission-mode, hook attachments) before the
+  # first line that carries it. Same idiom as dir_cwd() above: scan up to 50
+  # lines, skip ones that fail to parse, take the first cwd found.
   dir=$(python3 -c 'import json,sys
-with open(sys.argv[1]) as f:
-    print(json.loads(f.readline()).get("cwd", ""))' "$sess_file")
+with open(sys.argv[1], "rb") as f:
+    for _ in range(50):
+        line = f.readline()
+        if not line:
+            break
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if o.get("cwd"):
+            print(o["cwd"].rstrip("/"))
+            break' "$sess_file")
   [[ -n $dir && -d $dir ]] || { echo "ccfzf: session $session_id has no usable cwd" >&2; exit 1; }
   cmd="$CLAUDE_CMD --resume $(printf '%q' "$session_id")$claude_tail"
   cmd=${cmd% }
