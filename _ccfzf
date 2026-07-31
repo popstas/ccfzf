@@ -1,0 +1,27 @@
+#compdef ccfzf
+# zsh completion for ccfzf: flags, then project marks and directories.
+
+local curcontext="$curcontext" state line ret=1
+
+_arguments -C -s \
+  '(-k --kiosk)'{-k,--kiosk}'[run commands inside and return to the session list]' \
+  '--print[print the command instead of running it]' \
+  '(- *)'{-h,--help}'[show usage]' \
+  '1:project:->project' \
+  '*::claude arguments:->args' && ret=0
+
+case $state in
+  project)
+    local file=${FZF_MARKS_FILE:-$HOME/.fzf-marks}
+    local -a marks
+    [[ -r $file ]] && marks=(${(f)"$(cut -d' ' -f1 -- $file)"})
+    _alternative \
+      "marks:project mark:(${marks[*]})" \
+      'directories:project directory:_directories' && ret=0
+    ;;
+  args)
+    _default && ret=0
+    ;;
+esac
+
+return ret

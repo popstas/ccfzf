@@ -44,13 +44,36 @@ git clone https://github.com/popstas/ccfzf.git
 ln -s "$PWD/ccfzf/ccfzf" ~/bin/ccfzf   # anywhere on your PATH
 ```
 
-Optionally bind it to a key in zsh — see [`ccfzf.zsh`](ccfzf.zsh):
+### zsh key binding
+
+[`ccfzf.zsh`](ccfzf.zsh) defines two widgets and binds `ctrl-t` to the first one:
 
 ```sh
-source /path/to/ccfzf/ccfzf.zsh   # binds ctrl-t
+source /path/to/ccfzf/ccfzf.zsh
 ```
 
-The widget runs `ccfzf --print`, which prints the command instead of running it. That way the real command lands in your shell history, and the shell stays in the project directory after you exit.
+| Widget | What it does | Bound to |
+|---|---|---|
+| `ccfzf-kiosk-widget` | runs `ccfzf --kiosk` — you stay inside ccfzf until you `esc` out | `$CCFZF_KEY`, default `ctrl-t` |
+| `ccfzf-widget` | runs `ccfzf --print` — the real command lands in your shell history and the shell stays in the project directory afterwards | `$CCFZF_PRINT_KEY`, unbound by default |
+
+Set `CCFZF_KEY` before sourcing to move the binding, or bind `ccfzf-widget` to `ctrl-t` instead if you prefer the second behaviour.
+
+### zsh completion
+
+[`_ccfzf`](_ccfzf) completes the flags, the marks from `~/.fzf-marks` and directories. Put the repository on your `fpath` **before** `compinit` runs:
+
+```sh
+fpath=(/path/to/ccfzf $fpath)
+autoload -Uz compinit && compinit
+```
+
+If something else already ran `compinit` for you — oh-my-zsh, antigen, a framework — register it afterwards instead:
+
+```sh
+fpath=(/path/to/ccfzf $fpath)
+autoload -Uz _ccfzf && compdef _ccfzf ccfzf
+```
 
 ## Usage
 
@@ -78,9 +101,15 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 
 ## Kiosk mode
 
-`ccfzf --kiosk` never leaves. Instead of replacing itself with the command it runs it as a child, and when that exits you are back in the session list of the same project, cursor on the row you just came out of. Start a new session and the cursor lands on the session that was actually created, not on `[+] new session`. The index is rebuilt on the way back, so titles, ages and running markers are current.
+```sh
+ccfzf --kiosk          # or just press ctrl-t
+```
 
-`esc` goes back to the project list, `esc` again quits. Not compatible with `--print`.
+Normally `ccfzf` replaces itself with whatever you picked and is gone. In kiosk mode it stays: the command runs as a child, and when it exits you are back in the session list of the same project with the cursor on the row you came out of. So a session you resume, quit, and want back is two keystrokes away, and `ctrl-d` into a shell followed by `exit` returns to the list rather than to your prompt.
+
+Start a new session and the cursor lands on the session that was actually created, not on `[+] new session`. The index is rebuilt on the way back, so titles, ages and running markers are current — that costs about as much as one fzf redraw.
+
+`esc` goes back to the project list, `esc` again quits. Not compatible with `--print`, which exists precisely to hand a command back to the shell.
 
 ## Configuration
 
