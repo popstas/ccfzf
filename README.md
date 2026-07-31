@@ -90,9 +90,10 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 | `CCFZF_PROJECT_COMMAND2` | — | command 2 |
 | `CCFZF_PROJECT_COMMAND3` | — | command 3 |
 | `CCFZF_PROJECT_COMMAND_NAME[2,3]` | first word of the command | label shown in the list |
+| `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
-An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`).
+An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
 
 Border, height and layout are left to your `FZF_DEFAULT_OPTS`.
 

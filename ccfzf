@@ -13,6 +13,7 @@
 # row: ctrl-d — shell, ctrl-s / ctrl-f / ctrl-g — commands 1/2/3. Configuration:
 #   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
 #   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
+#   CCFZF_CLAUDE_COMMAND             the claude binary itself (default: claude)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
 # the tail carries the title and the latest activity. ccsessions is unfit here —
@@ -20,6 +21,10 @@
 set -euo pipefail
 
 MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
+
+# The claude binary itself, so a wrapper or extra flags can be substituted.
+# Treated as a shell fragment, like the project commands below.
+CLAUDE_CMD="${CCFZF_CLAUDE_COMMAND:-claude}"
 
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
@@ -34,7 +39,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -47,11 +52,16 @@ while (($#)); do
     -k|--kiosk) kiosk=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; claude_args=("$@"); break ;;
-    *) project="$1"; shift; claude_args=("$@"); break ;;
+    *) project="$1"; shift; [[ ${1:-} == "--" ]] && shift; claude_args=("$@"); break ;;
   esac
 done
 
 ((kiosk && print_mode)) && { echo "ccfzf: --kiosk and --print are mutually exclusive" >&2; exit 2; }
+
+# trailing arguments belong to claude, not to the project commands
+claude_tail=""
+((${#claude_args[@]})) && claude_tail=" $(printf '%q ' "${claude_args[@]}")"
+claude_tail=${claude_tail% }
 
 for dep in fzf python3; do
   command -v "$dep" >/dev/null 2>&1 || { echo "ccfzf: $dep not found" >&2; exit 127; }
@@ -554,8 +564,8 @@ while :; do
     __cmd1__)  cmd=${cmd_list[0]} ;;
     __cmd2__)  cmd=${cmd_list[1]} ;;
     __cmd3__)  cmd=${cmd_list[2]} ;;
-    __new__)   cmd=$(printf '%q ' claude "${claude_args[@]+"${claude_args[@]}"}") ;;
-    *)         cmd=$(printf '%q ' claude --resume "$sid" "${claude_args[@]+"${claude_args[@]}"}") ;;
+    __new__)   cmd="$CLAUDE_CMD$claude_tail" ;;
+    *)         cmd="$CLAUDE_CMD --resume $(printf '%q' "$sid")$claude_tail" ;;
   esac
   cmd=${cmd% }
 
