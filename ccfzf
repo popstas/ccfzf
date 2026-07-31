@@ -14,8 +14,10 @@
 #   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
 #   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
 #   CCFZF_CLAUDE_COMMAND             the claude binary itself (default: claude)
-#   CCFZF_SESSIONS_FILE              json dump of the shown session list
+#   CCFZF_SESSIONS_FILE              json dump: 200 newest sessions, all projects
 #                                    (default ~/.ccfzf.sessions.json, empty — off)
+#   CCFZF_PROJECTS_FILE              json dump of the project list
+#                                    (default ~/.ccfzf.projects.json, empty — off)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
 # the tail carries the title and the latest activity. ccsessions is unfit here —
@@ -28,9 +30,11 @@ MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
 # Treated as a shell fragment, like the project commands below.
 CLAUDE_CMD="${CCFZF_CLAUDE_COMMAND:-claude}"
 
-# Every session list that gets shown is also dumped here as json, for whatever
-# else wants to know what ccfzf just saw. Set to an empty string to turn it off.
+# What ccfzf sees is also dumped as json for whatever else wants to know it:
+# every project, and the 200 newest sessions across all of them. Set either to
+# an empty string to turn that dump off.
 SESSIONS_FILE="${CCFZF_SESSIONS_FILE-$HOME/.ccfzf.sessions.json}"
+PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
@@ -45,7 +49,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -90,6 +94,7 @@ PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 HEAD_LIMIT = 512 * 1024   # how far in to look for the first prompt
 TAIL = 256 * 1024         # tail budget for the title and the latest activity
+DUMP_SESSIONS = 200       # newest sessions written to the sessions dump
 
 DIM, GREEN, YELLOW, CYAN, RESET = "\033[2m", "\033[32m", "\033[33m", "\033[36m", "\033[0m"
 
@@ -322,16 +327,16 @@ def scan_dirs():
     return out
 
 
-mode = sys.argv[1]
+def frozen_ids():
+    try:
+        with open(FROZEN, encoding="utf-8") as fh:
+            return set(json.load(fh))
+    except Exception:
+        return set()
 
-if mode == "projects":
-    marks = read_marks(sys.argv[2])
-    index_path = sys.argv[3]
-    now = time.time()
 
-    dirs = scan_dirs()
-    live = live_ids()
-
+def project_rows(dirs, live, marks):
+    """One row per project: marks and directories with sessions, newest first."""
     agg = {}
     for entry in dirs:
         for owner in owners_of(entry["cwd"], marks):
@@ -340,10 +345,6 @@ if mode == "projects":
             a["live"] += sum(1 for f, _ in entry["files"]
                              if os.path.basename(f)[:-6] in live)
             a["mtime"] = max(a["mtime"], entry["files"][0][1])
-
-    with open(index_path, "w", encoding="utf-8") as fh:
-        json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
-                   "live": sorted(live)}, fh)
 
     rows = []
     for path in set(marks) | set(agg):
@@ -357,6 +358,41 @@ if mode == "projects":
             "mtime": a["mtime"] if a else 0.0,
         })
     rows.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
+    return rows
+
+
+def write_json(path, obj):
+    """Atomically, and never at the cost of the run: a dump is a side effect."""
+    if not path:
+        return
+    path = os.path.expanduser(path)
+    tmp_path = path + ".%d.tmp" % os.getpid()
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp_path, path)   # a reader never sees half a list
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+mode = sys.argv[1]
+
+if mode == "projects":
+    marks = read_marks(sys.argv[2])
+    index_path = sys.argv[3]
+    now = time.time()
+
+    dirs = scan_dirs()
+    live = live_ids()
+
+    with open(index_path, "w", encoding="utf-8") as fh:
+        json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
+                   "live": sorted(live)}, fh)
+
+    rows = project_rows(dirs, live, marks)
 
     w = min(max([len(r["name"]) for r in rows] or [0]), 26)
     for r in rows:
@@ -380,11 +416,7 @@ elif mode == "sessions":
     with open(index_path, encoding="utf-8") as fh:
         index = json.load(fh)
     live = set(index["live"])
-    try:
-        with open(FROZEN, encoding="utf-8") as fh:
-            frozen = set(json.load(fh))
-    except Exception:
-        frozen = set()
+    frozen = frozen_ids()
 
     files = []
     for entry in index["dirs"]:
@@ -399,7 +431,6 @@ elif mode == "sessions":
     # argv[6] — json [[name, key], ...] of the configured project commands
     cmds = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
     shell_key = sys.argv[7] if len(sys.argv) > 7 else ""
-    dump_path = os.path.expanduser(sys.argv[8]) if len(sys.argv) > 8 else ""
     extras = [("__new__", "[+] new session", "", "New claude session")]
     for i, (cmd_name, cmd_key) in enumerate(cmds, 1):
         extras.append(("__cmd%d__" % i, "[>] " + cmd_name, cmd_key,
@@ -411,7 +442,6 @@ elif mode == "sessions":
         print("\t".join([sid, proj, GREEN + label + RESET + tail]))
         write_preview(sid, "%s\n\ncwd: %s\n" % (note, tilde(proj)))
 
-    dump = []
     for path, mtime, cwd in files:
         sid = os.path.basename(path)[:-6]
         name, doing = tail_facts(path)
@@ -435,26 +465,58 @@ elif mode == "sessions":
             ("\n▸ " + doing + "\n") if doing and doing != gist else "",
         ]))
 
-        if dump_path:
-            dump.append({
+    print(len(files), file=sys.stderr)
+
+elif mode == "dump":
+    # Everything ccfzf can see, for whatever else wants to know it: every
+    # project, and the newest DUMP_SESSIONS sessions across all of them. Reading
+    # 200 tails costs more than the picker itself, which is why the caller runs
+    # this off to the side instead of on the way to the screen.
+    marks = read_marks(sys.argv[2])
+    sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
+    projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    now = time.time()
+
+    dirs = scan_dirs()
+    live = live_ids()
+
+    if projects_path:
+        write_json(projects_path, {
+            "generated": now,
+            "projects": [{
+                "path": r["path"], "name": r["name"], "mark": r["mark"],
+                "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
+                "age": ago(r["mtime"], now) if r["mtime"] else "",
+            } for r in project_rows(dirs, live, marks)],
+        })
+
+    if sessions_path:
+        frozen = frozen_ids()
+        files = []
+        for entry in dirs:
+            files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
+        files.sort(key=lambda x: -x[1])
+        total = len(files)
+
+        sessions = []
+        for path, mtime, cwd in files[:DUMP_SESSIONS]:
+            sid = os.path.basename(path)[:-6]
+            title, doing = tail_facts(path)
+            title = clean(title)
+            # a pasted prompt runs to kilobytes; the list only ever shows a line
+            gist = (head_gist(path) or doing)[:200]
+            sessions.append({
                 "id": sid, "cwd": cwd, "file": path,
-                "title": name, "gist": gist, "doing": doing,
-                "mtime": mtime, "age": age,
+                "projects": sorted(owners_of(cwd, marks)),
+                "title": title, "gist": gist, "doing": doing,
+                "mtime": mtime, "age": ago(mtime, now),
                 "live": sid in live, "frozen": sid in frozen,
             })
 
-    # A partial file must never be read as a complete list, hence the rename.
-    if dump_path:
-        try:
-            tmp_path = dump_path + ".%d.tmp" % os.getpid()
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump({"project": proj, "generated": now, "sessions": dump},
-                          fh, ensure_ascii=False, indent=1)
-            os.replace(tmp_path, dump_path)
-        except OSError:
-            pass
-
-    print(len(files), file=sys.stderr)
+        write_json(sessions_path, {
+            "generated": now, "total": total, "shown": len(sessions),
+            "sessions": sessions,
+        })
 PYEOF
 
 index="$tmp/index.json"
@@ -479,11 +541,23 @@ cmd_json+="]"
 
 build_srows() {
   srows=$(python3 -c "$PY" sessions "$proj_path" "$tmp" "$MARKS" "$index" \
-    "$cmd_json" "$shell_key" "$SESSIONS_FILE" 2>"$tmp/count")
+    "$cmd_json" "$shell_key" 2>"$tmp/count")
   shown=$(cat "$tmp/count" 2>/dev/null || echo 0)
 }
 
+# The dump covers every project, so it has nothing to do with what is on screen
+# and runs detached: its 200 file tails cost more than the picker itself, and
+# nothing here waits for them. Its own scan keeps it independent of $tmp, which
+# the exit trap takes away the moment the user picks something.
+dump_state() {
+  [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" \
+    >/dev/null 2>&1 &
+}
+
 row_index() { awk -F'\t' -v p="$1" '$1 == p { print NR; exit }' <<<"$all_rows"; }
+
+dump_state
 
 # --- resolve the project argument ------------------------------------------
 all_rows=$rows
@@ -610,6 +684,7 @@ while :; do
   fi
   rows=$(python3 -c "$PY" projects "$MARKS" "$index")
   all_rows=$rows
+  dump_state                                  # sessions changed under us
   picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")
   [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$proj_path" "$proj_name" "$proj_path")
   query=""

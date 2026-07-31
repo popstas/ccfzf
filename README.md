@@ -120,26 +120,31 @@ Start a new session and the cursor lands on the session that was actually create
 | `CCFZF_PROJECT_COMMAND3` | — | command 3 |
 | `CCFZF_PROJECT_COMMAND_NAME[2,3]` | first word of the command | label shown in the list |
 | `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
-| `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | where the last shown session list is dumped; empty turns it off |
+| `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | dump of the 200 newest sessions across all projects; empty turns it off |
+| `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
 
 Border, height and layout are left to your `FZF_DEFAULT_OPTS`.
 
-## The sessions dump
+## The dumps
 
-Every session list that gets shown is also written to `CCFZF_SESSIONS_FILE` — so whatever else you script around Claude Code can read what ccfzf just saw, without paying for its own scan. The list entries (`[+] new session` and friends) are not in it, only real sessions, in the order they were displayed:
+Every run also writes down what it saw, so whatever else you script around Claude Code can read it without paying for its own scan. Two files, both replaced on every launch (and again on the way back from a kiosk command, where the data has changed underneath).
+
+`CCFZF_SESSIONS_FILE` — the 200 newest sessions across **all** projects, not just the one you opened, newest first:
 
 ```json
 {
- "project": "/home/you/projects/js/webapp",
  "generated": 1785460168.138,
+ "total": 860,
+ "shown": 200,
  "sessions": [
   {
    "id": "c5bf2507-7381-4aa9-979d-b66242f39d7f",
    "cwd": "/home/you/projects/js/webapp",
    "file": "/home/you/.claude/projects/-home-you-projects-js-webapp/c5bf2507-….jsonl",
+   "projects": ["/home/you/projects/js/webapp"],
    "title": "Add a session picker",
    "gist": "I need a command that takes a project path…",
    "doing": "Now let me verify it works end to end.",
@@ -152,7 +157,21 @@ Every session list that gets shown is also written to `CCFZF_SESSIONS_FILE` — 
 }
 ```
 
-The file is replaced, not appended to, and only ever holds one project — the last one you looked at, including the redraws kiosk mode does on the way back. It is written through a temporary file and renamed into place, so a reader never sees half a list. `CCFZF_SESSIONS_FILE=` (empty) turns the whole thing off.
+`total` is how many sessions exist, `shown` how many made it into the file. `projects` are the project lists this session appears in — its own `cwd` plus the ancestor mark, if any. `title` and `gist` are the same two strings the picker shows; `gist` is capped at 200 characters, because a pasted prompt runs to kilobytes and the list only ever shows a line of it.
+
+`CCFZF_PROJECTS_FILE` — the project list, in the order the first picker shows it:
+
+```json
+{
+ "generated": 1785460168.138,
+ "projects": [
+  {"path": "/home/you/projects/js/webapp", "name": "webapp", "mark": true,
+   "sessions": 14, "live": 1, "mtime": 1785460166.26, "age": "12m"}
+ ]
+}
+```
+
+Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading 200 file tails costs more than the picker itself (~0.3 s here). Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
 
 ## Requirements
 
