@@ -1,0 +1,594 @@
+#!/usr/bin/env bash
+# ccfzf — pick a Claude Code project and session with fzf.
+#
+#   ccfzf                       pick a project, then a session
+#   ccfzf webapp                go straight to a project (mark from ~/.fzf-marks)
+#   ccfzf ~/projects/js/webapp  the same, by path
+#   ccfzf webapp --model opus   trailing arguments are passed on to claude
+#   ccfzf --kiosk               run commands inside and return to the list
+#   ccfzf --print               print the command instead of running it (zle widget)
+#
+# Besides the sessions themselves the list offers: new session, up to three
+# custom commands and a shell. Hotkeys act on the directory of the highlighted
+# row: ctrl-d — shell, ctrl-s / ctrl-f / ctrl-g — commands 1/2/3. Configuration:
+#   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
+#   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
+#
+# Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
+# the tail carries the title and the latest activity. ccsessions is unfit here —
+# its scan() reads every file in full (757 MB of history, 2-3 s per launch).
+set -euo pipefail
+
+MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
+
+# Up to three custom commands run in the project directory: each adds a list
+# entry and a hotkey. An empty value drops both the entry and the key.
+# Note that --expect steals these keys from fzf: ctrl-f no longer moves the
+# cursor in the query and ctrl-g no longer aborts (esc still does).
+shell_key=ctrl-d
+cmd_keys=(ctrl-s ctrl-f ctrl-g)
+cmd_list=("${CCFZF_PROJECT_COMMAND-codex}" "${CCFZF_PROJECT_COMMAND2-}" "${CCFZF_PROJECT_COMMAND3-}")
+cmd_names=(
+  "${CCFZF_PROJECT_COMMAND_NAME:-${cmd_list[0]%% *}}"
+  "${CCFZF_PROJECT_COMMAND_NAME2:-${cmd_list[1]%% *}}"
+  "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
+)
+
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+
+print_mode=0
+kiosk=0
+project=""
+claude_args=()
+
+while (($#)); do
+  case "$1" in
+    --print) print_mode=1; shift ;;
+    -k|--kiosk) kiosk=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; claude_args=("$@"); break ;;
+    *) project="$1"; shift; claude_args=("$@"); break ;;
+  esac
+done
+
+((kiosk && print_mode)) && { echo "ccfzf: --kiosk and --print are mutually exclusive" >&2; exit 2; }
+
+for dep in fzf python3; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "ccfzf: $dep not found" >&2; exit 127; }
+done
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+read -r -d '' PY <<'PYEOF' || true
+"""Collect Claude Code projects and sessions — a stripped-down ccsessions.
+
+Nothing here reads a history in full: cwd sits in the first jsonl line, the
+title (custom-title/ai-title) and the latest activity sit in the tail, and the
+first prompt is looked up from the start of the file under a size cap.
+"""
+import glob, json, os, re, sys, time
+from collections import Counter
+
+PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
+HEAD_LIMIT = 512 * 1024   # how far in to look for the first prompt
+TAIL = 256 * 1024         # tail budget for the title and the latest activity
+
+DIM, GREEN, YELLOW, CYAN, RESET = "\033[2m", "\033[32m", "\033[33m", "\033[36m", "\033[0m"
+
+
+def mangle(path):
+    return re.sub(r"[^a-zA-Z0-9]", "-", path)
+
+
+def tilde(p):
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+
+def pad(s, w):
+    return s + " " * max(0, w - len(s))
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+def ago(t, now):
+    s = max(0, now - t)
+    if s < 3600:
+        return "%dm" % (s // 60)
+    if s < 86400:
+        return "%dh" % (s // 3600)
+    return "%dd" % (s // 86400)
+
+
+def read_marks(marks_file):
+    marks = {}
+    if os.path.exists(marks_file):
+        with open(marks_file, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if " : " not in line:
+                    continue
+                name, path = line.rstrip("\n").split(" : ", 1)
+                path = os.path.expanduser(path.strip()).rstrip("/")
+                if path:
+                    marks[path] = name.strip()
+    return marks
+
+
+def owners_of(cwd, marks):
+    """Projects whose session list should show a session from this cwd.
+
+    Its own cwd always. Plus the nearest ancestor mark when the cwd is not a
+    mark itself: marks are declared project roots, so a session started in a
+    subdirectory (config subrepo, worktree) belongs in the root's list too.
+    Without the marks-only restriction a mark on ~ would swallow every project.
+    """
+    owners = {cwd}
+    if cwd not in marks:
+        ancestors = [m for m in marks if cwd.startswith(m + "/")]
+        if ancestors:
+            owners.add(max(ancestors, key=len))
+    return owners
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                return b.get("text", "")
+    return ""
+
+
+def noisy(t):
+    return (t.startswith("<") or t.startswith("Base directory for this skill")
+            or t.startswith("Caveat:") or "<command-" in t[:40])
+
+
+def dir_cwd(files):
+    """Project cwd — from the first lines of the newest file in the directory."""
+    for path in files[:3]:
+        try:
+            with open(path, "rb") as fh:
+                for _ in range(50):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if o.get("cwd"):
+                        return o["cwd"].rstrip("/")
+        except OSError:
+            continue
+    return ""
+
+
+def head_gist(path):
+    """The first meaningful user prompt."""
+    read = 0
+    try:
+        with open(path, "rb") as fh:
+            for line in fh:
+                read += len(line)
+                if read > HEAD_LIMIT:
+                    break
+                if b'"user"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if o.get("type") == "user" and (o.get("message") or {}).get("role") == "user":
+                    t = clean(text_of(o["message"].get("content")))
+                    if t and not noisy(t):
+                        return t
+    except OSError:
+        pass
+    return ""
+
+
+def tail_facts(path):
+    """(title, latest activity) from the tail of the file.
+
+    A manual title (custom-title) outranks the generated one (ai-title). Both
+    records repeat throughout the file, so the tail almost always has them; a
+    full pass happens only when the tail turned up no title at all.
+    """
+    def pick(data):
+        custom = ai = doing = ""
+        lines = data.split(b"\n")
+        for raw in lines:
+            if b'-title"' not in raw:
+                continue
+            try:
+                o = json.loads(raw)  # a truncated first tail line is dropped here
+            except Exception:
+                continue
+            if o.get("type") == "custom-title":
+                custom = o.get("customTitle") or custom
+            elif o.get("type") == "ai-title":
+                ai = o.get("aiTitle") or ai
+        for raw in reversed(lines):
+            try:
+                o = json.loads(raw)
+            except Exception:
+                continue
+            if o.get("type") in ("user", "assistant"):
+                t = clean(text_of((o.get("message") or {}).get("content")))
+                if t and not noisy(t):
+                    doing = t[:200]
+                    break
+        return custom or ai, doing
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - TAIL))
+            title, doing = pick(fh.read())
+            if not title and size > TAIL:
+                fh.seek(0)
+                title = pick(fh.read())[0]
+            return title, doing
+    except OSError:
+        return "", ""
+
+
+def live_ids():
+    """Ids of the sessions running right now.
+
+    The ccsessions heuristic, but over /proc instead of lsof: lsof costs more
+    than a second on five processes, this costs milliseconds. `--resume <id>`
+    in argv pins the session exactly; a fresh start without it writes to the
+    newest jsonl of its cwd directory, so K processes in one cwd claim the K
+    newest files there.
+    """
+    live, fresh = set(), []
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return live
+    for pid in pids:
+        try:
+            with open("/proc/%s/comm" % pid) as fh:
+                if fh.read().strip() != "claude":
+                    continue
+            with open("/proc/%s/cmdline" % pid, "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "ignore")
+        except OSError:
+            continue
+        m = re.search(r"--resume\s+([0-9a-fA-F-]{36})", cmd)
+        if m:
+            live.add(m.group(1))
+            continue
+        try:
+            fresh.append(os.readlink("/proc/%s/cwd" % pid))
+        except OSError:
+            pass
+
+    cutoff = time.time() - 2 * 3600  # a fresh start writes now, not a day ago
+    for cwd, k in Counter(fresh).items():
+        files = sorted(glob.glob(os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")),
+                       key=os.path.getmtime, reverse=True)
+        for f in files:
+            if k <= 0 or os.path.getmtime(f) < cutoff:
+                break
+            sid = os.path.basename(f)[:-6]
+            if sid not in live:
+                live.add(sid)
+                k -= 1
+    return live
+
+
+def scan_dirs():
+    """[{dir, cwd, files: [(path, mtime)]}] over ~/.claude/projects."""
+    out = []
+    for d in glob.glob(os.path.join(PROJECTS_DIR, "*")):
+        if not os.path.isdir(d):
+            continue
+        files = []
+        for f in glob.glob(os.path.join(d, "*.jsonl")):
+            try:
+                files.append((f, os.path.getmtime(f)))
+            except OSError:
+                pass
+        if not files:
+            continue
+        files.sort(key=lambda x: -x[1])
+        cwd = dir_cwd([f for f, _ in files])
+        if cwd:
+            out.append({"dir": d, "cwd": cwd, "files": files})
+    return out
+
+
+mode = sys.argv[1]
+
+if mode == "projects":
+    marks = read_marks(sys.argv[2])
+    index_path = sys.argv[3]
+    now = time.time()
+
+    dirs = scan_dirs()
+    live = live_ids()
+
+    agg = {}
+    for entry in dirs:
+        for owner in owners_of(entry["cwd"], marks):
+            a = agg.setdefault(owner, {"n": 0, "live": 0, "mtime": 0.0})
+            a["n"] += len(entry["files"])
+            a["live"] += sum(1 for f, _ in entry["files"]
+                             if os.path.basename(f)[:-6] in live)
+            a["mtime"] = max(a["mtime"], entry["files"][0][1])
+
+    with open(index_path, "w", encoding="utf-8") as fh:
+        json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
+                   "live": sorted(live)}, fh)
+
+    rows = []
+    for path in set(marks) | set(agg):
+        a = agg.get(path)
+        rows.append({
+            "path": path,
+            "name": marks.get(path) or os.path.basename(path) or path,
+            "mark": path in marks,
+            "n": a["n"] if a else 0,
+            "live": a["live"] if a else 0,
+            "mtime": a["mtime"] if a else 0.0,
+        })
+    rows.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
+
+    w = min(max([len(r["name"]) for r in rows] or [0]), 26)
+    for r in rows:
+        star = GREEN + "★" + RESET if r["mark"] else " "
+        n = str(r["n"]) if r["n"] else "-"
+        live_col = GREEN + pad(str(r["live"]) + "●", 3) + RESET if r["live"] else "   "
+        disp = "%s %s  %s %s %s %s" % (
+            star, pad(r["name"], w), pad(n, 4), live_col,
+            pad(ago(r["mtime"], now) if r["mtime"] else "", 4),
+            DIM + tilde(r["path"]) + RESET,
+        )
+        print("\t".join([r["path"], r["name"], disp]))
+
+elif mode == "sessions":
+    proj = sys.argv[2].rstrip("/")
+    preview_dir = sys.argv[3]
+    marks = read_marks(sys.argv[4])
+    index_path = sys.argv[5]
+    now = time.time()
+
+    with open(index_path, encoding="utf-8") as fh:
+        index = json.load(fh)
+    live = set(index["live"])
+    try:
+        with open(FROZEN, encoding="utf-8") as fh:
+            frozen = set(json.load(fh))
+    except Exception:
+        frozen = set()
+
+    files = []
+    for entry in index["dirs"]:
+        if proj in owners_of(entry["cwd"], marks):
+            files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
+    files.sort(key=lambda x: -x[1])
+
+    def write_preview(sid, text):
+        with open(os.path.join(preview_dir, sid + ".txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    # argv[6] — json [[name, key], ...] of the configured project commands
+    cmds = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
+    shell_key = sys.argv[7] if len(sys.argv) > 7 else ""
+    extras = [("__new__", "[+] new session", "", "New claude session")]
+    for i, (cmd_name, cmd_key) in enumerate(cmds, 1):
+        extras.append(("__cmd%d__" % i, "[>] " + cmd_name, cmd_key,
+                       "%s — in the project directory" % cmd_name))
+    extras.append(("__shell__", "[$] shell", shell_key, "Just cd to the project directory"))
+
+    for sid, label, hint, note in extras:
+        tail = DIM + "  " + hint + RESET if hint else ""
+        print("\t".join([sid, proj, GREEN + label + RESET + tail]))
+        write_preview(sid, "%s\n\ncwd: %s\n" % (note, tilde(proj)))
+
+    for path, mtime, cwd in files:
+        sid = os.path.basename(path)[:-6]
+        name, doing = tail_facts(path)
+        name = clean(name)
+        gist = head_gist(path) or doing
+        age = ago(mtime, now)
+
+        if name and gist:
+            label = CYAN + name + RESET + DIM + " · " + gist + RESET
+        else:
+            label = CYAN + name + RESET if name else (gist or DIM + "(empty)" + RESET)
+        dot = GREEN + "●" + RESET if sid in live else " "
+        star = YELLOW + "*" + RESET if sid in frozen else " "
+        print("\t".join([sid, cwd, "%s%s %s %s" % (dot, star, DIM + pad(age, 4) + RESET, label)]))
+
+        write_preview(sid, "".join([
+            (name + "\n") if name else "",
+            "%s%s\n" % (tilde(cwd), "   [running]" if sid in live else ""),
+            "%s  ·  %s\n\n" % (sid, age),
+            (gist or "(no first message)") + "\n",
+            ("\n▸ " + doing + "\n") if doing and doing != gist else "",
+        ]))
+
+    print(len(files), file=sys.stderr)
+PYEOF
+
+index="$tmp/index.json"
+rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+[[ -n $rows ]] || { echo "ccfzf: no marks and no sessions found" >&2; exit 1; }
+
+# Border, height and layout are left to FZF_DEFAULT_OPTS.
+fzf_pick() { # <query> ; rows on stdin
+  fzf --ansi --delimiter=$'\t' --with-nth=3 --no-multi --query="$1" "${@:2}"
+}
+
+# json [[name, key], ...] and the --expect list, both from configured commands
+cmd_json="["
+expect="$shell_key"
+for i in 0 1 2; do
+  [[ -n ${cmd_list[i]} ]] || continue
+  [[ $cmd_json == "[" ]] || cmd_json+=","
+  cmd_json+=$(printf '["%s","%s"]' "${cmd_names[i]//\"/}" "${cmd_keys[i]}")
+  expect+=",${cmd_keys[i]}"
+done
+cmd_json+="]"
+
+build_srows() {
+  srows=$(python3 -c "$PY" sessions "$proj_path" "$tmp" "$MARKS" "$index" \
+    "$cmd_json" "$shell_key" 2>"$tmp/count")
+  shown=$(cat "$tmp/count" 2>/dev/null || echo 0)
+}
+
+row_index() { awk -F'\t' -v p="$1" '$1 == p { print NR; exit }' <<<"$all_rows"; }
+
+# --- resolve the project argument ------------------------------------------
+all_rows=$rows
+picked=""
+query=$project
+posbind=""
+if [[ -n $project ]]; then
+  picked=$(awk -F'\t' -v q="$project" '$2 == q { print; exit }' <<<"$rows")
+
+  if [[ -z $picked && -d $project ]]; then
+    dir=$(cd "$project" && pwd -P)   # not realpath: stock macOS has none
+    picked=$(awk -F'\t' -v q="$dir" '$1 == q { print; exit }' <<<"$rows")
+    [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$dir" "$(basename "$dir")" "$dir")
+  fi
+
+  if [[ -z $picked ]]; then
+    subset=$(awk -F'\t' -v q="$project" \
+      'BEGIN { q = tolower(q) } index(tolower($1), q) || index(tolower($2), q)' <<<"$rows")
+    if [[ $(grep -c . <<<"$subset") -eq 1 && -n $subset ]]; then
+      picked=$subset
+    else
+      [[ -n $subset ]] && rows=$subset
+    fi
+  fi
+fi
+
+# --- project → session; esc in sessions goes back to the project list ------
+while :; do
+  if [[ -z $picked ]]; then
+    pick_args=(--header=$'project           sess live last\nenter — sessions, esc — quit')
+    [[ -n $posbind ]] && pick_args+=(--bind="$posbind")
+    picked=$(fzf_pick "$query" "${pick_args[@]}" <<<"$rows") || exit $?
+  fi
+
+  proj_path=${picked%%$'\t'*}
+  rest=${picked#*$'\t'}
+  proj_name=${rest%%$'\t'*}
+
+  build_srows
+
+  # Coming back from a kiosk run: put the cursor where the user left off.
+  sess_args=()
+  if [[ -n ${kiosk_used:-} ]]; then
+    target=$kiosk_used
+    if [[ $kiosk_used == "__new__" ]]; then
+      # the fresh session got an id of its own — aim at it, not at [+] new
+      fresh=$(grep -vxF -f <(printf '%s\n' "$kiosk_prev") <(cut -f1 <<<"$srows") | head -1 || true)
+      [[ -n $fresh ]] && target=$fresh
+    fi
+    n=$(awk -F'\t' -v s="$target" '$1 == s { print NR; exit }' <<<"$srows")
+    [[ -n $n ]] && sess_args+=(--bind="load:pos($n)")
+    kiosk_used=""
+  fi
+
+  # Terminals grab Ctrl+S as XOFF, so flow control is switched off for the
+  # duration of the picker and the previous mode is restored right after.
+  # 2>/dev/null must precede </dev/tty: otherwise bash itself reports the
+  # failed redirection and there is nothing left to silence it with.
+  stty_save=$(stty -g 2>/dev/null </dev/tty || true)
+  [[ -n $stty_save ]] && stty -ixon 2>/dev/null </dev/tty || true
+  hints="enter — run"
+  for i in 0 1 2; do
+    [[ -n ${cmd_list[i]} ]] && hints+=", ${cmd_keys[i]} — ${cmd_names[i]}"
+  done
+  hints+=", $shell_key — shell, esc — back"
+  set +e
+  out=$(fzf_pick "" --expect="$expect" "${sess_args[@]+"${sess_args[@]}"}" \
+    --header="$proj_name · sessions: $shown"$'\n'"$hints" \
+    --preview="cat $tmp/{1}.txt" --preview-window="down,5,wrap,border-top" <<<"$srows")
+  code=$?
+  set -e
+  [[ -n $stty_save ]] && stty "$stty_save" 2>/dev/null </dev/tty || true
+
+  if ((code != 0)); then
+    ((code == 130 || code == 1)) || exit $code   # 130/1 — esc, anything else is an error
+    # back: full list, no query, cursor on the project we just left
+    idx=$(row_index "$proj_path")
+    rows=$all_rows
+    query=""
+    picked=""
+    posbind=""
+    [[ -n $idx ]] && posbind="load:pos($idx)"
+    continue
+  fi
+
+  key=$(head -1 <<<"$out")
+  sel=$(tail -n +2 <<<"$out")
+  sid=${sel%%$'\t'*}
+  rest=${sel#*$'\t'}
+  dir=${rest%%$'\t'*}
+
+  # the hotkey outranks the highlighted row, but the directory comes from it
+  if [[ $key == "$shell_key" ]]; then
+    sid="__shell__"
+  else
+    for i in 0 1 2; do
+      [[ -n ${cmd_list[i]} && $key == "${cmd_keys[i]}" ]] && sid="__cmd$((i + 1))__"
+    done
+  fi
+
+  # cmd is a ready-made shell string: a project command may carry arguments
+  cmd=""
+  case "$sid" in
+    __shell__) : ;;                          # cd is enough, no nested shell needed
+    __cmd1__)  cmd=${cmd_list[0]} ;;
+    __cmd2__)  cmd=${cmd_list[1]} ;;
+    __cmd3__)  cmd=${cmd_list[2]} ;;
+    __new__)   cmd=$(printf '%q ' claude "${claude_args[@]+"${claude_args[@]}"}") ;;
+    *)         cmd=$(printf '%q ' claude --resume "$sid" "${claude_args[@]+"${claude_args[@]}"}") ;;
+  esac
+  cmd=${cmd% }
+
+  ((kiosk)) || break
+
+  # Kiosk: run as a child instead of exec'ing, then land back in this
+  # project's session list. Sessions changed under us, so the index is
+  # rebuilt — it costs about as much as one fzf redraw.
+  kiosk_prev=$(cut -f1 <<<"$srows")
+  kiosk_used=$sid
+  if [[ -n $cmd ]]; then
+    (cd "$dir" && exec "$SHELL" -c "$cmd") || true
+  else
+    (cd "$dir" && exec "$SHELL") || true
+  fi
+  rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+  all_rows=$rows
+  picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")
+  [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$proj_path" "$proj_name" "$proj_path")
+  query=""
+  posbind=""
+done
+
+# --- launch ----------------------------------------------------------------
+if ((print_mode)); then
+  if [[ -z $cmd ]]; then
+    printf 'cd %q\n' "$dir"
+  else
+    printf 'cd %q && %s\n' "$dir" "$cmd"
+  fi
+else
+  cd "$dir"
+  # without the widget the parent directory cannot be changed, so run a shell
+  [[ -n $cmd ]] && exec "$SHELL" -c "$cmd"
+  exec "$SHELL"
+fi
