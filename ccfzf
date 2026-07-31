@@ -7,6 +7,7 @@
 #   ccfzf webapp --model opus   trailing arguments are passed on to claude
 #   ccfzf --kiosk               run commands inside and return to the list
 #   ccfzf --print               print the command instead of running it (zle widget)
+#   ccfzf --session <id>        go straight into a session by id, no picker
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -49,17 +50,20 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
 project=""
+session_id=""
 claude_args=()
 
 while (($#)); do
   case "$1" in
     --print) print_mode=1; shift ;;
     -k|--kiosk) kiosk=1; shift ;;
+    --session) session_id="${2-}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
+    --session=*) session_id="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; claude_args=("$@"); break ;;
     *) project="$1"; shift; [[ ${1:-} == "--" ]] && shift; claude_args=("$@"); break ;;
@@ -559,11 +563,42 @@ row_index() { awk -F'\t' -v p="$1" '$1 == p { print NR; exit }' <<<"$all_rows"; 
 
 dump_state
 
-# --- resolve the project argument ------------------------------------------
 all_rows=$rows
 picked=""
 query=$project
 posbind=""
+
+# --- direct entry into a session by id --------------------------------------
+# Called by external automation (claude-wt restore), so a missing session is an
+# error, not a reason to drop into the picker: that would hang the caller.
+if [[ -n $session_id ]]; then
+  sess_file=$(ls -1 "$HOME"/.claude/projects/*/"$session_id".jsonl 2>/dev/null | head -1 || true)
+  [[ -n $sess_file ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
+  dir=$(python3 -c 'import json,sys
+with open(sys.argv[1]) as f:
+    print(json.loads(f.readline()).get("cwd", ""))' "$sess_file")
+  [[ -n $dir && -d $dir ]] || { echo "ccfzf: session $session_id has no usable cwd" >&2; exit 1; }
+  cmd="$CLAUDE_CMD --resume $(printf '%q' "$session_id")$claude_tail"
+  cmd=${cmd% }
+  if ((kiosk)); then
+    (cd "$dir" && exec "$SHELL" -c "$cmd") || true
+    rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+    all_rows=$rows
+    dump_state
+    picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
+    [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$dir" "$(basename "$dir")" "$dir")
+    query=""
+    posbind=""
+  elif ((print_mode)); then
+    printf 'cd %q && %s\n' "$dir" "$cmd"
+    exit 0
+  else
+    cd "$dir"
+    exec "$SHELL" -c "$cmd"
+  fi
+fi
+
+# --- resolve the project argument ------------------------------------------
 if [[ -n $project ]]; then
   picked=$(awk -F'\t' -v q="$project" '$2 == q { print; exit }' <<<"$rows")
 

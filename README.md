@@ -84,7 +84,10 @@ ccfzf ~/projects/js/webapp  the same, by path
 ccfzf webapp --model opus   trailing arguments are passed on to claude
 ccfzf --kiosk               run everything inside, return to the list on exit
 ccfzf --print               print the command instead of running it
+ccfzf --session <id>        go straight into a session by id, no picker
 ```
+
+`--session` is for scripts, not people: a missing or unknown id is a hard error (message on stderr, exit 1) rather than a fall back to the picker, which would hang with nobody at the keyboard. It composes with `--kiosk` (runs the session, then lands on that project's session list) and with `--print` (prints `cd <dir> && claude --resume <id>` instead of running it).
 
 In the session list:
 
