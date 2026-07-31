@@ -120,11 +120,39 @@ Start a new session and the cursor lands on the session that was actually create
 | `CCFZF_PROJECT_COMMAND3` | — | command 3 |
 | `CCFZF_PROJECT_COMMAND_NAME[2,3]` | first word of the command | label shown in the list |
 | `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
+| `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | where the last shown session list is dumped; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
 
 Border, height and layout are left to your `FZF_DEFAULT_OPTS`.
+
+## The sessions dump
+
+Every session list that gets shown is also written to `CCFZF_SESSIONS_FILE` — so whatever else you script around Claude Code can read what ccfzf just saw, without paying for its own scan. The list entries (`[+] new session` and friends) are not in it, only real sessions, in the order they were displayed:
+
+```json
+{
+ "project": "/home/you/projects/js/webapp",
+ "generated": 1785460168.138,
+ "sessions": [
+  {
+   "id": "c5bf2507-7381-4aa9-979d-b66242f39d7f",
+   "cwd": "/home/you/projects/js/webapp",
+   "file": "/home/you/.claude/projects/-home-you-projects-js-webapp/c5bf2507-….jsonl",
+   "title": "Add a session picker",
+   "gist": "I need a command that takes a project path…",
+   "doing": "Now let me verify it works end to end.",
+   "mtime": 1785460166.26,
+   "age": "12m",
+   "live": true,
+   "frozen": false
+  }
+ ]
+}
+```
+
+The file is replaced, not appended to, and only ever holds one project — the last one you looked at, including the redraws kiosk mode does on the way back. It is written through a temporary file and renamed into place, so a reader never sees half a list. `CCFZF_SESSIONS_FILE=` (empty) turns the whole thing off.
 
 ## Requirements
 

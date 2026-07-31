@@ -14,6 +14,8 @@
 #   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
 #   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
 #   CCFZF_CLAUDE_COMMAND             the claude binary itself (default: claude)
+#   CCFZF_SESSIONS_FILE              json dump of the shown session list
+#                                    (default ~/.ccfzf.sessions.json, empty — off)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
 # the tail carries the title and the latest activity. ccsessions is unfit here —
@@ -25,6 +27,10 @@ MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
 # The claude binary itself, so a wrapper or extra flags can be substituted.
 # Treated as a shell fragment, like the project commands below.
 CLAUDE_CMD="${CCFZF_CLAUDE_COMMAND:-claude}"
+
+# Every session list that gets shown is also dumped here as json, for whatever
+# else wants to know what ccfzf just saw. Set to an empty string to turn it off.
+SESSIONS_FILE="${CCFZF_SESSIONS_FILE-$HOME/.ccfzf.sessions.json}"
 
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
@@ -39,7 +45,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -393,6 +399,7 @@ elif mode == "sessions":
     # argv[6] — json [[name, key], ...] of the configured project commands
     cmds = json.loads(sys.argv[6]) if len(sys.argv) > 6 else []
     shell_key = sys.argv[7] if len(sys.argv) > 7 else ""
+    dump_path = os.path.expanduser(sys.argv[8]) if len(sys.argv) > 8 else ""
     extras = [("__new__", "[+] new session", "", "New claude session")]
     for i, (cmd_name, cmd_key) in enumerate(cmds, 1):
         extras.append(("__cmd%d__" % i, "[>] " + cmd_name, cmd_key,
@@ -404,6 +411,7 @@ elif mode == "sessions":
         print("\t".join([sid, proj, GREEN + label + RESET + tail]))
         write_preview(sid, "%s\n\ncwd: %s\n" % (note, tilde(proj)))
 
+    dump = []
     for path, mtime, cwd in files:
         sid = os.path.basename(path)[:-6]
         name, doing = tail_facts(path)
@@ -426,6 +434,25 @@ elif mode == "sessions":
             (gist or "(no first message)") + "\n",
             ("\n▸ " + doing + "\n") if doing and doing != gist else "",
         ]))
+
+        if dump_path:
+            dump.append({
+                "id": sid, "cwd": cwd, "file": path,
+                "title": name, "gist": gist, "doing": doing,
+                "mtime": mtime, "age": age,
+                "live": sid in live, "frozen": sid in frozen,
+            })
+
+    # A partial file must never be read as a complete list, hence the rename.
+    if dump_path:
+        try:
+            tmp_path = dump_path + ".%d.tmp" % os.getpid()
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump({"project": proj, "generated": now, "sessions": dump},
+                          fh, ensure_ascii=False, indent=1)
+            os.replace(tmp_path, dump_path)
+        except OSError:
+            pass
 
     print(len(files), file=sys.stderr)
 PYEOF
@@ -452,7 +479,7 @@ cmd_json+="]"
 
 build_srows() {
   srows=$(python3 -c "$PY" sessions "$proj_path" "$tmp" "$MARKS" "$index" \
-    "$cmd_json" "$shell_key" 2>"$tmp/count")
+    "$cmd_json" "$shell_key" "$SESSIONS_FILE" 2>"$tmp/count")
   shown=$(cat "$tmp/count" 2>/dev/null || echo 0)
 }
 
