@@ -570,6 +570,17 @@ row_index() { awk -F'\t' -v p="$1" '$1 == p { print NR; exit }' <<<"$all_rows"; 
 # on its own (SSH_STARTDIR and the like) can no longer steal the directory back.
 in_dir() { printf 'cd -- %q && %s' "$1" "$2"; }
 
+# The picker labels the terminal itself. Whatever ran before it — claude above
+# all — leaves its own title behind, so in kiosk mode a window sitting in the
+# session list looked exactly like the session it had just left. Everything
+# started from here sets its own title afterwards, and the prompt gets its title
+# back from the shell, so this only ever holds while a picker is on screen.
+# Written to the tty: with --print stdout is the command itself.
+set_title() {
+  [[ -w /dev/tty ]] || return 0
+  printf '\033]0;%s\007' "$1" >/dev/tty 2>/dev/null || true
+}
+
 dump_state
 
 all_rows=$rows
@@ -648,6 +659,7 @@ fi
 # --- project → session; esc in sessions goes back to the project list ------
 while :; do
   if [[ -z $picked ]]; then
+    set_title "ccfzf project select"
     pick_args=(--header=$'project           sess live last\nenter — sessions, esc — quit')
     [[ -n $posbind ]] && pick_args+=(--bind="$posbind")
     picked=$(fzf_pick "$query" "${pick_args[@]}" <<<"$rows") || exit $?
@@ -684,6 +696,7 @@ while :; do
     [[ -n ${cmd_list[i]} ]] && hints+=", ${cmd_keys[i]} — ${cmd_names[i]}"
   done
   hints+=", $shell_key — shell, esc — back"
+  set_title "ccfzf session select"
   set +e
   out=$(fzf_pick "" --expect="$expect" "${sess_args[@]+"${sess_args[@]}"}" \
     --header="$proj_name · sessions: $shown"$'\n'"$hints" \
