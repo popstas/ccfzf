@@ -137,7 +137,7 @@ Border, height and layout are left to your `FZF_DEFAULT_OPTS`.
 
 ## The dumps
 
-Every run also writes down what it saw, so whatever else you script around Claude Code can read it without paying for its own scan. Two files, both replaced on every launch (and again on the way back from a kiosk command, where the data has changed underneath).
+Every run also writes down what it saw, so whatever else you script around Claude Code can read it without paying for its own scan. Two files, both replaced on every launch (and again on the way back from a kiosk command, where the data has changed underneath). `ccfzf --dump` rewrites the same files and exits — for callers that need a fresh dump without opening the picker.
 
 `CCFZF_SESSIONS_FILE` — the 200 newest sessions across **all** projects, not just the one you opened, newest first:
 

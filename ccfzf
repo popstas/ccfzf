@@ -8,6 +8,7 @@
 #   ccfzf --kiosk               run commands inside and return to the list
 #   ccfzf --print               print the command instead of running it (zle widget)
 #   ccfzf --session <id>        go straight into a session by id, no picker
+#   ccfzf --dump                rewrite the sessions/projects json dumps and exit
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -50,10 +51,11 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
+dump_only=0
 project=""
 session_id=""
 claude_args=()
@@ -62,6 +64,7 @@ while (($#)); do
   case "$1" in
     --print) print_mode=1; shift ;;
     -k|--kiosk) kiosk=1; shift ;;
+    --dump) dump_only=1; shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -71,18 +74,24 @@ while (($#)); do
 done
 
 ((kiosk && print_mode)) && { echo "ccfzf: --kiosk and --print are mutually exclusive" >&2; exit 2; }
+((dump_only && (kiosk || print_mode || ${#session_id} || ${#project}))) && {
+  echo "ccfzf: --dump takes no other mode flags" >&2; exit 2;
+}
 
 # trailing arguments belong to claude, not to the project commands
 claude_tail=""
 ((${#claude_args[@]})) && claude_tail=" $(printf '%q ' "${claude_args[@]}")"
 claude_tail=${claude_tail% }
 
-for dep in fzf python3; do
-  command -v "$dep" >/dev/null 2>&1 || { echo "ccfzf: $dep not found" >&2; exit 127; }
-done
-
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+if ((dump_only)); then
+  command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
+else
+  for dep in fzf python3; do
+    command -v "$dep" >/dev/null 2>&1 || { echo "ccfzf: $dep not found" >&2; exit 127; }
+  done
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+fi
 
 read -r -d '' PY <<'PYEOF' || true
 """Collect Claude Code projects and sessions — a stripped-down ccsessions.
@@ -522,6 +531,14 @@ elif mode == "dump":
             "sessions": sessions,
         })
 PYEOF
+
+# External callers (windows-mqtt picker) need the dumps rewritten without opening
+# the interactive UI. Run in the foreground so ssh returns only after the rename.
+if ((dump_only)); then
+  [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE"
+  exit 0
+fi
 
 index="$tmp/index.json"
 rows=$(python3 -c "$PY" projects "$MARKS" "$index")
