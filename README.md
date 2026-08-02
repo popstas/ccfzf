@@ -110,7 +110,7 @@ ccfzf --kiosk          # or just press ctrl-t
 
 Normally `ccfzf` replaces itself with whatever you picked and is gone. In kiosk mode it stays: the command runs as a child, and when it exits you are back in the session list of the same project with the cursor on the row you came out of. So a session you resume, quit, and want back is two keystrokes away, and `ctrl-d` into a shell followed by `exit` returns to the list rather than to your prompt.
 
-Start a new session and the cursor lands on the session that was actually created, not on `[+] new session`. The index is rebuilt on the way back, so titles, ages and running markers are current — that costs about as much as one fzf redraw.
+Start a new session and the cursor lands on the session that was actually created, not on `[+] new session`. New sessions are started with `claude -n <basename>` so the terminal title and ccfzf row match the project folder immediately. The index is rebuilt on the way back, so titles, ages and running markers are current — that costs about as much as one fzf redraw.
 
 `esc` goes back to the project list, `esc` again quits. Not compatible with `--print`, which exists precisely to hand a command back to the shell.
 

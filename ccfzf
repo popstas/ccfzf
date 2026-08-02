@@ -756,7 +756,9 @@ while :; do
     __cmd1__)  cmd=${cmd_list[0]} ;;
     __cmd2__)  cmd=${cmd_list[1]} ;;
     __cmd3__)  cmd=${cmd_list[2]} ;;
-    __new__)   cmd="$CLAUDE_CMD$claude_tail" ;;
+    # Name the session after the project folder so WT titles and the
+    # windows-mqtt project hotkeys can find it without waiting for /rename.
+    __new__)   cmd="$CLAUDE_CMD -n $(printf '%q' "$(basename "$dir")")$claude_tail" ;;
     *)         cmd="$CLAUDE_CMD --resume $(printf '%q' "$sid")$claude_tail" ;;
   esac
   cmd=${cmd% }
