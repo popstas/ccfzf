@@ -78,6 +78,14 @@ def test_meta_all_reads_a_directory_once_and_skips_junk():
             fh.write('{"started": 1}')
         with open(os.path.join(d, UUID_A + ".state.json"), "w") as fh:
             fh.write("{}")
+        # Не-словарь и битый JSON — тоже junk, и оба под настоящими id: имя тут
+        # не при чём, дело в содержимом. isinstance(meta, dict) в meta_all —
+        # единственная строка, которая держит краш всего ответа --state: до неё
+        # pid_owners звала meta.get("pid") над чем угодно, и список вместо
+        # словаря в одном файле ронял бы ответ целиком.
+        _write(d, "cccccccc-1111-2222-3333-444444444444", ".meta.json", [1, 2])
+        with open(os.path.join(d, "dddddddd-1111-2222-3333-444444444444.meta.json"), "w") as fh:
+            fh.write("{not json")
         got = CC["meta_all"](d)
         assert list(got) == [UUID_A], list(got)
         assert got[UUID_A]["started"] == START
