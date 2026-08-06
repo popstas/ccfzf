@@ -167,6 +167,23 @@ Every run also writes down what it saw, so whatever else you script around Claud
 
 `total` is how many sessions exist, `shown` how many made it into the file. `projects` are the project lists this session appears in — its own `cwd` plus the ancestor mark, if any. `title` and `gist` are the same two strings the picker shows; `gist` is capped at 200 characters, because a pasted prompt runs to kilobytes and the list only ever shows a line of it.
 
+### Откуда берётся `live`
+
+Три довода, в порядке применения:
+
+1. **argv процесса** — `--session-id <uuid>` или `--resume <uuid>` называет
+   сессию прямо. Процесс без обоих флагов забирает себе новейший транскрипт
+   своего каталога.
+2. **Переезд.** Claude Code умеет сменить id внутри живого процесса, и argv
+   после этого указывает на транскрипт, в который больше не пишут. Если у
+   соседа по каталогу проекта отметка хука свежее и моложе двух минут, процесс
+   переезжает на него, а прежний id перестаёт считаться живым.
+3. **Отметка хука.** Сессия, чей `~/.claude/claude-wt/<id>.state.json` обновлён
+   за последние две минуты, жива и без процесса, который бы её назвал.
+
+Третий довод только добавляет. Сессия, ждущая ответа человека, хуков не шлёт и
+опознаётся первым доводом — по живому процессу.
+
 `CCFZF_PROJECTS_FILE` — the project list, in the order the first picker shows it:
 
 ```json
