@@ -88,6 +88,27 @@ def test_reattribute_does_nothing_without_a_cwd():
     assert live == {UUID_A}, live
 
 
+def test_live_by_hook_adds_a_working_session_no_process_names():
+    now = time.time()
+    live = set()
+    CC["live_by_hook"](live, {UUID_A: now - 10}, now)
+    assert live == {UUID_A}, live
+
+
+def test_live_by_hook_keeps_a_running_session_whose_hook_is_silent():
+    now = time.time()
+    live = {UUID_B}
+    CC["live_by_hook"](live, {UUID_B: now - 86400}, now)
+    assert live == {UUID_B}, live
+
+
+def test_live_by_hook_does_not_resurrect_a_session_that_went_quiet():
+    now = time.time()
+    live = set()
+    CC["live_by_hook"](live, {UUID_A: now - 3600}, now)
+    assert live == set(), live
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":

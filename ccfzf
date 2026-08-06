@@ -620,6 +620,22 @@ def reattribute(live, procs, agents, stamps, now, ids_in=None, ttl=HOOK_LIVE_TTL
             agents[best] = agents.pop(sid)
 
 
+def live_by_hook(live, stamps, now, ttl=HOOK_LIVE_TTL):
+    """Свежая отметка хука — довод о жизни сама по себе.
+
+    Хук стучит на каждый вызов инструмента работающего агента, поэтому выдаёт
+    сессию и там, где /proc её не выдаёт: процесс поднят обёрткой, argv не
+    называет ни старого id, ни нового, соседа по каталогу не нашлось.
+
+    Только добавляет, никогда не убавляет. Молчание ничего не значит: сессия,
+    ждущая ответа человека, не шлёт хуков часами и при этом жива — и её
+    единственный честный признак по-прежнему живой процесс.
+    """
+    for sid, at in stamps.items():
+        if now - at <= ttl:
+            live.add(sid)
+
+
 def running_sessions():
     """(ids running right now, {id: {kind, parent}}) from /proc.
 
@@ -689,7 +705,8 @@ def running_sessions():
         if "bg-pty-host" in host:
             agents[sid] = {"kind": "background", "parent": parent}
 
-    cutoff = time.time() - 2 * 3600  # a fresh start writes now, not a day ago
+    now = time.time()
+    cutoff = now - 2 * 3600  # a fresh start writes now, not a day ago
     for cwd, k in Counter(fresh).items():
         files = sorted(glob.glob(os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")),
                        key=os.path.getmtime, reverse=True)
@@ -700,6 +717,15 @@ def running_sessions():
             if sid not in live:
                 live.add(sid)
                 k -= 1
+
+    # Порядок важен. Переезд идёт первым: ему нужно знать, кто занят на самом
+    # деле, а live_by_hook раздаёт живость сессиям без процесса и тем самым
+    # закрыл бы кандидатов для переезда. И только переезд умеет снимать живость
+    # со сменившегося id — сам по себе он бы так и остался вторым chats-inspect
+    # в списке.
+    stamps = hook_stamps()
+    reattribute(live, procs, agents, stamps, now)
+    live_by_hook(live, stamps, now)
     return live, agents, procs
 
 
