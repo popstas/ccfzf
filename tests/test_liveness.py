@@ -109,6 +109,72 @@ def test_live_by_hook_does_not_resurrect_a_session_that_went_quiet():
     assert live == set(), live
 
 
+def test_live_by_hook_does_not_resurrect_an_id_reattribute_just_vacated():
+    # Ротация A->B тридцать секунд назад: без skip live_by_hook добавил бы
+    # A обратно по его ещё не остывшей отметке — ровно та дублирующая
+    # строка, ради ухода от которой существует reattribute().
+    now = time.time()
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    stamps = {UUID_A: now - 30, UUID_B: now - 5}
+    moved = CC["reattribute"](live, procs, agents, stamps, now,
+                              ids_in=lambda cwd: [UUID_A, UUID_B])
+    CC["live_by_hook"](live, stamps, now, skip=moved)
+    assert live == {UUID_B}, live
+
+
+def test_reattribute_does_not_let_a_second_process_reclaim_a_vacated_id():
+    # UUID_A переезжает на UUID_B (его хук свежее) и освобождает UUID_A.
+    # UUID_IDLE — второй, простаивающий процесс в том же каталоге: его
+    # собственная отметка старая, а у освобождённого UUID_A она ещё не
+    # остыла, так что без защиты он выглядел бы для UUID_IDLE лучшим
+    # кандидатом — хотя в этот транскрипт больше никто не пишет.
+    UUID_IDLE = "cccccccc-1111-2222-3333-444444444444"
+    now = time.time()
+    live = {UUID_A, UUID_IDLE}
+    procs = {UUID_A: _proc(42), UUID_IDLE: _proc(43)}
+    agents = {}
+    stamps = {UUID_A: now - 25, UUID_B: now - 5, UUID_IDLE: now - 3600}
+
+    def ids_in(cwd):
+        return [UUID_A, UUID_B, UUID_IDLE]
+
+    CC["reattribute"](live, procs, agents, stamps, now, ids_in=ids_in)
+    assert procs.get(UUID_A) is None, procs
+    assert procs[UUID_IDLE]["pid"] == 43, procs
+    assert UUID_A not in live, live
+
+
+def test_reattribute_returns_the_ids_it_vacated():
+    now = time.time()
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    stamps = {UUID_A: now - 86400, UUID_B: now - 30}
+    moved = CC["reattribute"](live, procs, agents, stamps, now,
+                              ids_in=lambda cwd: [UUID_A, UUID_B])
+    assert moved == {UUID_A}, moved
+
+
+def test_reattribute_returns_an_empty_set_when_nothing_moves():
+    now = time.time()
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    stamps = {UUID_A: now - 86400, UUID_B: now - 3600}
+    moved = CC["reattribute"](live, procs, agents, stamps, now,
+                              ids_in=lambda cwd: [UUID_A, UUID_B])
+    assert moved == set(), moved
+
+
+def test_hook_stamps_reads_both_of_two_state_files():
+    with tempfile.TemporaryDirectory() as d:
+        path_a = os.path.join(d, UUID_A + ".state.json")
+        path_b = os.path.join(d, UUID_B + ".state.json")
+        with open(path_a, "w") as fh:
+            fh.write("{}")
+        with open(path_b, "w") as fh:
+            fh.write("{}")
+        os.utime(path_a, (1000, 1000))
+        os.utime(path_b, (2000, 2000))
+        assert CC["hook_stamps"](d) == {UUID_A: 1000, UUID_B: 2000}
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":
