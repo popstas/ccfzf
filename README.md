@@ -129,6 +129,7 @@ Picked commands run in an interactive shell (`$SHELL -ic 'cd <dir> && <cmd>'`), 
 | `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
 | `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | dump of the 200 newest sessions across all projects; empty turns it off |
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
+| `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state`; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
@@ -180,6 +181,27 @@ Every run also writes down what it saw, so whatever else you script around Claud
 
 Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading 200 file tails costs more than the picker itself (~0.3 s here). Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
 
+## The one file that comes the other way
+
+`ccfzf --state` prints the whole answer as JSON on stdout and writes nothing, for a reader on another machine. Everything in it is derived here — except one thing, which cannot be: whether a session has a terminal **window** open. This side sees processes, not windows, and on a remote setup the windows are not even on this machine.
+
+So `CCFZF_WINDOWS_FILE` is read rather than written. Whoever tracks the windows drops it next to the dumps:
+
+```json
+{
+ "host": "the-machine-with-the-screen",
+ "pid": 4312,
+ "generated": 1785460168,
+ "windows": {
+  "c5bf2507-7381-4aa9-979d-b66242f39d7f": {"title": "webapp", "desktop": 2, "lastSeen": 1785460166}
+ }
+}
+```
+
+Sessions listed there gain a `window` field; `host` and `pid` come out as `windowHost` and `windowPid`. `host` lets the reader tell whether those windows are on the screen it is sitting in front of; `pid` is there because Windows hands the foreground only to the process that already owns it or caught the last input event, so a reader raising a window must first grant that right to the tracker by pid.
+
+The file is optional in every direction. Missing, unparseable, missing its keys, or older than two minutes — the field is simply absent and nothing is said about it. A stale file is treated as no file: the tracker rewrites it at least every half minute, so silence means the machine went away, not that the layout stopped moving.
+
 ## Requirements
 
 - `bash`, `python3` (3.4+), and the usual POSIX tools
@@ -191,6 +213,7 @@ Optional, degrades quietly when absent:
 - `~/.fzf-marks` — gives `★`, human names, and rolls up sessions started in a project's subdirectories. Without it, projects come from `~/.claude/projects` alone and are named after their directory.
 - `/proc` — the `●` running markers. Linux only; everything else works on macOS.
 - `~/.claude/ccsessions-frozen.json` — a yellow `*` on sessions pinned with [`ccsessions`](https://github.com/ponytail-dev/ccsessions).
+- `CCFZF_WINDOWS_FILE` — the `window` field in `--state`. Nobody writes it by default.
 
 ## How sessions map to projects
 
