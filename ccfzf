@@ -496,6 +496,14 @@ def proc_tty(pid):
     return target if target.startswith("/dev/") else ""
 
 
+def proc_cwd(pid):
+    """Рабочий каталог процесса, пустая строка — не прочитался."""
+    try:
+        return os.readlink("/proc/%s/cwd" % pid)
+    except OSError:
+        return ""
+
+
 def proc_tmux(pid):
     """`session:window.pane`, если процесс живёт внутри tmux, иначе None.
 
@@ -559,6 +567,59 @@ def hook_stamps(path=STATUS_DIR):
     return out
 
 
+def session_ids_in(cwd):
+    """id всех транскриптов, лежащих в каталоге проекта этого cwd."""
+    pattern = os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")
+    return [os.path.basename(p)[:-len(".jsonl")] for p in glob.glob(pattern)]
+
+
+def reattribute(live, procs, agents, stamps, now, ids_in=None, ttl=HOOK_LIVE_TTL):
+    """Процесс, сменивший id на ходу, переезжает на тот, что пишется сейчас.
+
+    argv называет id, с которого сессия начиналась (`--session-id`/`--resume`),
+    а Claude Code меняет id внутри живого процесса — и после этого argv
+    указывает на транскрипт, в который больше никто не пишет. Замерено
+    2026-08-06: `claude --resume 6c6931cf` сутки как писал 86d67681. Флаг live
+    стоял на мёртвом id, работающая сессия числилась мёртвой и пряталась из
+    пикера (`onlyLive`), хотя окно терминала принадлежало именно ей.
+
+    Кандидаты — соседи по каталогу проекта: id меняется внутри процесса, а cwd
+    нет. Побеждает тот, чей хук писал позже argv-сессии, и только если он писал
+    только что: отметка старше ttl значит «когда-то работала», а не «процесс
+    сейчас на ней».
+
+    Кандидат, уже занятый другим процессом, пропускается — иначе два процесса
+    в одном каталоге сошлись бы на одном id. По той же причине занятость
+    проверяется по текущему live: переезд, случившийся на предыдущем витке,
+    виден следующему.
+
+    Старый id из live убирается: процесс на нём не работает, а лишняя живая
+    строка в пикере — это ровно тот симптом, ради которого всё и затевалось.
+
+    Правит на месте и ничего не возвращает: у вызывающего это те же три
+    структуры, которые он потом отдаёт наружу.
+    """
+    ids_in = ids_in or session_ids_in
+    for sid in list(procs):
+        cwd = procs[sid].get("cwd") or ""
+        if not cwd:
+            continue
+        best, best_at = "", stamps.get(sid, 0)
+        for cand in ids_in(cwd):
+            if cand == sid or cand in live:
+                continue
+            at = stamps.get(cand, 0)
+            if at > best_at:
+                best, best_at = cand, at
+        if not best or now - best_at > ttl:
+            continue
+        live.discard(sid)
+        live.add(best)
+        procs[best] = procs.pop(sid)
+        if sid in agents:
+            agents[best] = agents.pop(sid)
+
+
 def running_sessions():
     """(ids running right now, {id: {kind, parent}}) from /proc.
 
@@ -605,16 +666,19 @@ def running_sessions():
         sid = sid or resumed_id
 
         if not sid:
-            try:
-                fresh.append(os.readlink("/proc/%s/cwd" % pid))
-            except OSError:
-                pass
+            cwd = proc_cwd(pid)
+            if cwd:
+                fresh.append(cwd)
             continue
 
         live.add(sid)
         # Чем сессия занята: без pid её нельзя ни перехватить, ни хотя бы
         # честно показать человеку, что открытие будет не тихим resume.
-        procs[sid] = {"pid": int(pid), "tty": proc_tty(pid), "tmux": proc_tmux(pid)}
+        # cwd — не диагностика: по нему reattribute() ищет соседей по каталогу
+        # проекта, когда id сессии сменился внутри процесса. Наружу поле не
+        # уходит — режим state перечисляет то, что отдаёт, поимённо.
+        procs[sid] = {"pid": int(pid), "tty": proc_tty(pid), "tmux": proc_tmux(pid),
+                      "cwd": proc_cwd(pid)}
         # A background agent is hosted by the daemon through a pty host; that
         # ancestry is the only honest mark of one. `--fork-session` alone is
         # not: it is a normal way to branch a session by hand.
