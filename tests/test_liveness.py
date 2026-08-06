@@ -1,4 +1,5 @@
 """Тесты живости сессий. Запуск: python3 tests/test_liveness.py"""
+import json
 import os
 import sys
 import tempfile
@@ -173,6 +174,95 @@ def test_hook_stamps_reads_both_of_two_state_files():
         os.utime(path_a, (1000, 1000))
         os.utime(path_b, (2000, 2000))
         assert CC["hook_stamps"](d) == {UUID_A: 1000, UUID_B: 2000}
+
+
+BOOT = "00000000-aaaa-bbbb-cccc-000000000000"
+
+
+def _meta(d, sid, pid, started, pid_started=777, boot=BOOT):
+    body = {"sessionId": sid, "pid": pid, "pidStarted": pid_started,
+            "started": started, "boot": boot}
+    with open(os.path.join(d, sid + ".meta.json"), "w") as fh:
+        json.dump(body, fh)
+
+
+def test_pid_owners_reads_the_pid_the_hook_wrote():
+    with tempfile.TemporaryDirectory() as d:
+        _meta(d, UUID_A, 42, 1000)
+        assert CC["pid_owners"](d, boot=BOOT) == {42: (UUID_A, 777)}
+
+
+def test_pid_owners_keeps_the_latest_id_of_one_process():
+    with tempfile.TemporaryDirectory() as d:
+        _meta(d, UUID_A, 42, 1000)
+        _meta(d, UUID_B, 42, 2000)
+        assert CC["pid_owners"](d, boot=BOOT) == {42: (UUID_B, 777)}
+
+
+def test_pid_owners_drops_records_from_another_boot():
+    with tempfile.TemporaryDirectory() as d:
+        _meta(d, UUID_A, 42, 1000, boot="ffffffff-dead-dead-dead-ffffffffffff")
+        assert CC["pid_owners"](d, boot=BOOT) == {}
+
+
+def test_pid_owners_ignores_files_the_old_hook_wrote():
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, UUID_A + ".meta.json"), "w") as fh:
+            json.dump({"sessionId": UUID_A, "cwd": "/p", "started": 1000}, fh)
+        assert CC["pid_owners"](d, boot=BOOT) == {}
+
+
+def test_pid_owners_survives_junk_and_a_missing_directory():
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, UUID_A + ".meta.json"), "w") as fh:
+            fh.write("{not json")
+        _meta(d, UUID_B, 42, 1000)
+        assert CC["pid_owners"](d, boot=BOOT) == {42: (UUID_B, 777)}
+    assert CC["pid_owners"]("/nonexistent-dir-for-tests", boot=BOOT) == {}
+
+
+def test_reattribute_by_pid_moves_the_process_to_the_id_the_hook_named():
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    moved, resolved = CC["reattribute_by_pid"](
+        live, procs, agents, {42: (UUID_B, 777)}, started_of=lambda pid: 777)
+    assert live == {UUID_B}, live
+    assert procs[UUID_B]["pid"] == 42, procs
+    assert moved == {UUID_A} and resolved == {UUID_B}, (moved, resolved)
+
+
+def test_reattribute_by_pid_leaves_a_process_already_on_its_own_id():
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    moved, resolved = CC["reattribute_by_pid"](
+        live, procs, agents, {42: (UUID_A, 777)}, started_of=lambda pid: 777)
+    assert live == {UUID_A} and moved == set(), (live, moved)
+    assert resolved == {UUID_A}, resolved
+
+
+def test_reattribute_by_pid_refuses_a_recycled_pid():
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    moved, resolved = CC["reattribute_by_pid"](
+        live, procs, agents, {42: (UUID_B, 777)}, started_of=lambda pid: 999)
+    assert live == {UUID_A}, live
+    assert procs[UUID_A]["pid"] == 42 and moved == set(), (procs, moved)
+
+
+def test_reattribute_by_pid_carries_the_background_mark_along():
+    live, procs = {UUID_A}, {UUID_A: _proc(42)}
+    agents = {UUID_A: {"kind": "background", "parent": "p"}}
+    CC["reattribute_by_pid"](live, procs, agents, {42: (UUID_B, 777)},
+                             started_of=lambda pid: 777)
+    assert agents == {UUID_B: {"kind": "background", "parent": "p"}}, agents
+
+
+def test_reattribute_leaves_alone_what_the_pid_pass_settled():
+    now = time.time()
+    live, procs, agents = {UUID_A}, {UUID_A: _proc(42)}, {}
+    stamps = {UUID_A: now - 86400, UUID_B: now - 30}
+    CC["reattribute"](live, procs, agents, stamps, now,
+                      ids_in=lambda cwd: [UUID_A, UUID_B],
+                      skip_procs={UUID_A})
+    assert live == {UUID_A}, live
+    assert procs[UUID_A]["pid"] == 42, procs
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
