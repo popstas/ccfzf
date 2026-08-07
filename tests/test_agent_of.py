@@ -104,6 +104,42 @@ def test_meta_all_keeps_directories_apart():
         assert CC["meta_all"](b) == {}
 
 
+def test_agent_of_does_not_let_the_statusline_move_last_activity():
+    # Сессия спит шесть часов, но её терминал открыт, и статуслайн по таймеру
+    # переписывает status.json каждые несколько секунд. `updated` обязан
+    # остаться тем, что в state.json: через max() у любой живой сессии
+    # «последняя активность» вечно оказывалась секундной давности.
+    idle = NOW - 6 * 3600
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "idle", "updated": idle})
+        _write(d, UUID_A, ".status.json",
+               {"costUsd": 3, "contextPct": 40, "updated": NOW})
+        got = _agent_of(d, UUID_A)
+        assert got["updated"] == idle, got["updated"]
+        # Деньги и проценты, наоборот, у статуслайна: он пишется чаще.
+        assert got["costUsd"] == 3, got["costUsd"]
+        assert got["contextPct"] == 40, got["contextPct"]
+
+
+def test_agent_of_falls_back_to_the_statusline_without_a_state_file():
+    # Старая сессия, поднятая до появления хука: других отметок времени нет.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".status.json", {"costUsd": 1, "updated": NOW})
+        assert _agent_of(d, UUID_A)["updated"] == NOW
+
+
+def test_agent_of_falls_back_to_the_statusline_on_a_spoiled_stamp():
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "idle", "updated": "nope"})
+        _write(d, UUID_A, ".status.json", {"updated": NOW})
+        assert _agent_of(d, UUID_A)["updated"] == NOW
+
+
+def test_agent_of_returns_nothing_when_the_hook_never_ran():
+    with tempfile.TemporaryDirectory() as d:
+        assert _agent_of(d, UUID_A) is None
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
