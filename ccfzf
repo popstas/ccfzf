@@ -27,7 +27,8 @@
 #   CCFZF_WINDOWS_FILE               optional file *written by* a window tracker
 #                                    elsewhere; --state uses it to say which
 #                                    session has a terminal window open and when
-#                                    its window was last looked at
+#                                    its window was last looked at, and both
+#                                    --state and --dump count such a session live
 #                                    (default ~/.ccfzf.sessions.claude-wt.json)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
@@ -49,7 +50,8 @@ PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 
 # Обратное направление: файл, который кладёт сюда оконный трекер с той машины,
 # где сессии показаны в терминалах. Из него --state узнаёт, у какой сессии
-# открыто окно. Файл необязательный — нет его, и ответ просто беднее на одно
+# открыто окно, а --state и --dump — какую сессию считать живой вопреки
+# транскрипту. Файл необязательный — нет его, и ответ просто беднее на одно
 # поле. Пустая строка выключает чтение вовсе.
 WINDOWS_FILE="${CCFZF_WINDOWS_FILE-$HOME/.ccfzf.sessions.claude-wt.json}"
 
@@ -1226,10 +1228,17 @@ elif mode == "dump":
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
     projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    windows_path = sys.argv[5] if len(sys.argv) > 5 else ""
     now = time.time()
 
     dirs = scan_dirs()
     live, agents, _ = running_sessions()
+    windows, _, _ = read_windows(windows_path, now)
+    # То же объединение, что в режиме `state`, и по той же причине — плюс одна
+    # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
+    # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
+    # окна в живые, и про кольцо с трекером, читать там.
+    live |= set(windows)
 
     if projects_path:
         write_json(projects_path, {
@@ -1369,7 +1378,7 @@ PYEOF
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE"
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE"
   exit 0
 fi
 
@@ -1411,7 +1420,7 @@ build_srows() {
 # the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" \
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" \
     >/dev/null 2>&1 &
 }
 
