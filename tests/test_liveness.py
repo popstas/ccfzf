@@ -313,6 +313,57 @@ def test_last_message_at_survives_junk_and_a_missing_file():
     assert CC["last_message_at"]("/nonexistent-file-for-tests.jsonl") == 0.0
 
 
+def test_fresh_ids_takes_the_newest_transcript_by_content():
+    # Файл со свежим mtime, но старым содержимым, проигрывает файлу, чьё
+    # содержимое новее. Сортировка идёт по содержимому, mtime не спрашивается.
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 60, "/p/" + UUID_B + ".jsonl": now - 600}
+    CC["fresh_ids"](["/p"], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A}, live
+
+
+def test_fresh_ids_gives_each_process_its_own_file():
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 60, "/p/" + UUID_B + ".jsonl": now - 600}
+    CC["fresh_ids"](["/p", "/p"], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A, UUID_B}, live
+
+
+def test_fresh_ids_drops_a_candidate_whose_content_is_stale():
+    # Тот самый случай 2026-08-08: mtime 26 минут, последнее сообщение неделю
+    # назад. По mtime сессия считалась живой, по содержимому — нет.
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 7 * 86400}
+    CC["fresh_ids"](["/p"], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == set(), live
+
+
+def test_fresh_ids_drops_a_file_with_no_stamped_record_at_all():
+    # last_message_at отдаёт 0 — «возраст неизвестен». Ноль старше любой
+    # отсечки, и такой файл живым не назначается.
+    now = time.time()
+    live = set()
+    CC["fresh_ids"](["/p"], live, now,
+                    files_in=lambda cwd: ["/p/" + UUID_A + ".jsonl"],
+                    age_of=lambda path: 0.0)
+    assert live == set(), live
+
+
+def test_fresh_ids_does_not_take_a_file_someone_already_owns():
+    now = time.time()
+    live = {UUID_A}
+    ages = {"/p/" + UUID_A + ".jsonl": now - 60, "/p/" + UUID_B + ".jsonl": now - 120}
+    CC["fresh_ids"](["/p"], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A, UUID_B}, live
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":

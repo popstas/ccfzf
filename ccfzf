@@ -159,6 +159,11 @@ STATE_DUMP_MAX_AGE = 30
 # этом жива.
 HOOK_LIVE_TTL = 120
 
+# Сколько может молчать транскрипт, чтобы процесс без имени сессии в argv всё
+# ещё считался его хозяином. Это не про возраст сессии, а про правдоподобие
+# догадки: свежий запуск пишет сейчас, а не сутки назад.
+FRESH_MAX_AGE = 2 * 3600
+
 DIM, GREEN, YELLOW, CYAN, RESET = "\033[2m", "\033[32m", "\033[33m", "\033[36m", "\033[0m"
 
 
@@ -884,6 +889,40 @@ def live_by_hook(live, stamps, now, skip=None, ttl=HOOK_LIVE_TTL):
             live.add(sid)
 
 
+def fresh_ids(cwds, live, now, files_in=None, age_of=None):
+    """K процессов в одном каталоге забирают K новейших транскриптов этого каталога.
+
+    Последняя и самая слабая из трёх догадок о том, какую сессию пишет процесс:
+    у него нет в argv ни `--session-id`, ни `--resume`, и опознать его нечем,
+    кроме рабочего каталога. Так выглядит обычный `claude` без аргументов — то
+    есть большинство.
+
+    Возраст кандидата берётся у содержимого (`last_message_at`), а не у mtime.
+    Причина — в самой last_message_at: mtime обновляют служебные записи, и по
+    нему неделю не открывавшийся файл выглядит получасовым. По той же причине
+    и сортировка идёт по содержимому: иначе «новейшим» оказался бы файл, чей
+    mtime переписали последним.
+
+    Швы `files_in` / `age_of` — для тестов, как `ids_in=` у reattribute:
+    настоящие /proc и ~/.claude/projects в тесте не подделать.
+    """
+    files_in = files_in or (lambda cwd: glob.glob(
+        os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")))
+    age_of = age_of or last_message_at
+    cutoff = now - FRESH_MAX_AGE
+    for cwd, k in Counter(cwds).items():
+        # Пара (возраст, путь), а не просто возраст: у двух файлов с одинаковым
+        # временем порядок иначе зависел бы от того, что вернул glob.
+        candidates = sorted(((age_of(f), f) for f in files_in(cwd)), reverse=True)
+        for age, f in candidates:
+            if k <= 0 or age < cutoff:
+                break
+            sid = os.path.basename(f)[:-6]
+            if sid not in live:
+                live.add(sid)
+                k -= 1
+
+
 def running_sessions():
     """(ids running right now, {id: {kind, parent}}) from /proc.
 
@@ -897,7 +936,8 @@ def running_sessions():
       agent under the session it forked from and hide it.
     - `--resume <uuid>` (or a path to one) pins the session exactly.
     - neither: a fresh start writes to the newest jsonl of its cwd directory,
-      so K processes in one cwd claim the K newest files there.
+      so K processes in one cwd claim the K newest files there. Newest by
+      content, not by mtime — see fresh_ids.
     """
     live, fresh, agents, procs = set(), [], {}, {}
     try:
@@ -954,17 +994,7 @@ def running_sessions():
             agents[sid] = {"kind": "background", "parent": parent}
 
     now = time.time()
-    cutoff = now - 2 * 3600  # a fresh start writes now, not a day ago
-    for cwd, k in Counter(fresh).items():
-        files = sorted(glob.glob(os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")),
-                       key=os.path.getmtime, reverse=True)
-        for f in files:
-            if k <= 0 or os.path.getmtime(f) < cutoff:
-                break
-            sid = os.path.basename(f)[:-6]
-            if sid not in live:
-                live.add(sid)
-                k -= 1
+    fresh_ids(fresh, live, now)
 
     # Порядок важен. Переезд идёт первым: ему нужно знать, кто занят на самом
     # деле, а live_by_hook раздаёт живость сессиям без процесса и тем самым
