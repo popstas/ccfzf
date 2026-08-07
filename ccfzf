@@ -120,7 +120,7 @@ Nothing here reads a history in full: cwd sits in the first jsonl line, the
 title (custom-title/ai-title) and the latest activity sit in the tail, and the
 first prompt is looked up from the start of the file under a size cap.
 """
-import glob, json, os, re, subprocess, sys, time
+import datetime, glob, json, os, re, subprocess, sys, time
 from collections import Counter
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
@@ -463,6 +463,46 @@ def tail_facts(path):
             return title, doing
     except OSError:
         return "", ""
+
+
+def last_message_at(path):
+    """Когда в транскрипте последний раз появилась запись с временем.
+
+    mtime для этого не годится, и это не мелочь. В хвосте живого файла лежат
+    служебные записи без `timestamp` — last-prompt, custom-title, mode,
+    pr-link, — и Claude Code переписывает их спустя дни после последнего
+    разговора. Замерено 2026-08-08: два файла выглядели на 26 и 44 минуты при
+    содержимом трёх- и семидневной давности, и обе сессии числились живыми.
+
+    Читается тот же хвост, что у tail_facts, и по той же причине: полный проход
+    по истории в сотни мегабайт стоил бы дороже всего списка. Хвост без единой
+    записи с временем даёт 0 — «возраст неизвестен», и вызывающий обязан
+    считать такой файл непригодным, а не свежим.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - TAIL))
+            lines = fh.read().split(b"\n")
+    except OSError:
+        return 0.0
+    for raw in reversed(lines):
+        try:
+            o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
+        except Exception:
+            continue
+        ts = o.get("timestamp") if isinstance(o, dict) else None
+        if not isinstance(ts, str):
+            continue
+        try:
+            # `Z` разбирает и сам fromisoformat начиная с 3.11, но замена
+            # оставляет функцию годной и на более старом питоне: агрегатор
+            # запускается на чужой машине через ssh, и версию там никто не
+            # выбирал.
+            return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+    return 0.0
 
 
 UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"

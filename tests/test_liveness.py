@@ -265,6 +265,54 @@ def test_reattribute_leaves_alone_what_the_pid_pass_settled():
     assert procs[UUID_A]["pid"] == 42, procs
 
 
+def _jsonl(d, name, records):
+    path = os.path.join(d, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    return path
+
+
+def test_last_message_at_reads_the_newest_stamped_record():
+    with tempfile.TemporaryDirectory() as d:
+        path = _jsonl(d, "a.jsonl", [
+            {"type": "user", "timestamp": "2026-08-05T19:00:00.000Z"},
+            {"type": "assistant", "timestamp": "2026-08-05T19:51:00.000Z"},
+        ])
+        assert CC["last_message_at"](path) == 1785959460.0, CC["last_message_at"](path)
+
+
+def test_last_message_at_ignores_service_records_without_a_stamp():
+    # Ровно тот случай, ради которого функция и появилась: в хвосте живого
+    # файла лежат last-prompt / custom-title / mode, у них времени нет, а
+    # mtime Claude Code им обновляет спустя дни после разговора.
+    with tempfile.TemporaryDirectory() as d:
+        path = _jsonl(d, "a.jsonl", [
+            {"type": "assistant", "timestamp": "2026-08-01T20:11:00.000Z"},
+            {"type": "last-prompt", "lastPrompt": "..."},
+            {"type": "custom-title", "customTitle": "obsidian"},
+            {"type": "mode", "mode": "default"},
+        ])
+        assert CC["last_message_at"](path) == 1785615060.0, CC["last_message_at"](path)
+
+
+def test_last_message_at_gives_zero_when_nothing_is_stamped():
+    with tempfile.TemporaryDirectory() as d:
+        path = _jsonl(d, "a.jsonl", [{"type": "mode", "mode": "default"}])
+        assert CC["last_message_at"](path) == 0.0
+
+
+def test_last_message_at_survives_junk_and_a_missing_file():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "a.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{not json\n")
+            fh.write(json.dumps({"type": "user", "timestamp": "не время"}) + "\n")
+            fh.write(json.dumps({"type": "user", "timestamp": 123}) + "\n")
+        assert CC["last_message_at"](path) == 0.0
+    assert CC["last_message_at"]("/nonexistent-file-for-tests.jsonl") == 0.0
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":
