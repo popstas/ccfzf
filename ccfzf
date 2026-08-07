@@ -483,31 +483,48 @@ def last_message_at(path):
     по истории в сотни мегабайт стоил бы дороже всего списка. Хвост без единой
     записи с временем даёт 0 — «возраст неизвестен», и вызывающий обязан
     считать такой файл непригодным, а не свежим.
+
+    Читается он до двух раз. Одна запись бывает длиннее всего хвоста — вставили
+    картинку, выдали наружу большой grep, — и тогда в срез не попадает ни одной
+    целой строки: разбирать нечего, ответ нулевой, а сессия в этот момент
+    работает. Второй заход берёт окно кратно шире и такую запись захватывает
+    целиком. Он случается только там, где первый уже ничего не нашёл, — то есть
+    у единиц файлов, а не у двух сотен, и на горячий путь --state не выходит.
     """
+    def scan(window):
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(max(0, size - window))
+                lines = fh.read().split(b"\n")
+        except OSError:
+            return 0.0
+        for raw in reversed(lines):
+            try:
+                o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
+            except ValueError:
+                continue
+            ts = o.get("timestamp") if isinstance(o, dict) else None
+            if not isinstance(ts, str):
+                continue
+            try:
+                # `Z` разбирает и сам fromisoformat начиная с 3.11, но замена
+                # оставляет функцию годной и на более старом питоне: агрегатор
+                # запускается на чужой машине через ssh, и версию там никто не
+                # выбирал.
+                return datetime.datetime.fromisoformat(
+                    ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+        return 0.0
+
     try:
         size = os.path.getsize(path)
-        with open(path, "rb") as fh:
-            fh.seek(max(0, size - TAIL))
-            lines = fh.read().split(b"\n")
     except OSError:
         return 0.0
-    for raw in reversed(lines):
-        try:
-            o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
-        except Exception:
-            continue
-        ts = o.get("timestamp") if isinstance(o, dict) else None
-        if not isinstance(ts, str):
-            continue
-        try:
-            # `Z` разбирает и сам fromisoformat начиная с 3.11, но замена
-            # оставляет функцию годной и на более старом питоне: агрегатор
-            # запускается на чужой машине через ssh, и версию там никто не
-            # выбирал.
-            return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            continue
-    return 0.0
+    at = scan(TAIL)
+    if at or size <= TAIL:
+        return at
+    return scan(TAIL * 8)
 
 
 UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
