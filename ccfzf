@@ -374,15 +374,17 @@ def agent_of(sid):
 
 
 def read_windows(path, now):
-    """Файл оконного трекера: у какой сессии открыто окно, и на чьей машине.
+    """Файл оконного трекера: у какой сессии открыто окно, на чьей машине и
+    какие раскладки он помнит.
 
     Файл необязательный и приезжает с другой машины, поэтому не доверяется
     ничему в нём. Нет файла, не разбирается json, нет ожидаемых ключей, отметка
     старше WINDOWS_TTL — возвращается пустота, и ни ошибки, ни строчки в stderr.
     Список сессий обязан пережить любой мусор в добавке: порченый файл должен
-    стоить пометки, а не списка.
+    стоить пометки, а не списка. Со снимками то же правило: кривая запись стоит
+    себя, порченое поле — только поля.
     """
-    empty = ({}, "", 0)
+    empty = ({}, "", 0, [])
     if not path:
         return empty
     try:
@@ -417,7 +419,31 @@ def read_windows(path, now):
         }
     host = o.get("host") if isinstance(o.get("host"), str) else ""
     pid = int(num(o.get("pid")))
-    return out, host, pid
+
+    snaps = []
+    raw_snaps = o.get("snapshots")
+    if isinstance(raw_snaps, list):
+        for s in raw_snaps:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("id")
+            if not isinstance(sid, str) or not sid:
+                continue
+            sessions = []
+            for m in s.get("sessions") if isinstance(s.get("sessions"), list) else []:
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("id")
+                if not isinstance(mid, str) or not mid:
+                    continue
+                sessions.append({
+                    "id": mid,
+                    "title": m.get("title") if isinstance(m.get("title"), str) else "",
+                    "cwd": m.get("cwd") if isinstance(m.get("cwd"), str) else "",
+                })
+            snaps.append({"id": sid, "created": num(s.get("created")), "sessions": sessions})
+
+    return out, host, pid, snaps
 
 
 def usage_text(sid):
@@ -1233,7 +1259,7 @@ elif mode == "dump":
 
     dirs = scan_dirs()
     live, agents, _ = running_sessions()
-    windows, _, _ = read_windows(windows_path, now)
+    windows, _, _, _ = read_windows(windows_path, now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
     # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
@@ -1304,7 +1330,7 @@ elif mode == "state":
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
     # машине. Их владелец кладёт файл рядом, и дальше это просто ещё одно поле.
-    windows, window_host, window_pid = read_windows(
+    windows, window_host, window_pid, window_snapshots = read_windows(
         sys.argv[3] if len(sys.argv) > 3 else "", now)
     # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
     # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но
@@ -1391,7 +1417,10 @@ elif mode == "state":
                "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
                              "sessions": r["n"], "live": r["live"], "mtime": r["mtime"]}
                             for r in project_rows(dirs, live, marks)],
-               "windowHost": window_host, "windowPid": window_pid},
+               "windowHost": window_host, "windowPid": window_pid,
+               # Раскладки, которые помнит трекер. Оттуда же, откуда окна:
+               # здесь видны процессы, а окна — на другой машине.
+               "snapshots": window_snapshots},
               sys.stdout, ensure_ascii=False)
 PYEOF
 
