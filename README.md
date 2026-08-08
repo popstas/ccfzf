@@ -129,7 +129,7 @@ Picked commands run in an interactive shell (`$SHELL -ic 'cd <dir> && <cmd>'`), 
 | `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
 | `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | dump of the 200 newest sessions across all projects; empty turns it off |
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
-| `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state`; empty turns it off |
+| `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
@@ -169,11 +169,15 @@ Every run also writes down what it saw, so whatever else you script around Claud
 
 ### Откуда берётся `live`
 
-Четыре довода, в порядке применения:
+Пять доводов, в порядке применения:
 
 1. **argv процесса** — `--session-id <uuid>` или `--resume <uuid>` называет
    сессию прямо. Процесс без обоих флагов забирает себе новейший транскрипт
-   своего каталога.
+   своего каталога — новейший **по содержимому**, а не по mtime: возраст берётся
+   у последней записи с `timestamp`, потому что mtime обновляют служебные записи
+   спустя дни после разговора. Транскрипты старше двух часов кандидатами не
+   считаются вовсе, и `K` процессов в одном каталоге разбирают `K` новейших
+   файлов.
 2. **pid из хука.** Claude Code умеет сменить id внутри живого процесса
    (`/clear`, сжатие), и argv после этого указывает на транскрипт, в который
    больше не пишут. Смена — это тот же SessionStart, поэтому хук пишет
@@ -189,9 +193,14 @@ Every run also writes down what it saw, so whatever else you script around Claud
    доводом, не касается.
 4. **Отметка хука.** Сессия, чей `~/.claude/claude-wt/<id>.state.json` обновлён
    за последние две минуты, жива и без процесса, который бы её назвал.
+5. **Открытое окно.** Сессия, названная в `CCFZF_WINDOWS_FILE`, жива, что бы ни
+   говорил её транскрипт: окно на экране — наблюдение, а не догадка, и двухчасовая
+   отсечка первого довода ему не указ. Довод действует только в `--state` и
+   `--dump`; в режимах `projects`, `sessions` и в интерактивном списке файл окон
+   не читается, и `●` там ставится по первым четырём доводам.
 
-Четвёртый довод только добавляет. Сессия, ждущая ответа человека, хуков не шлёт
-и опознаётся первым доводом — по живому процессу.
+Четвёртый и пятый доводы только добавляют. Сессия, ждущая ответа человека, хуков
+не шлёт и опознаётся первым доводом — по живому процессу.
 
 `CCFZF_PROJECTS_FILE` — the project list, in the order the first picker shows it:
 
@@ -209,7 +218,11 @@ Both files are written through a temporary file and renamed into place, so a rea
 
 ## The one file that comes the other way
 
-`ccfzf --state` prints the whole answer as JSON on stdout and writes nothing, for a reader on another machine. Everything in it is derived here — except one thing, which cannot be: whether a session has a terminal **window** open. This side sees processes, not windows, and on a remote setup the windows are not even on this machine.
+`ccfzf --state` prints the whole answer as JSON on stdout, for a reader on another machine: `generated`, `sessions`, `projects`, `windowHost` and `windowPid`. The sessions are the same 200 as in the dump, each with `pid`, `tty`, `tmux`, `agent` and `window` on top of the dumped fields. `projects` is the list the first picker shows, minus the colouring — `{path, name, mark, sessions, live, mtime}`, no `age`, because a reader that formats the age itself would otherwise carry two answers that drift apart. A marked project nobody has ever opened has no transcripts to date it, so its `mtime` is `0` — and those are precisely the rows the reader needs the list for.
+
+The one file it writes is the sessions dump, and only when that has gone stale (30 s) — the picker that used to keep it fresh is the one that now calls `--state`.
+
+Everything in the answer is derived here — except one thing, which cannot be: whether a session has a terminal **window** open. This side sees processes, not windows, and on a remote setup the windows are not even on this machine.
 
 So `CCFZF_WINDOWS_FILE` is read rather than written. Whoever tracks the windows drops it next to the dumps:
 
@@ -239,7 +252,7 @@ Optional, degrades quietly when absent:
 - `~/.fzf-marks` — gives `★`, human names, and rolls up sessions started in a project's subdirectories. Without it, projects come from `~/.claude/projects` alone and are named after their directory.
 - `/proc` — the `●` running markers. Linux only; everything else works on macOS.
 - `~/.claude/ccsessions-frozen.json` — a yellow `*` on sessions pinned with [`ccsessions`](https://github.com/ponytail-dev/ccsessions).
-- `CCFZF_WINDOWS_FILE` — the `window` field in `--state`. Nobody writes it by default.
+- `CCFZF_WINDOWS_FILE` — the `window` field in `--state`, and the fifth `live` argument in `--state` and `--dump`. Nobody writes it by default.
 
 ## How sessions map to projects
 

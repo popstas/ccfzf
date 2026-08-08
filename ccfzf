@@ -26,7 +26,9 @@
 #                                    (default ~/.ccfzf.projects.json, empty — off)
 #   CCFZF_WINDOWS_FILE               optional file *written by* a window tracker
 #                                    elsewhere; --state uses it to say which
-#                                    session has a terminal window open
+#                                    session has a terminal window open and when
+#                                    its window was last looked at, and both
+#                                    --state and --dump count such a session live
 #                                    (default ~/.ccfzf.sessions.claude-wt.json)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
@@ -48,7 +50,8 @@ PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 
 # Обратное направление: файл, который кладёт сюда оконный трекер с той машины,
 # где сессии показаны в терминалах. Из него --state узнаёт, у какой сессии
-# открыто окно. Файл необязательный — нет его, и ответ просто беднее на одно
+# открыто окно, а --state и --dump — какую сессию считать живой вопреки
+# транскрипту. Файл необязательный — нет его, и ответ просто беднее на одно
 # поле. Пустая строка выключает чтение вовсе.
 WINDOWS_FILE="${CCFZF_WINDOWS_FILE-$HOME/.ccfzf.sessions.claude-wt.json}"
 
@@ -119,7 +122,7 @@ Nothing here reads a history in full: cwd sits in the first jsonl line, the
 title (custom-title/ai-title) and the latest activity sit in the tail, and the
 first prompt is looked up from the start of the file under a size cap.
 """
-import glob, json, os, re, subprocess, sys, time
+import datetime, glob, json, os, re, subprocess, sys, time
 from collections import Counter
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
@@ -157,6 +160,11 @@ STATE_DUMP_MAX_AGE = 30
 # не доказывает — сессия, ждущая ответа человека, не шлёт хуков часами и при
 # этом жива.
 HOOK_LIVE_TTL = 120
+
+# Сколько может молчать транскрипт, чтобы процесс без имени сессии в argv всё
+# ещё считался его хозяином. Это не про возраст сессии, а про правдоподобие
+# догадки: свежий запуск пишет сейчас, а не сутки назад.
+FRESH_MAX_AGE = 2 * 3600
 
 DIM, GREEN, YELLOW, CYAN, RESET = "\033[2m", "\033[32m", "\033[33m", "\033[36m", "\033[0m"
 
@@ -302,12 +310,17 @@ def usage_of(sid):
 
 
 def agent_of(sid):
-    """Склеенные <id>.state.json и <id>.status.json, или None.
+    """Склеенные <id>.state.json, <id>.status.json и <id>.meta.json, или None.
 
     Склейка живёт здесь, а не у читателя: файлы локальные, а читатель —
     на другой машине через ssh. Деньги и проценты из статуслайна перекрывают
     те, что хук успел положить в state.json: status.json пишется чаще. На время
     это правило не распространяется — см. `updated` ниже.
+
+    meta берётся после проверки на пустоту, и это не про экономию — читает её
+    всё равно общий проход meta_all. Это про смысл: одна отметка старта записи
+    агента не создаёт. «Запись есть» значит «хук хоть раз сработал», и по
+    наличию записи читатель решает, есть ли о сессии что сказать.
     """
     def load(suffix):
         try:
@@ -321,13 +334,23 @@ def agent_of(sid):
     status = load(".status.json")
     if not state and not status:
         return None
+    meta = meta_all(STATUS_DIR).get(sid) or {}
 
     out = {
         "state": state.get("state", ""),
         "event": state.get("event", ""),
+        # Уведомление агента. Непусто только на attention — на запросе
+        # разрешения это единственное, что о сессии известно: текста самого
+        # вопроса там нет нигде. В остальное время пустая строка, и это ответ,
+        # а не потеря.
+        "message": state.get("message", ""),
         "summary": state.get("summary", ""),
         "lastSummary": state.get("lastSummary", ""),
         "prompt": state.get("prompt", ""),
+        # Вопрос, на котором сессия стоит прямо сейчас. Живёт только пока вызов
+        # AskUserQuestion не закрыт. Показывать его или нет, решает читатель по
+        # состоянию: у запроса разрешения состояние такое же, а текста нет.
+        "question": state.get("question", ""),
         "branch": state.get("branch", ""),
         "pr_url": state.get("pr_url", ""),
         "costUsd": num(status.get("costUsd", state.get("costUsd", 0))),
@@ -340,6 +363,12 @@ def agent_of(sid):
         # только тогда, когда state.json нет вовсе, — у старых сессий, поднятых
         # до появления хука, других отметок времени не осталось.
         "updated": num(state.get("updated")) or num(status.get("updated")),
+        # Начало текущего хода. Тоже только из state.json, и по той же причине:
+        # своего понятия о ходе у статуслайна нет вовсе.
+        "turnAt": num(state.get("turnAt")),
+        # Старт сессии в текущем виде: meta.json хук переписывает на каждом
+        # SessionStart, а /clear, resume и сжатие — тоже старт.
+        "started": num(meta.get("started")),
     }
     return out
 
@@ -379,6 +408,12 @@ def read_windows(path, now):
             "title": w.get("title") if isinstance(w.get("title"), str) else "",
             "desktop": desktop if ok_desktop else None,
             "lastSeen": num(w.get("lastSeen")),
+            # Когда на окно этой сессии в последний раз перевели взгляд. Ни
+            # здесь, ни у читателя такого знания нет: окна видит только трекер,
+            # а читатель по этой отметке гасит зов «посмотри результат». Мусор и
+            # отсутствие поля дают ноль — «не смотрели», — и пометки об окне не
+            # стоят: она дороже.
+            "focusedAt": num(w.get("focusedAt")),
         }
     host = o.get("host") if isinstance(o.get("host"), str) else ""
     pid = int(num(o.get("pid")))
@@ -435,6 +470,63 @@ def tail_facts(path):
             return title, doing
     except OSError:
         return "", ""
+
+
+def last_message_at(path):
+    """Когда в транскрипте последний раз появилась запись с временем.
+
+    mtime для этого не годится, и это не мелочь. В хвосте живого файла лежат
+    служебные записи без `timestamp` — last-prompt, custom-title, mode,
+    pr-link, — и Claude Code переписывает их спустя дни после последнего
+    разговора. Замерено 2026-08-08: два файла выглядели на 26 и 44 минуты при
+    содержимом трёх- и семидневной давности, и обе сессии числились живыми.
+
+    Читается тот же хвост, что у tail_facts, и по той же причине: полный проход
+    по истории в сотни мегабайт стоил бы дороже всего списка. Хвост без единой
+    записи с временем даёт 0 — «возраст неизвестен», и вызывающий обязан
+    считать такой файл непригодным, а не свежим.
+
+    Читается он до двух раз. Одна запись бывает длиннее всего хвоста — вставили
+    картинку, выдали наружу большой grep, — и тогда в срез не попадает ни одной
+    целой строки: разбирать нечего, ответ нулевой, а сессия в этот момент
+    работает. Второй заход берёт окно кратно шире и такую запись захватывает
+    целиком. Он случается только там, где первый уже ничего не нашёл, — то есть
+    у единиц файлов, а не у двух сотен, и на горячий путь --state не выходит.
+    """
+    def scan(window):
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(max(0, size - window))
+                lines = fh.read().split(b"\n")
+        except OSError:
+            return 0.0
+        for raw in reversed(lines):
+            try:
+                o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
+            except ValueError:
+                continue
+            ts = o.get("timestamp") if isinstance(o, dict) else None
+            if not isinstance(ts, str):
+                continue
+            try:
+                # `Z` разбирает и сам fromisoformat начиная с 3.11, но замена
+                # оставляет функцию годной и на более старом питоне: агрегатор
+                # запускается на чужой машине через ssh, и версию там никто не
+                # выбирал.
+                return datetime.datetime.fromisoformat(
+                    ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+        return 0.0
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 0.0
+    at = scan(TAIL)
+    if at or size <= TAIL:
+        return at
+    return scan(TAIL * 8)
 
 
 UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -598,6 +690,50 @@ def boot_id():
         return ""
 
 
+# Прочитанные <id>.meta.json, по каталогу. Читателей у них два — pid_owners
+# (кто чем занят на самом деле) и старт сессии в --state, — а проход нужен
+# один: файлов под сотню, а --state зовут раз в секунду, пока пикер на экране.
+#
+# Память на весь срок процесса, потому что процесс живёт ровно один тик: ccfzf
+# — одноразовая команда, а не демон. Это и делает её «одним проходом», а не
+# кэшем, которому нужен срок годности.
+_METAS = {}
+
+
+def meta_all(path):
+    """{id сессии: содержимое <id>.meta.json} — один проход по каталогу.
+
+    Ключ памяти — каталог, а не «уже читали»: тесты зовут читателей на разных
+    временных каталогах внутри одного процесса, и общая память склеила бы их
+    ответы, а проверки стали бы проверять её саму.
+
+    Разбор здесь же, а не у читателя: испорченный файл и файл с чужим именем
+    отбрасываются молча один раз, а не в каждом читателе по-своему.
+    """
+    if path in _METAS:
+        return _METAS[path]
+    tail = ".meta.json"
+    out = {}
+    try:
+        with os.scandir(path) as it:
+            names = [e.name for e in it if e.name.endswith(tail)]
+    except OSError:
+        names = []
+    for name in names:
+        sid = name[:-len(tail)]
+        if not UUID_RE.match(sid):
+            continue
+        try:
+            with open(os.path.join(path, name), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict):
+            out[sid] = meta
+    _METAS[path] = out
+    return out
+
+
 def pid_owners(path=STATUS_DIR, boot=None):
     """{pid: (id сессии, момент запуска процесса)} — кто чем занят на самом деле.
 
@@ -615,32 +751,20 @@ def pid_owners(path=STATUS_DIR, boot=None):
     занявшим тот же номер в ту же секунду после загрузки. Записи без pid — это
     файлы, написанные хуком старой версии; они просто не участвуют.
 
-    Цена: открыть все meta разом. Замерено 2026-08-06 — 1.9 мс на 69 файлов
+    Файлы читает meta_all — проход по каталогу общий с --state, потому что
+    открыть их все нужно и там. Замерено 2026-08-06 — 1.9 мс на 69 файлов
     вчетверо большего размера, при опросе раз в секунду это ничего не стоит.
     """
     boot = boot_id() if boot is None else boot
-    tail = ".meta.json"
     best = {}
-    try:
-        with os.scandir(path) as it:
-            names = [e.name for e in it if e.name.endswith(tail)]
-    except OSError:
-        return {}
-    for name in names:
-        if not UUID_RE.match(name[:-len(tail)]):
-            continue
-        try:
-            with open(os.path.join(path, name)) as fh:
-                meta = json.load(fh)
-        except (OSError, ValueError):
-            continue
+    for sid, meta in meta_all(path).items():
         pid = meta.get("pid") or 0
         if not pid or not meta.get("boot") or meta["boot"] != boot:
             continue
         started = meta.get("started") or 0
         if pid in best and best[pid][0] >= started:
             continue
-        best[pid] = (started, name[:-len(tail)], meta.get("pidStarted") or 0)
+        best[pid] = (started, sid, meta.get("pidStarted") or 0)
     return {pid: (sid, tick) for pid, (_, sid, tick) in best.items()}
 
 
@@ -784,6 +908,40 @@ def live_by_hook(live, stamps, now, skip=None, ttl=HOOK_LIVE_TTL):
             live.add(sid)
 
 
+def fresh_ids(cwds, live, now, files_in=None, age_of=None):
+    """K процессов в одном каталоге забирают K новейших транскриптов этого каталога.
+
+    Последняя и самая слабая из трёх догадок о том, какую сессию пишет процесс:
+    у него нет в argv ни `--session-id`, ни `--resume`, и опознать его нечем,
+    кроме рабочего каталога. Так выглядит обычный `claude` без аргументов — то
+    есть большинство.
+
+    Возраст кандидата берётся у содержимого (`last_message_at`), а не у mtime.
+    Причина — в самой last_message_at: mtime обновляют служебные записи, и по
+    нему неделю не открывавшийся файл выглядит получасовым. По той же причине
+    и сортировка идёт по содержимому: иначе «новейшим» оказался бы файл, чей
+    mtime переписали последним.
+
+    Швы `files_in` / `age_of` — для тестов, как `ids_in=` у reattribute:
+    настоящие /proc и ~/.claude/projects в тесте не подделать.
+    """
+    files_in = files_in or (lambda cwd: glob.glob(
+        os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")))
+    age_of = age_of or last_message_at
+    cutoff = now - FRESH_MAX_AGE
+    for cwd, k in Counter(cwds).items():
+        # Пара (возраст, путь), а не просто возраст: у двух файлов с одинаковым
+        # временем порядок иначе зависел бы от того, что вернул glob.
+        candidates = sorted(((age_of(f), f) for f in files_in(cwd)), reverse=True)
+        for age, f in candidates:
+            if k <= 0 or age < cutoff:
+                break
+            sid = os.path.basename(f)[:-6]
+            if sid not in live:
+                live.add(sid)
+                k -= 1
+
+
 def running_sessions():
     """(ids running right now, {id: {kind, parent}}) from /proc.
 
@@ -797,7 +955,8 @@ def running_sessions():
       agent under the session it forked from and hide it.
     - `--resume <uuid>` (or a path to one) pins the session exactly.
     - neither: a fresh start writes to the newest jsonl of its cwd directory,
-      so K processes in one cwd claim the K newest files there.
+      so K processes in one cwd claim the K newest files there. Newest by
+      content, not by mtime — see fresh_ids.
     """
     live, fresh, agents, procs = set(), [], {}, {}
     try:
@@ -854,17 +1013,7 @@ def running_sessions():
             agents[sid] = {"kind": "background", "parent": parent}
 
     now = time.time()
-    cutoff = now - 2 * 3600  # a fresh start writes now, not a day ago
-    for cwd, k in Counter(fresh).items():
-        files = sorted(glob.glob(os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")),
-                       key=os.path.getmtime, reverse=True)
-        for f in files:
-            if k <= 0 or os.path.getmtime(f) < cutoff:
-                break
-            sid = os.path.basename(f)[:-6]
-            if sid not in live:
-                live.add(sid)
-                k -= 1
+    fresh_ids(fresh, live, now)
 
     # Порядок важен. Переезд идёт первым: ему нужно знать, кто занят на самом
     # деле, а live_by_hook раздаёт живость сессиям без процесса и тем самым
@@ -1079,10 +1228,17 @@ elif mode == "dump":
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
     projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    windows_path = sys.argv[5] if len(sys.argv) > 5 else ""
     now = time.time()
 
     dirs = scan_dirs()
     live, agents, _ = running_sessions()
+    windows, _, _ = read_windows(windows_path, now)
+    # То же объединение, что в режиме `state`, и по той же причине — плюс одна
+    # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
+    # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
+    # окна в живые, и про кольцо с трекером, читать там.
+    live |= set(windows)
 
     if projects_path:
         write_json(projects_path, {
@@ -1150,6 +1306,28 @@ elif mode == "state":
     # машине. Их владелец кладёт файл рядом, и дальше это просто ещё одно поле.
     windows, window_host, window_pid = read_windows(
         sys.argv[3] if len(sys.argv) > 3 else "", now)
+    # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
+    # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но
+    # чей терминал открыт на экране, жива. Протухший файл трекера read_windows
+    # уже отбросил сама (WINDOWS_TTL), так что умерший демон никого не оживит
+    # навечно; а на машине без трекера windows пуст, и здесь ничего не меняется.
+    #
+    # Два следствия, которых отсюда не видно, потому что вторая их половина
+    # лежит в соседнем репозитории.
+    #
+    # Первое — обратная связь. Трекер (windows11-manager, compareSessions) при
+    # двух окнах с одинаковым заголовком выбирает кандидата в том числе по
+    # `live`, а `live` теперь отчасти приходит из его же файла. Промахнувшись
+    # раз, он подтверждает промах сам себе, и тот перестаёт рассасываться.
+    # Спасает то, что активность хука в том сравнении весит больше `live`, —
+    # но это смягчение, а не развязка.
+    #
+    # Второе — reattribute. Она снимает id, который сессия сменила на ходу
+    # (`live.discard`), а объединение вернёт его обратно, пока трекер держит
+    # старую привязку: его вид дампа отстаёт секунд на тридцать. Расхождение
+    # проходит само, но оно ровно того рода, против которого reattribute и
+    # заведена.
+    live |= set(windows)
 
     files = []
     for entry in dirs:
@@ -1197,7 +1375,22 @@ elif mode == "state":
     # читателю, стоит ли вообще поднимать окно: на чужом экране это бессмысленно.
     # Второе нужно, чтобы выдать тому процессу право на передний план — Windows
     # отдаёт его только владельцу или тому, кто получил последнее событие ввода.
+    # Проекты — то же, что видит режим `projects`, только без раскраски. Читателю
+    # они нужны, чтобы начать новую сессию там, где сессий ещё не было: по cwd
+    # приехавших сессий такой проект не восстановить, он приходит из marks.
+    #
+    # Даром: dirs и live уже собраны выше, project_rows — арифметика над ними.
+    # `age` не отдаётся намеренно: возраст в строке считает читатель, и вторая
+    # его форма разошлась бы с колонкой при первом же расхождении форматов.
+    # Считая его, про ноль в `mtime` надо помнить: у проекта, который есть в
+    # marks, но сессий в нём не было, датировать нечем — на этой машине таких
+    # 6 из 46, и они-то и есть причина отдавать список проектов отдельно.
+    # Формат «сколько назад» по нулю нарисует 1970 год. Режим `dump` этот же
+    # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
     json.dump({"generated": now, "sessions": sessions,
+               "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
+                             "sessions": r["n"], "live": r["live"], "mtime": r["mtime"]}
+                            for r in project_rows(dirs, live, marks)],
                "windowHost": window_host, "windowPid": window_pid},
               sys.stdout, ensure_ascii=False)
 PYEOF
@@ -1206,7 +1399,7 @@ PYEOF
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE"
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE"
   exit 0
 fi
 
@@ -1248,7 +1441,7 @@ build_srows() {
 # the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" \
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" \
     >/dev/null 2>&1 &
 }
 
