@@ -112,6 +112,49 @@ def test_snapshot_entries_are_checked_one_by_one():
     assert [s["id"] for s in snaps] == ["snap-1"], snaps
 
 
+def test_sessions_inside_a_snapshot_are_checked_one_by_one():
+    # Второй уровень отбраковки: снимок годен, а часть его сессий — нет.
+    # Внешний уровень такую запись не увидит вовсе, и без этого теста
+    # внутренний держался бы только на чтении глазами. Терять весь снимок из-за
+    # одной кривой сессии — та же обида, что терять весь список из-за снимка.
+    _, _, _, snaps = _read(_payload(
+        {"title": "ccfzf", "desktop": 2, "lastSeen": NOW - 5, "focusedAt": 0},
+        [{"id": "snap-junk", "created": NOW - 3600, "sessions": [
+            {"id": UUID_A, "title": "ccfzf", "cwd": "/home/user/projects/js/ccfzf-picker"},
+            {"id": 42},          # id не строка
+            {"id": ""},          # id пустой — по такому окно не найти
+            {"title": "нет id"},  # id вовсе нет
+            "строка",            # запись не словарь
+            {"id": UUID_B, "title": "второй", "cwd": "/home/user/projects/shell/ccfzf"},
+        ]},
+         SNAP]))
+    # Соседний снимок цел, порядок сохранён.
+    assert [s["id"] for s in snaps] == ["snap-junk", "snap-1"], snaps
+    assert [m["id"] for m in snaps[0]["sessions"]] == [UUID_A, UUID_B], snaps[0]
+    assert snaps[1]["sessions"][0]["id"] == UUID_A, snaps[1]
+
+
+def test_junk_fields_of_a_snapshot_session_cost_only_themselves():
+    # Правило «порченое поле стоит поля, а не записи» действует и на самом
+    # нижнем уровне: сессию находят по id, и ради кривого title её терять не за
+    # что. Пустая строка на месте мусора избавляет читателя от проверки типа.
+    _, _, _, snaps = _read(_payload(
+        {"title": "ccfzf", "desktop": 2, "lastSeen": NOW - 5, "focusedAt": 0},
+        [{"id": "snap-2", "created": NOW - 60,
+          "sessions": [{"id": UUID_A, "title": 7, "cwd": None}]}]))
+    assert snaps[0]["sessions"] == [{"id": UUID_A, "title": "", "cwd": ""}], snaps[0]
+
+
+def test_snapshot_with_junk_sessions_field_keeps_its_head():
+    # `sessions` не список — это уже не «часть записей порченая», а порченое
+    # поле: сам снимок остаётся, сессий у него ноль.
+    _, _, _, snaps = _read(_payload(
+        {"title": "ccfzf", "desktop": 2, "lastSeen": NOW - 5, "focusedAt": 0},
+        [{"id": "snap-3", "created": NOW - 60, "sessions": "не список"}]))
+    assert [s["id"] for s in snaps] == ["snap-3"], snaps
+    assert snaps[0]["sessions"] == [], snaps[0]
+
+
 def test_stale_file_gives_no_snapshots_either():
     # Правило TTL общее: протухший файл не даёт ни окон, ни снимков. Отдельной
     # ветки для снимков нет намеренно — она разошлась бы с окнами.
