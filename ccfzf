@@ -498,6 +498,24 @@ def tail_facts(path):
         return "", ""
 
 
+def free_session_name(base, taken):
+    """Свободное имя новой сессии: занято — `-2`, дальше `-3`.
+
+    Нумерация с двойки: первая сессия называется просто именем каталога, и
+    `имя-1` рядом с ней читался бы как другая сессия.
+
+    Правило то же, что у uniqueSessionName в ccfzf-picker
+    (frontend-src/session-name.js). Общего кода нет — языки разные, и держать
+    их в согласии приходится этим комментарием и парой одинаковых тестов.
+    """
+    name = base
+    n = 2
+    while name in taken:
+        name = "%s-%d" % (base, n)
+        n += 1
+    return name
+
+
 def last_message_at(path):
     """Когда в транскрипте последний раз появилась запись с временем.
 
@@ -1422,6 +1440,31 @@ elif mode == "state":
                # здесь видны процессы, а окна — на другой машине.
                "snapshots": window_snapshots},
               sys.stdout, ensure_ascii=False)
+
+elif mode == "newname":
+    # Занятыми считаются заголовки живых сессий: имя сессии — это заголовок её
+    # окна, по нему оконный трекер привязывает сессию к слоту, и мешают друг
+    # другу именно живые тёзки. Мёртвая сессия с тем же именем не мешает
+    # никому. Живых немного, и чтение их хвостов ничего не стоит рядом с двумя
+    # сотнями в дампе.
+    index_path = sys.argv[2]
+    base = sys.argv[3]
+
+    with open(index_path, encoding="utf-8") as fh:
+        index = json.load(fh)
+    live = set(index["live"])
+
+    taken = set()
+    for entry in index["dirs"]:
+        for path, _mtime in entry["files"]:
+            sid = os.path.basename(path)[:-6]
+            if sid not in live:
+                continue
+            title = clean(tail_facts(path)[0])
+            if title:
+                taken.add(title.strip())
+
+    print(free_session_name(base, taken))
 PYEOF
 
 # External callers (the picker) need the dumps rewritten without opening
@@ -1656,7 +1699,14 @@ while :; do
     __cmd3__)  cmd=${cmd_list[2]} ;;
     # Name the session after the project folder so WT titles and the
     # project hotkeys can find it without waiting for /rename.
-    __new__)   cmd="$CLAUDE_CMD -n $(printf '%q' "$(basename "$dir")")$claude_tail" ;;
+    #
+    # Живая тёзка получает суффикс: два окна с одинаковым заголовком оконный
+    # трекер путает между собой. Отказ python3 не должен отнимать новую
+    # сессию — тогда имя остаётся прежним, как было до суффиксов.
+    __new__)
+      new_name=$(python3 -c "$PY" newname "$index" "$(basename "$dir")" 2>/dev/null)
+      [[ -n $new_name ]] || new_name=$(basename "$dir")
+      cmd="$CLAUDE_CMD -n $(printf '%q' "$new_name")$claude_tail" ;;
     *)         cmd="$CLAUDE_CMD --resume $(printf '%q' "$sid")$claude_tail" ;;
   esac
   cmd=${cmd% }
