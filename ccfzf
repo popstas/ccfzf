@@ -1236,14 +1236,28 @@ def save_facts(path, facts):
     write_json(path, {"v": FACTS_VERSION, "files": facts}, indent=None)
 
 
-def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize):
+def facts_for(path, mtime, cache, tail=None, head=None,
+              size_of=os.path.getsize, want_gist=True):
     """Заголовок, последняя реплика и первый промпт — считаются при промахе.
 
     `gist` живёт по своему правилу: первый промпт сессии неизменен, и
     найденный непустой переносится через любые изменения файла — head_gist для
-    неё больше не зовётся никогда. Пустой пересчитывается, пока файл не
-    перерос HEAD_LIMIT: дальше head_gist и сам не смотрит, ответ измениться
-    уже не может, и тогда ставится gistDone.
+    неё больше не зовётся никогда, пока файл только дописывают. Пустой
+    пересчитывается, пока файл не перерос HEAD_LIMIT: дальше head_gist и сам
+    не смотрит, ответ измениться уже не может, и тогда ставится gistDone.
+
+    Допущение «только дописывают» не всегда верно: файл под тем же путём
+    иногда подменяют целиком — восстановили из бэкапа, сжали историю, отдали
+    id другой сессии. Уменьшение размера — единственная наблюдаемая подпись
+    такой подмены, и `size` в памятке хранится ровно ради неё: как только
+    текущий размер меньше сохранённого, gist и gistDone сбрасываются и
+    пересчитываются заново, как будто памятки для них не было.
+
+    `want_gist=False` — режим `dump`, куда `gist` не уезжает (см. DUMP_KEEP):
+    head_gist не зовётся вовсе, а gist/gistDone остаются такими, какими
+    нашлись в памятке. Без этого параметра холодная памятка в `--dump`
+    платила бы за head_gist те же 165 мс из 320, которые задача 4 уже
+    вычеркнула из этой ветки.
 
     Заголовок кладётся уже причёсанным (`clean`): его так читают оба режима, а
     сам `clean` — регулярка, и на двухстах сессиях считается заметно.
@@ -1254,19 +1268,35 @@ def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize)
     if old.get("mtime") == mtime:
         return old
     title, doing = tail(path)
-    gist = old.get("gist") or ""
-    done = bool(gist) or bool(old.get("gistDone"))
-    if not done:
-        gist = head(path)
-        if gist:
-            done = True
-        else:
-            try:
-                done = size_of(path) > HEAD_LIMIT
-            except OSError:
-                done = False
-    return {"mtime": mtime, "title": clean(title), "doing": doing,
-            "gist": gist, "gistDone": done}
+    try:
+        size = size_of(path)
+    except OSError:
+        size = None
+
+    if not want_gist:
+        gist, done = old.get("gist", ""), bool(old.get("gistDone"))
+    else:
+        truncated = (size is not None and old.get("size") is not None
+                     and size < old["size"])
+        gist = "" if truncated else (old.get("gist") or "")
+        done = bool(gist) or (not truncated and bool(old.get("gistDone")))
+        if not done:
+            gist = head(path)
+            if gist:
+                # Тот же предел, что у doing (tail_facts, `t[:200]`) и у
+                # читателей ответа (`--state`, `f["gist"][:200]`) — хранить
+                # длиннее незачем, а памятка целиком перезаписывается на
+                # каждый опрос, где у выбранного файла сдвинулся mtime.
+                gist = gist[:200]
+                done = True
+            else:
+                done = size is not None and size > HEAD_LIMIT
+
+    result = {"mtime": mtime, "title": clean(title), "doing": doing,
+              "gist": gist, "gistDone": done}
+    if size is not None:
+        result["size"] = size
+    return result
 
 
 def write_json(path, obj, indent=1):
@@ -1451,7 +1481,9 @@ elif mode == "dump":
         sessions = []
         for path, mtime, cwd in picked:
             sid = sid_of(path)
-            f = facts_for(path, mtime, cache)
+            # head_gist здесь не зовётся: `gist` в дамп не уезжает, а стоил
+            # он 165 мс из 320 на двухстах сессиях.
+            f = facts_for(path, mtime, cache, want_gist=False)
             facts[path] = f
             agent = agents.get(sid) or {}
             sessions.append(dump_record({

@@ -84,6 +84,49 @@ def test_the_title_is_stored_cleaned():
     assert got["title"] == CC["clean"]("  t\tt  "), got
 
 
+def test_a_shrunk_file_invalidates_the_known_gist():
+    # Транскрипт только дописывают — это допущение памятки, а не гарантия.
+    # Если файл под тем же путём переписали заново (бэкап, сжатие истории,
+    # id, отданный другой сессии), единственная видимая отсюда улика —
+    # текущий размер стал меньше того, что лежит в памятке рядом с mtime.
+    calls, tail, head = counting(gist="новый")
+    cache = {P: {"mtime": 100.0, "title": "old", "doing": "old",
+                 "gist": "старый", "gistDone": True, "size": 500}}
+    got = CC["facts_for"](P, 200.0, cache, tail=tail, head=head,
+                          size_of=lambda p: 100)
+    assert calls["head"] == 1, calls
+    assert got["gist"] == "новый", got
+    assert got["size"] == 100, got
+
+
+def test_a_freshly_found_gist_is_capped_at_two_hundred_chars():
+    # Все потребители и так режут gist до 200 символов (doing режется тем же
+    # пределом в tail_facts); хранить длиннее — плата за байты, которые
+    # памятка целиком перезаписывает на каждый опрос со сдвинувшимся mtime.
+    calls, tail, head = counting(gist="д" * 300)
+    got = CC["facts_for"](P, 100.0, {}, tail=tail, head=head)
+    assert len(got["gist"]) == 200, len(got["gist"])
+
+
+def test_want_gist_false_never_calls_head():
+    # Режим dump: gist в дамп не уезжает (DUMP_KEEP), платить за head_gist
+    # незачем — ни разу, даже на холодной памятке без единой известной сессии.
+    calls, tail, head = counting()
+    got = CC["facts_for"](P, 100.0, {}, tail=tail, head=head, want_gist=False)
+    assert calls["head"] == 0, calls
+    assert got["gist"] == "" and got["gistDone"] is False, got
+
+
+def test_want_gist_false_keeps_whatever_the_memo_already_has():
+    calls, tail, head = counting()
+    cache = {P: {"mtime": 100.0, "title": "old", "doing": "old",
+                 "gist": "уже есть", "gistDone": True, "size": 5}}
+    got = CC["facts_for"](P, 200.0, cache, tail=tail, head=head,
+                          want_gist=False)
+    assert calls["head"] == 0, calls
+    assert got["gist"] == "уже есть" and got["gistDone"] is True, got
+
+
 def test_a_broken_memo_reads_as_empty():
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "facts.json")

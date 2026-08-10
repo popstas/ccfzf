@@ -118,6 +118,51 @@ def test_the_state_answer_keeps_its_rich_shape():
             assert key in s, (key, sorted(s))
 
 
+def _sorted_sessions(out):
+    # `age` завязан на «сейчас» и отличается на каждом опросе по построению
+    # (см. комментарий про fingerprint в ccfzf) — сравнивать тёплый и холодный
+    # прогон нужно без него, иначе тест не сторожил бы ничего, кроме часов.
+    return sorted(
+        ({k: v for k, v in s.items() if k != "age"} for s in out["sessions"]),
+        key=lambda s: s["id"])
+
+
+def test_a_warm_run_answers_the_same_as_a_cold_one():
+    # Весь смысл дисковой памятки — что второй опрос за тот же файл памятки
+    # попадает в кэш по mtime (float из os.stat -> JSON -> сравнение) и
+    # ничего не пересчитывает, но список сессий обязан остаться тем же
+    # самым. Восемь юнит-тестов рядом гоняют facts_for с фальшивыми
+    # tail/head — ни один из них не проверяет ни настоящий ключ по mtime,
+    # ни это свойство целиком.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A, B])
+        dump_path = os.path.join(tmp, "dump.json")
+        cold = run_state(tmp, dump_path)
+        warm = run_state(tmp, dump_path)
+        assert _sorted_sessions(cold) == _sorted_sessions(warm), \
+            (cold["sessions"], warm["sessions"])
+
+
+def test_a_removed_fixture_drops_out_of_the_memo():
+    # Памятка не накапливает мусор: файл, выпавший из среза (здесь — удалён
+    # совсем), не должен оставаться в facts.json вечной записью.
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = build_home(tmp, [A, B])
+        dump_path = os.path.join(tmp, "dump.json")
+        run_state(tmp, dump_path)
+        facts_path = os.path.join(tmp, "facts.json")
+        with open(facts_path, encoding="utf-8") as fh:
+            before = json.load(fh)
+        assert any(p.endswith(A + ".jsonl") for p in before["files"]), before
+
+        d = os.path.join(tmp, ".claude", "projects", re.sub(r"[^a-zA-Z0-9]", "-", cwd))
+        os.unlink(os.path.join(d, A + ".jsonl"))
+        run_state(tmp, dump_path)
+        with open(facts_path, encoding="utf-8") as fh:
+            after = json.load(fh)
+        assert not any(p.endswith(A + ".jsonl") for p in after["files"]), after
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
