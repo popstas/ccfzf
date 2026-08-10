@@ -36,7 +36,7 @@
 **Interfaces:**
 - Produces: bash-переменная `limit` (строка, проверенная как целое положительное); python получает её последним argv — `state`: `sys.argv[5]`, `dump`: `sys.argv[6]`; в обеих ветках разворачивается в локальную переменную `limit` (int).
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_limit.py`:
 
@@ -99,12 +99,12 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 ```
 
-- [ ] **Step 2: Убедиться, что тест падает**
+- [x] **Step 2: Убедиться, что тест падает**
 
 Run: `cd /home/popstas/projects/shell/ccfzf && python3 -m pytest tests/test_limit.py -q`
 Expected: FAIL — сейчас `--limit` попадает в ветку `*)` разбора и трактуется как имя проекта, кода 2 нет.
 
-- [ ] **Step 3: Разбор ключа в bash**
+- [x] **Step 3: Разбор ключа в bash**
 
 В `ccfzf`, после строки `session_id=""` (строка ~79) добавить:
 
@@ -128,7 +128,7 @@ limit=100
 [[ $limit =~ ^[1-9][0-9]*$ ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }
 ```
 
-- [ ] **Step 4: Шапка help и `usage()`**
+- [x] **Step 4: Шапка help и `usage()`**
 
 Строку 13 (`#                               picker on another machine; no picker, no fzf`) оставить, после неё вставить:
 
@@ -139,7 +139,7 @@ limit=100
 
 `usage()` печатает `sed -n '2,30p'` — диапазон уже обрезал описание `CCFZF_WINDOWS_FILE` на полуслове, а две новые строки сдвинут всё ещё на две. Заменить на `sed -n '2,34p'`.
 
-- [ ] **Step 5: Прокинуть в python**
+- [x] **Step 5: Прокинуть в python**
 
 Строка 136: заменить
 
@@ -179,7 +179,7 @@ python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit"
 
 В обеих ветках заменить `files[:DUMP_SESSIONS]` на `files[:limit]` (строки ~1306 и ~1382).
 
-- [ ] **Step 6: Обновить комментарии про 200**
+- [x] **Step 6: Обновить комментарии про 200**
 
 Строки 21–24 шапки:
 
@@ -199,12 +199,12 @@ python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit"
 # Set either to an empty string to turn that dump off.
 ```
 
-- [ ] **Step 7: Прогнать тесты**
+- [x] **Step 7: Прогнать тесты**
 
 Run: `cd /home/popstas/projects/shell/ccfzf && python3 -m pytest tests/ -q`
 Expected: PASS, включая прежние файлы тестов.
 
-- [ ] **Step 8: Коммит**
+- [x] **Step 8: Коммит**
 
 ```bash
 cd /home/popstas/projects/shell/ccfzf
@@ -232,7 +232,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `limit` из Task 1.
 - Produces: `sid_of(path) -> str`; `pick_files(files, limit, keep_ids) -> list`, где `files` — `[(path, mtime, cwd)]`, отсортированный по убыванию `mtime`, `keep_ids` — `set` строк.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_pick_files.py`:
 
@@ -299,12 +299,12 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 ```
 
-- [ ] **Step 2: Убедиться, что тест падает**
+- [x] **Step 2: Убедиться, что тест падает**
 
 Run: `python3 -m pytest tests/test_pick_files.py -q`
 Expected: FAIL — `KeyError: 'sid_of'`.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В `ccfzf`, сразу после функции `dir_cwd` (перед `def head_gist`):
 
@@ -333,7 +333,7 @@ def pick_files(files, limit, keep_ids):
     return head + [f for f in files[limit:] if sid_of(f[0]) in keep_ids]
 ```
 
-- [ ] **Step 4: Подключить в обеих ветках**
+- [x] **Step 4: Подключить в обеих ветках**
 
 В ветке `state`, заменить
 
@@ -357,12 +357,12 @@ def pick_files(files, limit, keep_ids):
 
 В записи ответа заменить `"shown": len(sessions)` оставить как есть (оно и так считает записанное), а `"total": len(files)` — как есть.
 
-- [ ] **Step 5: Прогнать тесты**
+- [x] **Step 5: Прогнать тесты**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add ccfzf tests/test_pick_files.py
@@ -388,7 +388,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `hook_stamps()` (ccfzf:696) — `{sid: mtime}` из `~/.claude/claude-wt`.
 - Produces: поле `activityAt` (int, epoch-секунды, 0 — хук про сессию не писал) в каждой записи `sessions` и в `--state`, и в дампе.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_state_mode.py`:
 
@@ -497,12 +497,12 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 ```
 
-- [ ] **Step 2: Убедиться, что тест падает**
+- [x] **Step 2: Убедиться, что тест падает**
 
 Run: `python3 -m pytest tests/test_state_mode.py -q`
 Expected: первые два теста проходят, `test_activity_at_comes_from_the_hook_file` падает с `KeyError: 'activityAt'`.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В ветке `state`, после `live, agents, procs = running_sessions()` добавить:
 
@@ -522,12 +522,12 @@ Expected: первые два теста проходят, `test_activity_at_com
             "activityAt": int(stamps.get(sid, 0)),
 ```
 
-- [ ] **Step 4: Прогнать тесты**
+- [x] **Step 4: Прогнать тесты**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS.
 
-- [ ] **Step 5: Коммит**
+- [x] **Step 5: Коммит**
 
 ```bash
 git add ccfzf tests/test_state_mode.py
@@ -552,7 +552,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: записи сессий из Task 3 (с `activityAt`).
 - Produces: `DUMP_KEEP` (tuple из восьми имён), `dump_record(s) -> dict`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_dump_shape.py`:
 
@@ -641,12 +641,12 @@ def test_the_state_answer_keeps_its_rich_shape():
             assert key in s, (key, sorted(s))
 ```
 
-- [ ] **Step 2: Убедиться, что тесты падают**
+- [x] **Step 2: Убедиться, что тесты падают**
 
 Run: `python3 -m pytest tests/test_dump_shape.py tests/test_state_mode.py -q`
 Expected: FAIL — `KeyError: 'DUMP_KEEP'`, и дамп пока несёт тринадцать полей.
 
-- [ ] **Step 3: Реализовать проекцию**
+- [x] **Step 3: Реализовать проекцию**
 
 В `ccfzf`, сразу перед `def write_json`:
 
@@ -672,7 +672,7 @@ def dump_record(s):
     return {k: s[k] for k in DUMP_KEEP}
 ```
 
-- [ ] **Step 4: Подключить в ветке `state`**
+- [x] **Step 4: Подключить в ветке `state`**
 
 Заменить блок записи дампа:
 
@@ -696,7 +696,7 @@ def dump_record(s):
         })
 ```
 
-- [ ] **Step 5: Подключить в ветке `dump`**
+- [x] **Step 5: Подключить в ветке `dump`**
 
 Запись сессии там собирается своя, богаче нужного. Заменить тело цикла на:
 
@@ -719,12 +719,12 @@ def dump_record(s):
 
 Переменные `frozen` и `gist` в ветке `dump` становятся ненужными — убрать строку `frozen = frozen_ids()` и всё, что её использует, если больше ничего не осталось.
 
-- [ ] **Step 6: Прогнать тесты**
+- [x] **Step 6: Прогнать тесты**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS.
 
-- [ ] **Step 7: Убедиться руками, что дамп похудел**
+- [x] **Step 7: Убедиться руками, что дамп похудел**
 
 Run:
 ```bash
@@ -732,7 +732,7 @@ cd /home/popstas/projects/shell/ccfzf && ./ccfzf --dump && ls -la ~/.ccfzf.sessi
 ```
 Expected: было ~184 КБ, стало ~25 КБ.
 
-- [ ] **Step 8: Коммит**
+- [x] **Step 8: Коммит**
 
 ```bash
 git add ccfzf tests/test_dump_shape.py tests/test_state_mode.py
@@ -758,7 +758,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `tail_facts(path) -> (title, doing)`, `head_gist(path) -> str`, `clean(s) -> str`, `HEAD_LIMIT`, `write_json`.
 - Produces: `FACTS_FILE` (str), `FACTS_VERSION` (int), `load_facts(path) -> dict`, `save_facts(path, facts) -> None`, `facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize) -> dict` с ключами `mtime, title, doing, gist, gistDone`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_facts_cache.py`:
 
@@ -885,12 +885,12 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 ```
 
-- [ ] **Step 2: Убедиться, что тест падает**
+- [x] **Step 2: Убедиться, что тест падает**
 
 Run: `python3 -m pytest tests/test_facts_cache.py -q`
 Expected: FAIL — `KeyError: 'facts_for'`.
 
-- [ ] **Step 3: Константы**
+- [x] **Step 3: Константы**
 
 В `ccfzf`, после `HOOK_LIVE_TTL` (строка ~160) добавить:
 
@@ -911,7 +911,7 @@ if FACTS_FILE is None:
         "ccfzf", "facts.json")
 ```
 
-- [ ] **Step 4: Дать `write_json` необязательный отступ**
+- [x] **Step 4: Дать `write_json` необязательный отступ**
 
 Памятка — файл для машины, и отступ в ней только байты. Идёт первым: `save_facts` ниже зовёт `write_json` уже с этим параметром. Заменить сигнатуру и вызов:
 
@@ -923,7 +923,7 @@ def write_json(path, obj, indent=1):
             json.dump(obj, fh, ensure_ascii=False, indent=indent)
 ```
 
-- [ ] **Step 5: Функции**
+- [x] **Step 5: Функции**
 
 Сразу после `dump_record` добавить:
 
@@ -992,7 +992,7 @@ def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize)
             "gist": gist, "gistDone": done}
 ```
 
-- [ ] **Step 6: Подключить в ветке `state`**
+- [x] **Step 6: Подключить в ветке `state`**
 
 Заменить цикл сборки сессий:
 
@@ -1032,7 +1032,7 @@ def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize)
         save_facts(FACTS_FILE, facts)
 ```
 
-- [ ] **Step 7: Подключить в ветке `dump`**
+- [x] **Step 7: Подключить в ветке `dump`**
 
 Тот же приём, но без `gist`: в дамп он не уезжает.
 
@@ -1056,12 +1056,12 @@ def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize)
             save_facts(FACTS_FILE, facts)
 ```
 
-- [ ] **Step 8: Прогнать тесты**
+- [x] **Step 8: Прогнать тесты**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS.
 
-- [ ] **Step 9: Померить**
+- [x] **Step 9: Померить**
 
 Run:
 ```bash
@@ -1072,7 +1072,7 @@ time ./ccfzf --state > /dev/null   # тёплая
 ```
 Expected: первый прогон — как раньше (~0.3 с), второй — заметно быстрее (~0.05 с). Если второй не быстрее — памятка не пишется или ключ не совпадает; смотреть `~/.cache/ccfzf/facts.json`.
 
-- [ ] **Step 10: Коммит**
+- [x] **Step 10: Коммит**
 
 ```bash
 git add ccfzf tests/test_facts_cache.py
@@ -1095,7 +1095,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: поведение из задач 1–5.
 
-- [ ] **Step 1: Ключ в блоке использования**
+- [x] **Step 1: Ключ в блоке использования**
 
 В блок с перечнем режимов (README.md:82-88), после строки `ccfzf --session <id>        go straight into a session by id, no picker`, добавить:
 
@@ -1103,7 +1103,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ccfzf --limit <n>           how many newest sessions to look at at all (100)
 ```
 
-- [ ] **Step 2: Таблица переменных**
+- [x] **Step 2: Таблица переменных**
 
 Строку 130 заменить и добавить следующую за ней:
 
@@ -1112,7 +1112,7 @@ ccfzf --limit <n>           how many newest sessions to look at at all (100)
 | `CCFZF_FACTS_FILE` | `$XDG_CACHE_HOME/ccfzf/facts.json` | memo of per-transcript facts, so a fresh `--state` process does not recompute them; empty turns it off |
 ```
 
-- [ ] **Step 3: Раздел «The dumps»**
+- [x] **Step 3: Раздел «The dumps»**
 
 Абзац README.md:143 заменить на:
 
@@ -1150,7 +1150,7 @@ ccfzf --limit <n>           how many newest sessions to look at at all (100)
 `ccfzf --state` is the other output and a richer one: it prints everything above plus `file`, `projects`, `gist`, `doing`, `age`, `frozen`, `pid`, `tty`, `tmux`, `agent` and `window` on stdout, for a picker on another machine. The dump is not a subset by accident — the two have different readers.
 ```
 
-- [ ] **Step 4: Коммит**
+- [x] **Step 4: Коммит**
 
 ```bash
 git add README.md
@@ -1167,7 +1167,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:** нет правок, только проверка.
 
-- [ ] **Step 1: Собрать свежий дамп и сверить поля**
+- [x] **Step 1: Собрать свежий дамп и сверить поля**
 
 Run:
 ```bash
@@ -1186,7 +1186,7 @@ print('размер полей ок')
 ```
 Expected: восемь полей, `shown` около 100 (плюс добавка объединения), все семь полей, которые читает сегодняшний `sessions.js`, на месте.
 
-- [ ] **Step 2: Записать результат**
+- [x] **Step 2: Записать результат**
 
 Если `shown` заметно больше 100 — значит объединение тянет много живых/оконных; это нормально, но стоит посмотреть, не протух ли файл трекера.
 
