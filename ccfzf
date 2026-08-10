@@ -172,6 +172,21 @@ STATE_DUMP_MAX_AGE = 30
 # этом жива.
 HOOK_LIVE_TTL = 120
 
+# Памятка фактов о транскриптах. Нужна оттого, что `--state` запускается новым
+# процессом на каждый опрос пикера — раз в секунду, через ssh, — и кэшу в
+# памяти взяться неоткуда. Из 320 мс вызова 280 уходили на пересчёт того, что
+# не менялось: 165 мс head_gist и 117 мс tail_facts на двухстах сессиях.
+#
+# Ключ — mtime файла. Про врущий mtime здесь говорить нечего: каталог
+# локальный, ext4; тот шрам — про чтение V: с Windows, где атрибуты отдаёт
+# кэш SMB долгоживущему процессу. Пустая строка выключает памятку.
+FACTS_VERSION = 1
+FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
+if FACTS_FILE is None:
+    FACTS_FILE = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "ccfzf", "facts.json")
+
 # Сколько может молчать транскрипт, чтобы процесс без имени сессии в argv всё
 # ещё считался его хозяином. Это не про возраст сессии, а про правдоподобие
 # догадки: свежий запуск пишет сейчас, а не сутки назад.
@@ -1190,7 +1205,71 @@ def dump_record(s):
     return {k: s[k] for k in DUMP_KEEP}
 
 
-def write_json(path, obj):
+def load_facts(path):
+    """Памятка с диска, или пустая — по любой причине.
+
+    Пустая всегда безопасна: памятка — чистая функция от содержимого файлов,
+    и промах стоит ровно того, что стоил вызов до её появления.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            o = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(o, dict) or o.get("v") != FACTS_VERSION:
+        return {}
+    files = o.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def save_facts(path, facts):
+    """Записать памятку. Гонку двух ccfzf решает последний писатель, и это
+    верно: у двух памяток об одних и тех же файлах расходиться нечему."""
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        return
+    write_json(path, {"v": FACTS_VERSION, "files": facts}, indent=None)
+
+
+def facts_for(path, mtime, cache, tail=None, head=None, size_of=os.path.getsize):
+    """Заголовок, последняя реплика и первый промпт — считаются при промахе.
+
+    `gist` живёт по своему правилу: первый промпт сессии неизменен, и
+    найденный непустой переносится через любые изменения файла — head_gist для
+    неё больше не зовётся никогда. Пустой пересчитывается, пока файл не
+    перерос HEAD_LIMIT: дальше head_gist и сам не смотрит, ответ измениться
+    уже не может, и тогда ставится gistDone.
+
+    Заголовок кладётся уже причёсанным (`clean`): его так читают оба режима, а
+    сам `clean` — регулярка, и на двухстах сессиях считается заметно.
+    """
+    tail = tail or tail_facts
+    head = head or head_gist
+    old = cache.get(path) or {}
+    if old.get("mtime") == mtime:
+        return old
+    title, doing = tail(path)
+    gist = old.get("gist") or ""
+    done = bool(gist) or bool(old.get("gistDone"))
+    if not done:
+        gist = head(path)
+        if gist:
+            done = True
+        else:
+            try:
+                done = size_of(path) > HEAD_LIMIT
+            except OSError:
+                done = False
+    return {"mtime": mtime, "title": clean(title), "doing": doing,
+            "gist": gist, "gistDone": done}
+
+
+def write_json(path, obj, indent=1):
     """Atomically, and never at the cost of the run: a dump is a side effect."""
     if not path:
         return
@@ -1198,7 +1277,7 @@ def write_json(path, obj):
     tmp_path = path + ".%d.tmp" % os.getpid()
     try:
         with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, ensure_ascii=False, indent=1)
+            json.dump(obj, fh, ensure_ascii=False, indent=indent)
         os.replace(tmp_path, path)   # a reader never sees half a list
     except OSError:
         try:
@@ -1367,20 +1446,23 @@ elif mode == "dump":
         # выше), так что второго множества не нужно.
         picked = pick_files(files, limit, live)
 
+        cache = load_facts(FACTS_FILE)
+        facts = {}
         sessions = []
         for path, mtime, cwd in picked:
             sid = sid_of(path)
-            title, _doing = tail_facts(path)
+            f = facts_for(path, mtime, cache)
+            facts[path] = f
             agent = agents.get(sid) or {}
-            # head_gist здесь больше не зовётся: `gist` в дамп не уезжает, а
-            # стоил он 165 мс из 320 на двухстах сессиях.
             sessions.append(dump_record({
-                "id": sid, "cwd": cwd, "title": clean(title),
+                "id": sid, "cwd": cwd, "title": f["title"],
                 "mtime": mtime, "live": sid in live,
                 "kind": agent.get("kind", "interactive"),
                 "parent": agent.get("parent", ""),
                 "activityAt": int(stamps.get(sid, 0)),
             }))
+        if facts != cache:
+            save_facts(FACTS_FILE, facts)
 
         write_json(sessions_path, {
             "generated": now, "total": total, "shown": len(sessions),
@@ -1446,16 +1528,19 @@ elif mode == "state":
     # выше), так что второго множества не нужно.
     picked = pick_files(files, limit, live)
 
+    cache = load_facts(FACTS_FILE)
+    facts = {}
     sessions = []
     for path, mtime, cwd in picked:
-        sid = os.path.basename(path)[:-6]
-        title, doing = tail_facts(path)
+        sid = sid_of(path)
+        f = facts_for(path, mtime, cache)
+        facts[path] = f
         agent = agents.get(sid) or {}
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
-            "title": clean(title), "gist": (head_gist(path) or doing)[:200],
-            "doing": doing,
+            "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
+            "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
             "live": sid in live, "frozen": sid in frozen,
             "activityAt": int(stamps.get(sid, 0)),
@@ -1470,6 +1555,12 @@ elif mode == "state":
             # некому — она не видна ни в одной строке списка.
             "window": windows.get(sid),
         })
+
+    # Записи файлов, выпавших из среза, в памятку не попали — чистка выходит
+    # сама. Пишем только при отличии: иначе каждый опрос пикера стоил бы
+    # записи всей памятки на диск.
+    if facts != cache:
+        save_facts(FACTS_FILE, facts)
 
     # Дамп — подмножество того же списка: одни и те же файлы, те же хвосты, тот
     # же срез DUMP_SESSIONS. Собран здесь проекцией, а не вторым проходом,
