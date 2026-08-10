@@ -94,6 +94,30 @@ def test_activity_at_comes_from_the_hook_file():
         assert by_id[B]["activityAt"] == 0, by_id[B]
 
 
+def test_the_dump_written_on_the_way_has_only_the_eight_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A, B])
+        dump_path = os.path.join(tmp, "dump.json")
+        run_state(tmp, dump_path)
+        with open(dump_path, encoding="utf-8") as fh:
+            dump = json.load(fh)
+        assert dump["sessions"], dump
+        for s in dump["sessions"]:
+            assert set(s) == {"id", "title", "cwd", "live", "mtime",
+                              "kind", "parent", "activityAt"}, s
+
+
+def test_the_state_answer_keeps_its_rich_shape():
+    # Обрезается только файл. Пикер читает stdout, и поля gist/doing/agent
+    # рисуются у него в строке — забрать их значило бы опустошить список.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        s = out["sessions"][0]
+        for key in ("file", "projects", "gist", "doing", "frozen", "agent"):
+            assert key in s, (key, sorted(s))
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]

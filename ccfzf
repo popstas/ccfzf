@@ -1169,6 +1169,27 @@ def project_rows(dirs, live, marks):
     return rows
 
 
+# Что уезжает в дамп. Читателей у файла два, оба в
+# windows11-manager/src/claude-wt/sessions.js (loadSessionIndex,
+# loadBackgroundAgents), и это ровно те поля, которые они читают. Остальное —
+# gist, doing, file, projects, age, frozen — не читает никто: пикер сюда не
+# ходит вовсе, он берёт --state по ssh. Комментарий над режимом dump обещал
+# «for whatever else wants to know it»; желающих не нашлось, а платят за
+# обещание оба читателя, разбирая и выбрасывая эти байты четырежды в минуту.
+DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt")
+
+
+def dump_record(s):
+    """Запись сессии для дампа.
+
+    Единственное место, где сходятся два писателя одного файла: режимы `dump`
+    и `state` пишут его оба, и до этой проекции содержимое зависело от того,
+    кто записал последним. Отсутствующее поле роняет KeyError намеренно —
+    молча отданный читателю индекс без title стирается целиком.
+    """
+    return {k: s[k] for k in DUMP_KEEP}
+
+
 def write_json(path, obj):
     """Atomically, and never at the cost of the run: a dump is a side effect."""
     if not path:
@@ -1336,7 +1357,6 @@ elif mode == "dump":
         })
 
     if sessions_path:
-        frozen = frozen_ids()
         files = []
         for entry in dirs:
             files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
@@ -1349,26 +1369,18 @@ elif mode == "dump":
 
         sessions = []
         for path, mtime, cwd in picked:
-            sid = os.path.basename(path)[:-6]
-            title, doing = tail_facts(path)
-            title = clean(title)
-            # a pasted prompt runs to kilobytes; the list only ever shows a line
-            gist = (head_gist(path) or doing)[:200]
+            sid = sid_of(path)
+            title, _doing = tail_facts(path)
             agent = agents.get(sid) or {}
-            sessions.append({
-                "id": sid, "cwd": cwd, "file": path,
-                "projects": sorted(owners_of(cwd, marks)),
-                "title": title, "gist": gist, "doing": doing,
-                "mtime": mtime, "age": ago(mtime, now),
-                "live": sid in live, "frozen": sid in frozen,
-                "activityAt": int(stamps.get(sid, 0)),
-                # A background agent (`claude agents`) has no terminal of its
-                # own: it was forked off `parent` and left running under the
-                # daemon. Whoever binds windows to sessions has to skip it and
-                # credit its work to the parent instead.
+            # head_gist здесь больше не зовётся: `gist` в дамп не уезжает, а
+            # стоил он 165 мс из 320 на двухстах сессиях.
+            sessions.append(dump_record({
+                "id": sid, "cwd": cwd, "title": clean(title),
+                "mtime": mtime, "live": sid in live,
                 "kind": agent.get("kind", "interactive"),
                 "parent": agent.get("parent", ""),
-            })
+                "activityAt": int(stamps.get(sid, 0)),
+            }))
 
         write_json(sessions_path, {
             "generated": now, "total": total, "shown": len(sessions),
@@ -1465,11 +1477,9 @@ elif mode == "state":
     # Лишние поля (pid, tty, tmux, agent, window) читателю дампа не нужны:
     # процессы он видит свои, а окна сам сюда и кладёт.
     if stale_dump(sessions_path, now, STATE_DUMP_MAX_AGE):
-        keep = ("id", "cwd", "file", "projects", "title", "gist", "doing",
-                "mtime", "age", "live", "frozen", "kind", "parent")
         write_json(sessions_path, {
             "generated": now, "total": len(files), "shown": len(sessions),
-            "sessions": [{k: s[k] for k in keep} for s in sessions],
+            "sessions": [dump_record(s) for s in sessions],
         })
 
     # Чья это машина и какому процессу принадлежат окна. Первое отвечает
