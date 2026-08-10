@@ -1214,6 +1214,47 @@ def project_rows(dirs, live, marks):
     return rows
 
 
+def merge_project_hotkeys(rows, projects):
+    """Приклеить к строкам проектов их хоткеи из файла оконного трекера.
+
+    Единственный источник хоткеев — конфиг windows11-manager: клавиши
+    регистрирует читатель (ccfzf-picker), а знать про них ему больше неоткуда.
+    Здесь они встречаются со строками, которые собраны из закладок и каталогов
+    сессий, — по одному только пути.
+
+    Проекту с хоткеем, у которого нет ни сессий, ни закладки, строка заводится:
+    иначе клавиша проекта, в котором давно не работали, пропадала бы из ответа
+    ровно тогда, когда она и нужна. Имя такой строке даёт менеджер; у строки,
+    которая уже есть, имя не трогается — закладку человек назвал сам.
+
+    Строка без хоткея остаётся без ключа, а не с пустым: у читателя «нет
+    клавиши» и «клавиша пустая» — разные вещи.
+    """
+    by_path = {}
+    for p in projects or []:
+        cwd = p.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            by_path.setdefault(cwd, p)
+
+    out = []
+    seen = set()
+    for r in rows:
+        row = dict(r)
+        hit = by_path.get(row["path"])
+        if hit:
+            row["hotkey"] = hit["hotkey"]
+        seen.add(row["path"])
+        out.append(row)
+
+    for cwd, p in by_path.items():
+        if cwd in seen:
+            continue
+        out.append({"path": cwd, "name": p.get("name") or os.path.basename(cwd) or cwd,
+                    "mark": False, "n": 0, "live": 0, "mtime": 0.0,
+                    "hotkey": p["hotkey"]})
+    return out
+
+
 # Что уезжает в дамп. Читателей у файла два, оба в
 # windows11-manager/src/claude-wt/sessions.js (loadSessionIndex,
 # loadBackgroundAgents), и это ровно те поля, которые они читают. Остальное —
@@ -1693,8 +1734,10 @@ elif mode == "state":
     # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
     json.dump({"generated": now, "sessions": sessions,
                "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
-                             "sessions": r["n"], "live": r["live"], "mtime": r["mtime"]}
-                            for r in project_rows(dirs, live, marks)],
+                             "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
+                             **({"hotkey": r["hotkey"]} if r.get("hotkey") else {})}
+                            for r in merge_project_hotkeys(
+                                project_rows(dirs, live, marks), window_projects)],
                "windowHost": window_host, "windowPid": window_pid,
                # Раскладки, которые помнит трекер. Оттуда же, откуда окна:
                # здесь видны процессы, а окна — на другой машине.
