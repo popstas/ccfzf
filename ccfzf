@@ -11,6 +11,8 @@
 #   ccfzf --dump                rewrite the sessions/projects json dumps and exit
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
+#   ccfzf --limit <n>           how many newest sessions to look at at all
+#                               (default 100; applies to --state and --dump)
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -18,7 +20,8 @@
 #   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
 #   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
 #   CCFZF_CLAUDE_COMMAND             the claude binary itself (default: claude)
-#   CCFZF_SESSIONS_FILE              json dump: 200 newest sessions, all projects
+#   CCFZF_SESSIONS_FILE              json dump for the window tracker: the
+#                                    newest sessions (see --limit), all projects
 #                                    (default ~/.ccfzf.sessions.json, empty — off);
 #                                    --dump always rewrites it, --state only when
 #                                    it is older than STATE_DUMP_MAX_AGE
@@ -42,9 +45,9 @@ MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
 # Treated as a shell fragment, like the project commands below.
 CLAUDE_CMD="${CCFZF_CLAUDE_COMMAND:-claude}"
 
-# What ccfzf sees is also dumped as json for whatever else wants to know it:
-# every project, and the 200 newest sessions across all of them. Set either to
-# an empty string to turn that dump off.
+# What ccfzf sees is also dumped as json for the window tracker on the other
+# machine: every project, and the newest --limit sessions across all of them.
+# Set either to an empty string to turn that dump off.
 SESSIONS_FILE="${CCFZF_SESSIONS_FILE-$HOME/.ccfzf.sessions.json}"
 PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 
@@ -68,7 +71,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -76,6 +79,10 @@ dump_only=0
 state_only=0
 project=""
 session_id=""
+# Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
+# рассчитаны на список для человека; читателю дампа столько не нужно никогда,
+# а платит за них и он (разбор), и машина-писатель (двести хвостов на каждый опрос).
+limit=100
 claude_args=()
 
 while (($#)); do
@@ -86,11 +93,15 @@ while (($#)); do
     --state) state_only=1; shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
+    --limit) limit="${2-}"; [[ -n $limit ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }; shift 2 ;;
+    --limit=*) limit="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; claude_args=("$@"); break ;;
     *) project="$1"; shift; [[ ${1:-} == "--" ]] && shift; claude_args=("$@"); break ;;
   esac
 done
+
+[[ $limit =~ ^[1-9][0-9]*$ ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }
 
 ((kiosk && print_mode)) && { echo "ccfzf: --kiosk and --print are mutually exclusive" >&2; exit 2; }
 ((dump_only && (kiosk || print_mode || ${#session_id} || ${#project}))) && {
@@ -133,7 +144,7 @@ FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 STATUS_DIR = os.path.expanduser("~/.claude/claude-wt")
 HEAD_LIMIT = 512 * 1024   # how far in to look for the first prompt
 TAIL = 256 * 1024         # tail budget for the title and the latest activity
-DUMP_SESSIONS = 200       # newest sessions written to the sessions dump
+DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
 # дольше этого значит, что машину выключили или демон умер, а не что расклад
@@ -160,6 +171,28 @@ STATE_DUMP_MAX_AGE = 30
 # не доказывает — сессия, ждущая ответа человека, не шлёт хуков часами и при
 # этом жива.
 HOOK_LIVE_TTL = 120
+
+# Памятка фактов о транскриптах. Нужна оттого, что `--state` запускается новым
+# процессом на каждый опрос пикера — раз в секунду, через ssh, — и кэшу в
+# памяти взяться неоткуда. Из 320 мс вызова 280 уходили на пересчёт того, что
+# не менялось: 165 мс head_gist и 117 мс tail_facts на двухстах сессиях.
+#
+# Ключ — mtime файла. Про врущий mtime здесь говорить нечего: каталог
+# локальный, ext4; тот шрам — про чтение V: с Windows, где атрибуты отдаёт
+# кэш SMB долгоживущему процессу. Пустая строка выключает памятку.
+#
+# Версия 2: у записи появилось поле size (сторож усечения) и обрезка gist до
+# 200 символов. Записи версии 1 не знали ни того, ни другого — их size
+# отсутствовал бы (сторож молчал бы до первой смены mtime), а старый
+# необрезанный gist не обрезался бы никогда (обрезка стоит только на пути
+# свежего head_gist). Поднятая версия лечит обе разом ценой одного холодного
+# прогона: load_facts отбрасывает файл чужой версии как пустой.
+FACTS_VERSION = 2
+FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
+if FACTS_FILE is None:
+    FACTS_FILE = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "ccfzf", "facts.json")
 
 # Сколько может молчать транскрипт, чтобы процесс без имени сессии в argv всё
 # ещё считался его хозяином. Это не про возраст сессии, а про правдоподобие
@@ -258,6 +291,30 @@ def dir_cwd(files):
         except OSError:
             continue
     return ""
+
+
+def sid_of(path):
+    """Id сессии по имени её транскрипта."""
+    return os.path.basename(path)[:-6]
+
+
+def pick_files(files, limit, keep_ids):
+    """Первые `limit` по свежести плюс те, кого терять нельзя.
+
+    `files` отсортирован по убыванию mtime, поэтому добавка всегда старше
+    головы и порядок сохраняется сам — пересортировывать нечего.
+
+    Объединение — не перестраховка. Один срез по времени отрезал бы сессию,
+    чей транскрипт не трогали дольше среза, а окно её открыто до сих пор: у
+    читателя дампа она единственный способ понять, чьё это окно. Фильтровать
+    вместо этого по `live` нельзя — флаг уже врал (2026-08-01, работающая
+    сессия с `live: false`), а объединение только добавляет и потому соврать
+    не может.
+    """
+    head = files[:limit]
+    if len(files) <= limit or not keep_ids:
+        return head
+    return head + [f for f in files[limit:] if sid_of(f[0]) in keep_ids]
 
 
 def head_gist(path):
@@ -1134,7 +1191,157 @@ def project_rows(dirs, live, marks):
     return rows
 
 
-def write_json(path, obj):
+# Что уезжает в дамп. Читателей у файла два, оба в
+# windows11-manager/src/claude-wt/sessions.js (loadSessionIndex,
+# loadBackgroundAgents), и это ровно те поля, которые они читают. Остальное —
+# gist, doing, file, projects, age, frozen — не читает никто: пикер сюда не
+# ходит вовсе, он берёт --state по ssh. Комментарий над режимом dump обещал
+# «for whatever else wants to know it»; желающих не нашлось, а платят за
+# обещание оба читателя, разбирая и выбрасывая эти байты четырежды в минуту.
+DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt")
+
+
+def dump_record(s):
+    """Запись сессии для дампа.
+
+    Единственное место, где сходятся два писателя одного файла: режимы `dump`
+    и `state` пишут его оба, и до этой проекции содержимое зависело от того,
+    кто записал последним. Отсутствующее поле роняет KeyError намеренно —
+    молча отданный читателю индекс без title стирается целиком.
+    """
+    return {k: s[k] for k in DUMP_KEEP}
+
+
+def load_facts(path):
+    """Памятка с диска, или пустая — по любой причине.
+
+    Пустая всегда безопасна: памятка — чистая функция от содержимого файлов,
+    и промах стоит ровно того, что стоил вызов до её появления.
+    """
+    if not path:
+        return {}
+    # `write_json` (ccfzf:1336) разворачивает `~` сама, а сюда путь приходит
+    # и как переменная конфига (CCFZF_FACTS_FILE), не только как слово
+    # шелла — без развёртки здесь неразвёрнутый `~/...` читался бы как
+    # каталог `~` в текущей директории, и памятка тихо всегда была бы пустой.
+    path = os.path.expanduser(path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            o = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(o, dict) or o.get("v") != FACTS_VERSION:
+        return {}
+    files = o.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def save_facts(path, facts):
+    """Записать памятку. Гонку двух ccfzf решает последний писатель, и это
+    верно: у двух памяток об одних и тех же файлах расходиться нечему."""
+    if not path:
+        return
+    # Та же развёртка, что в load_facts, и по той же причине. Плюс голое имя
+    # файла без каталога: `os.path.dirname("facts.json")` — пустая строка, а
+    # `os.makedirs("")` кидает FileNotFoundError — тоже OSError, тоже тихо
+    # выключил бы памятку. Каталог создаём, только когда он вообще указан.
+    path = os.path.expanduser(path)
+    dirname = os.path.dirname(path)
+    if dirname:
+        try:
+            os.makedirs(dirname, exist_ok=True)
+        except OSError:
+            return
+    write_json(path, {"v": FACTS_VERSION, "files": facts}, indent=None)
+
+
+def facts_for(path, mtime, cache, tail=None, head=None,
+              size_of=os.path.getsize, want_gist=True):
+    """Заголовок, последняя реплика и первый промпт — считаются при промахе.
+
+    `gist` живёт по своему правилу: первый промпт сессии неизменен, и
+    найденный непустой переносится через любые изменения файла — head_gist для
+    неё больше не зовётся никогда, пока файл только дописывают. Пустой
+    пересчитывается, пока файл не перерос HEAD_LIMIT: дальше head_gist и сам
+    не смотрит, ответ измениться уже не может, и тогда ставится gistDone.
+
+    Допущение «только дописывают» не всегда верно: файл под тем же путём
+    иногда подменяют целиком — восстановили из бэкапа, сжали историю, отдали
+    id другой сессии. Уменьшение размера — единственная наблюдаемая подпись
+    такой подмены, и `size` в памятке хранится ровно ради неё: как только
+    текущий размер меньше сохранённого, gist и gistDone сбрасываются и
+    пересчитываются заново, как будто памятки для них не было.
+
+    `want_gist=False` — режим `dump`, куда `gist` не уезжает (см. DUMP_KEEP):
+    head_gist не зовётся вовсе. Запись, которую в этом случае кладёт промах,
+    НЕ несёт ключей `gist`/`gistDone` вовсе — не «искали и не нашли», а «не
+    искали». Класть туда `gist: "", gistDone: False` нельзя: `--state` читает
+    ту же памятку, и по попаданию mtime ловил бы эту бедную запись как
+    полную — простаивающая сессия (а это почти каждая строка списка) молча
+    показывала бы человеку последний ответ агента вместо первого промпта
+    вечно, потому что mtime у неё больше не сдвинется никогда. Ровно это и
+    произошло на сквозной проверке `--state` → `--dump` → `--state`, пока
+    отсутствие ключей не стало условием попадания ниже.
+
+    Отсюда и условие попадания на входе: mtime совпал — не значит «можно
+    вернуть как есть», если звонящему нужен gist, а запись его не знает.
+    Такая запись (mtime свежий, gist ещё не спрошен) — промах наполовину:
+    title/doing пересчитывать незачем, они не изменились бы при том же
+    mtime, а gist — обязаны.
+
+    Заголовок кладётся уже причёсанным (`clean`): его так читают оба режима, а
+    сам `clean` — регулярка, и на двухстах сессиях считается заметно.
+    """
+    tail = tail or tail_facts
+    head = head or head_gist
+    old = cache.get(path) or {}
+    same_mtime = old.get("mtime") == mtime
+    gist_known = "gist" in old and "gistDone" in old
+
+    if same_mtime and (not want_gist or gist_known):
+        return old
+
+    if same_mtime:
+        title, doing = old.get("title", ""), old.get("doing", "")
+    else:
+        title, doing = tail(path)
+        title = clean(title)
+
+    try:
+        size = size_of(path)
+    except OSError:
+        size = None
+
+    result = {"mtime": mtime, "title": title, "doing": doing}
+    if size is not None:
+        result["size"] = size
+
+    if not want_gist:
+        return result
+
+    truncated = (size is not None and old.get("size") is not None
+                 and size < old["size"])
+    gist = "" if (truncated or not gist_known) else (old.get("gist") or "")
+    done = bool(gist) or (gist_known and not truncated
+                           and bool(old.get("gistDone")))
+    if not done:
+        gist = head(path)
+        if gist:
+            # Тот же предел, что у doing (tail_facts, `t[:200]`) и у
+            # читателей ответа (`--state`, `f["gist"][:200]`) — хранить
+            # длиннее незачем, а памятка целиком перезаписывается на
+            # каждый опрос, где у выбранного файла сдвинулся mtime.
+            gist = gist[:200]
+            done = True
+        else:
+            done = size is not None and size > HEAD_LIMIT
+
+    result["gist"] = gist
+    result["gistDone"] = done
+    return result
+
+
+def write_json(path, obj, indent=1):
     """Atomically, and never at the cost of the run: a dump is a side effect."""
     if not path:
         return
@@ -1142,7 +1349,7 @@ def write_json(path, obj):
     tmp_path = path + ".%d.tmp" % os.getpid()
     try:
         with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, ensure_ascii=False, indent=1)
+            json.dump(obj, fh, ensure_ascii=False, indent=indent)
         os.replace(tmp_path, path)   # a reader never sees half a list
     except OSError:
         try:
@@ -1265,18 +1472,26 @@ elif mode == "sessions":
     print(len(files), file=sys.stderr)
 
 elif mode == "dump":
-    # Everything ccfzf can see, for whatever else wants to know it: every
-    # project, and the newest DUMP_SESSIONS sessions across all of them. Reading
-    # 200 tails costs more than the picker itself, which is why the caller runs
-    # this off to the side instead of on the way to the screen.
+    # Каждый проект и `limit` (argv[6]) новейших сессий по всем проектам —
+    # DUMP_SESSIONS тут лишь запасное значение на случай, если argv пуст.
+    # Читателей у результата два, и «for whatever else wants to know it» уже
+    # тогда было неправдой — см. обоснование у DUMP_KEEP. Хвостов запрошено
+    # сто, но большинство читать не приходится: попадание в памятку фактов
+    # (load_facts/save_facts) экономит разбор всем, у кого не сдвинулся mtime.
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
     projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
     windows_path = sys.argv[5] if len(sys.argv) > 5 else ""
+    limit = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else DUMP_SESSIONS
     now = time.time()
 
     dirs = scan_dirs()
     live, agents, _ = running_sessions()
+    # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
+    # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
+    # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
+    # с двух сторон незачем — число уезжает полем.
+    stamps = hook_stamps()
     windows, _, _, _ = read_windows(windows_path, now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
@@ -1295,34 +1510,35 @@ elif mode == "dump":
         })
 
     if sessions_path:
-        frozen = frozen_ids()
         files = []
         for entry in dirs:
             files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
         files.sort(key=lambda x: -x[1])
         total = len(files)
 
+        # `live` здесь уже вобрал сессии с открытым окном (`live |= set(windows)`
+        # выше), так что второго множества не нужно.
+        picked = pick_files(files, limit, live)
+
+        cache = load_facts(FACTS_FILE)
+        facts = {}
         sessions = []
-        for path, mtime, cwd in files[:DUMP_SESSIONS]:
-            sid = os.path.basename(path)[:-6]
-            title, doing = tail_facts(path)
-            title = clean(title)
-            # a pasted prompt runs to kilobytes; the list only ever shows a line
-            gist = (head_gist(path) or doing)[:200]
+        for path, mtime, cwd in picked:
+            sid = sid_of(path)
+            # head_gist здесь не зовётся: `gist` в дамп не уезжает, а стоил
+            # он 165 мс из 320 на двухстах сессиях.
+            f = facts_for(path, mtime, cache, want_gist=False)
+            facts[path] = f
             agent = agents.get(sid) or {}
-            sessions.append({
-                "id": sid, "cwd": cwd, "file": path,
-                "projects": sorted(owners_of(cwd, marks)),
-                "title": title, "gist": gist, "doing": doing,
-                "mtime": mtime, "age": ago(mtime, now),
-                "live": sid in live, "frozen": sid in frozen,
-                # A background agent (`claude agents`) has no terminal of its
-                # own: it was forked off `parent` and left running under the
-                # daemon. Whoever binds windows to sessions has to skip it and
-                # credit its work to the parent instead.
+            sessions.append(dump_record({
+                "id": sid, "cwd": cwd, "title": f["title"],
+                "mtime": mtime, "live": sid in live,
                 "kind": agent.get("kind", "interactive"),
                 "parent": agent.get("parent", ""),
-            })
+                "activityAt": int(stamps.get(sid, 0)),
+            }))
+        if facts != cache:
+            save_facts(FACTS_FILE, facts)
 
         write_json(sessions_path, {
             "generated": now, "total": total, "shown": len(sessions),
@@ -1340,10 +1556,16 @@ elif mode == "state":
     # раньше это делал, заменён на того, кто зовёт --state.
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     now = time.time()
 
     dirs = scan_dirs()
     live, agents, procs = running_sessions()
+    # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
+    # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
+    # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
+    # с двух сторон незачем — число уезжает полем.
+    stamps = hook_stamps()
     frozen = frozen_ids()
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
@@ -1378,18 +1600,26 @@ elif mode == "state":
         files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
     files.sort(key=lambda x: -x[1])
 
+    # `live` здесь уже вобрал сессии с открытым окном (`live |= set(windows)`
+    # выше), так что второго множества не нужно.
+    picked = pick_files(files, limit, live)
+
+    cache = load_facts(FACTS_FILE)
+    facts = {}
     sessions = []
-    for path, mtime, cwd in files[:DUMP_SESSIONS]:
-        sid = os.path.basename(path)[:-6]
-        title, doing = tail_facts(path)
+    for path, mtime, cwd in picked:
+        sid = sid_of(path)
+        f = facts_for(path, mtime, cache)
+        facts[path] = f
         agent = agents.get(sid) or {}
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
-            "title": clean(title), "gist": (head_gist(path) or doing)[:200],
-            "doing": doing,
+            "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
+            "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
             "live": sid in live, "frozen": sid in frozen,
+            "activityAt": int(stamps.get(sid, 0)),
             "kind": agent.get("kind", "interactive"),
             "parent": agent.get("parent", ""),
             "pid": (procs.get(sid) or {}).get("pid", 0),
@@ -1402,17 +1632,24 @@ elif mode == "state":
             "window": windows.get(sid),
         })
 
-    # Дамп — подмножество того же списка: одни и те же файлы, те же хвосты, тот
-    # же срез DUMP_SESSIONS. Собран здесь проекцией, а не вторым проходом,
-    # потому что весь его расход — чтение двухсот хвостов — уже оплачен выше.
+    # Записи файлов, выпавших из среза, в памятку не попали — чистка выходит
+    # сама. Пишем только при отличии: иначе каждый опрос пикера стоил бы
+    # записи всей памятки на диск.
+    if facts != cache:
+        save_facts(FACTS_FILE, facts)
+
+    # Дамп — подмножество того же списка, собранное здесь проекцией, а не
+    # вторым проходом. Не «тот же срез DUMP_SESSIONS» — у режима `dump` свой
+    # `limit` из своего argv, он может отличаться от этого. И не «расход уже
+    # оплачен выше» — читать двести хвостов не пришлось и здесь: памятка
+    # фактов (load_facts/save_facts) отдаёт большинство из кеша по mtime.
     # Лишние поля (pid, tty, tmux, agent, window) читателю дампа не нужны:
-    # процессы он видит свои, а окна сам сюда и кладёт.
+    # процессы он видит свои, а окна сам сюда и кладёт. Список полей и
+    # обоснование — у DUMP_KEEP.
     if stale_dump(sessions_path, now, STATE_DUMP_MAX_AGE):
-        keep = ("id", "cwd", "file", "projects", "title", "gist", "doing",
-                "mtime", "age", "live", "frozen", "kind", "parent")
         write_json(sessions_path, {
             "generated": now, "total": len(files), "shown": len(sessions),
-            "sessions": [{k: s[k] for k in keep} for s in sessions],
+            "sessions": [dump_record(s) for s in sessions],
         })
 
     # Чья это машина и какому процессу принадлежат окна. Первое отвечает
@@ -1471,13 +1708,13 @@ PYEOF
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE"
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit"
   exit 0
 fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE"
+  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit"
   exit 0
 fi
 
@@ -1508,12 +1745,12 @@ build_srows() {
 }
 
 # The dump covers every project, so it has nothing to do with what is on screen
-# and runs detached: its 200 file tails cost more than the picker itself, and
-# nothing here waits for them. Its own scan keeps it independent of $tmp, which
-# the exit trap takes away the moment the user picks something.
+# and runs detached: its `--limit` file tails cost more than the picker itself,
+# and nothing here waits for them. Its own scan keeps it independent of $tmp,
+# which the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" \
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" \
     >/dev/null 2>&1 &
 }
 
