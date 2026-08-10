@@ -1313,6 +1313,11 @@ elif mode == "dump":
 
     dirs = scan_dirs()
     live, agents, _ = running_sessions()
+    # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
+    # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
+    # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
+    # с двух сторон незачем — число уезжает полем.
+    stamps = hook_stamps()
     windows, _, _, _ = read_windows(windows_path, now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
@@ -1356,6 +1361,7 @@ elif mode == "dump":
                 "title": title, "gist": gist, "doing": doing,
                 "mtime": mtime, "age": ago(mtime, now),
                 "live": sid in live, "frozen": sid in frozen,
+                "activityAt": int(stamps.get(sid, 0)),
                 # A background agent (`claude agents`) has no terminal of its
                 # own: it was forked off `parent` and left running under the
                 # daemon. Whoever binds windows to sessions has to skip it and
@@ -1385,6 +1391,11 @@ elif mode == "state":
 
     dirs = scan_dirs()
     live, agents, procs = running_sessions()
+    # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
+    # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
+    # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
+    # с двух сторон незачем — число уезжает полем.
+    stamps = hook_stamps()
     frozen = frozen_ids()
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
@@ -1435,6 +1446,7 @@ elif mode == "state":
             "doing": doing,
             "mtime": mtime, "age": ago(mtime, now),
             "live": sid in live, "frozen": sid in frozen,
+            "activityAt": int(stamps.get(sid, 0)),
             "kind": agent.get("kind", "interactive"),
             "parent": agent.get("parent", ""),
             "pid": (procs.get(sid) or {}).get("pid", 0),
