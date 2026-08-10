@@ -439,9 +439,10 @@ def read_windows(path, now):
     старше WINDOWS_TTL — возвращается пустота, и ни ошибки, ни строчки в stderr.
     Список сессий обязан пережить любой мусор в добавке: порченый файл должен
     стоить пометки, а не списка. Со снимками то же правило: кривая запись стоит
-    себя, порченое поле — только поля.
+    себя, порченое поле — только поля. То же правило действует и с хоткеями
+    проектов.
     """
-    empty = ({}, "", 0, [])
+    empty = ({}, "", 0, [], [])
     if not path:
         return empty
     try:
@@ -500,7 +501,29 @@ def read_windows(path, now):
                 })
             snaps.append({"id": sid, "created": num(s.get("created")), "sessions": sessions})
 
-    return out, host, pid, snaps
+    # Хоткеи проектов. Знать их отсюда неоткуда: список живёт в конфиге
+    # windows11-manager, а регистрирует клавиши читатель. Здесь это просто ещё
+    # одно поле, и недоверие к нему то же, что к окнам: запись без каталога или
+    # без клавиши не значит ничего и выбрасывается молча.
+    projects = []
+    raw_projects = o.get("projects")
+    if isinstance(raw_projects, list):
+        for p in raw_projects:
+            if not isinstance(p, dict):
+                continue
+            cwd = p.get("cwd")
+            hotkey = p.get("hotkey")
+            if not isinstance(cwd, str) or not cwd:
+                continue
+            if not isinstance(hotkey, str) or not hotkey:
+                continue
+            projects.append({
+                "cwd": cwd,
+                "name": p.get("name") if isinstance(p.get("name"), str) else "",
+                "hotkey": hotkey,
+            })
+
+    return out, host, pid, snaps, projects
 
 
 def usage_text(sid):
@@ -1492,7 +1515,7 @@ elif mode == "dump":
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
     # с двух сторон незачем — число уезжает полем.
     stamps = hook_stamps()
-    windows, _, _, _ = read_windows(windows_path, now)
+    windows, _, _, _, _ = read_windows(windows_path, now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
     # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
@@ -1570,7 +1593,7 @@ elif mode == "state":
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
     # машине. Их владелец кладёт файл рядом, и дальше это просто ещё одно поле.
-    windows, window_host, window_pid, window_snapshots = read_windows(
+    windows, window_host, window_pid, window_snapshots, window_projects = read_windows(
         sys.argv[3] if len(sys.argv) > 3 else "", now)
     # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
     # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но

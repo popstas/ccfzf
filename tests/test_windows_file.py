@@ -14,12 +14,23 @@ NOW = 1785958293
 
 
 def _read(obj, now=NOW):
-    """read_windows принимает путь, поэтому файл каждому тесту пишется свой."""
+    """read_windows принимает путь, поэтому файл каждому тесту пишется свой.
+    Отдаёт первые четыре значения: проекты спрашивает _read_projects."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "windows.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(obj, fh)
-        return CC["read_windows"](path, now)
+        return CC["read_windows"](path, now)[:4]
+
+
+def _read_projects(obj, now=NOW):
+    """Пятое значение read_windows. Отдельным помощником: прежние тесты
+    распаковывают четыре, и переписывать их ради нового поля незачем."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "windows.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+        return CC["read_windows"](path, now)[4]
 
 
 def _payload(win, snaps=None):
@@ -162,6 +173,39 @@ def test_stale_file_gives_no_snapshots_either():
                                   "windows": {UUID_A: {"title": "x"}},
                                   "snapshots": [SNAP]}, now=NOW)
     assert windows == {} and snaps == [], (windows, snaps)
+
+
+def test_project_hotkeys_reach_the_reader():
+    # Единственный источник хоткеев — конфиг windows11-manager, и другого пути
+    # к читателю у них нет: пикер про менеджер не знает ничего.
+    payload = _payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW - 5})
+    payload["projects"] = [{"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11"}]
+    assert _read_projects(payload) == [
+        {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11"}], _read_projects(payload)
+
+
+def test_junk_projects_cost_the_field_not_the_list():
+    # Правило то же, что у окон и снимков: порченая добавка не стоит списка
+    # сессий. Запись без cwd или без хоткея не значит ничего.
+    payload = _payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW - 5})
+    payload["projects"] = ["not a dict", {"cwd": "/p/one"}, {"hotkey": "Ctrl+F1"},
+                           {"cwd": "/p/two", "hotkey": "Ctrl+F2"}]
+    assert _read_projects(payload) == [
+        {"cwd": "/p/two", "name": "", "hotkey": "Ctrl+F2"}], _read_projects(payload)
+
+
+def test_projects_missing_is_empty_list():
+    # Старый трекер про хоткеи не знает, и это не ошибка.
+    assert _read_projects(_payload({"title": "ccfzf", "desktop": 1, "lastSeen": 0})) == []
+
+
+def test_stale_file_gives_no_projects_either():
+    # Протухший файл гасит хоткеи тем же порогом, что и окна: второго таймера
+    # у них нет.
+    payload = {"generated": NOW - 10_000, "host": "pc", "pid": 42,
+               "windows": {UUID_A: {"title": "ccfzf", "desktop": 1}},
+               "projects": [{"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11"}]}
+    assert _read_projects(payload) == []
 
 
 if __name__ == "__main__":
