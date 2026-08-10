@@ -219,7 +219,7 @@ Every run also writes down what it saw, so whatever else you script around Claud
 }
 ```
 
-Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading `--limit` file tails costs more than the picker itself (~0.3 s here, at the default of 100). Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
+Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading `--limit` file tails costs more than the picker itself: ~0.12 s cold, ~0.08 s once the facts memo is warm, here, at the default of 100. Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
 
 ## The one file that comes the other way
 

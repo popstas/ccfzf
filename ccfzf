@@ -1728,9 +1728,9 @@ build_srows() {
 }
 
 # The dump covers every project, so it has nothing to do with what is on screen
-# and runs detached: its 200 file tails cost more than the picker itself, and
-# nothing here waits for them. Its own scan keeps it independent of $tmp, which
-# the exit trap takes away the moment the user picks something.
+# and runs detached: its `--limit` file tails cost more than the picker itself,
+# and nothing here waits for them. Its own scan keeps it independent of $tmp,
+# which the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
   python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" \
