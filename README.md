@@ -85,6 +85,7 @@ ccfzf webapp --model opus   trailing arguments are passed on to claude
 ccfzf --kiosk               run everything inside, return to the list on exit
 ccfzf --print               print the command instead of running it
 ccfzf --session <id>        go straight into a session by id, no picker
+ccfzf --limit <n>           how many newest sessions to look at at all (100)
 ```
 
 `--session` is for scripts, not people: a missing or unknown id is a hard error (message on stderr, exit 1) rather than a fall back to the picker, which would hang with nobody at the keyboard. It composes with `--kiosk` (runs the session, then lands on that project's session list) and with `--print` (prints `cd <dir> && claude --resume <id>` instead of running it).
@@ -127,7 +128,8 @@ Picked commands run in an interactive shell (`$SHELL -ic 'cd <dir> && <cmd>'`), 
 | `CCFZF_PROJECT_COMMAND3` | — | command 3 |
 | `CCFZF_PROJECT_COMMAND_NAME[2,3]` | first word of the command | label shown in the list |
 | `CCFZF_CLAUDE_COMMAND` | `claude` | the claude binary itself — a wrapper or extra flags |
-| `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | dump of the 200 newest sessions across all projects; empty turns it off |
+| `CCFZF_SESSIONS_FILE` | `~/.ccfzf.sessions.json` | dump for a window tracker on another machine, `--limit` newest sessions; empty turns it off |
+| `CCFZF_FACTS_FILE` | `$XDG_CACHE_HOME/ccfzf/facts.json` | memo of per-transcript facts, so a fresh `--state` process does not recompute them; empty turns it off |
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
 | `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
@@ -140,32 +142,35 @@ Border, height and layout are left to your `FZF_DEFAULT_OPTS`.
 
 Every run also writes down what it saw, so whatever else you script around Claude Code can read it without paying for its own scan. Two files, both replaced on every launch (and again on the way back from a kiosk command, where the data has changed underneath). `ccfzf --dump` rewrites the same files and exits — for callers that need a fresh dump without opening the picker.
 
-`CCFZF_SESSIONS_FILE` — the 200 newest sessions across **all** projects, not just the one you opened, newest first:
+`CCFZF_SESSIONS_FILE` — the newest sessions across **all** projects (`--limit`, 100 by default), newest first, plus every live session and every session with a window open, so the file always holds whoever a window on screen might belong to. The reader is a window tracker on another machine, and the fields are the ones it needs — nothing else:
 
 ```json
 {
  "generated": 1785460168.138,
  "total": 860,
- "shown": 200,
+ "shown": 104,
  "sessions": [
   {
    "id": "c5bf2507-7381-4aa9-979d-b66242f39d7f",
-   "cwd": "/home/you/projects/js/webapp",
-   "file": "/home/you/.claude/projects/-home-you-projects-js-webapp/c5bf2507-….jsonl",
-   "projects": ["/home/you/projects/js/webapp"],
    "title": "Add a session picker",
-   "gist": "I need a command that takes a project path…",
-   "doing": "Now let me verify it works end to end.",
-   "mtime": 1785460166.26,
-   "age": "12m",
+   "cwd": "/home/you/projects/js/webapp",
    "live": true,
-   "frozen": false
+   "mtime": 1785460166.26,
+   "kind": "interactive",
+   "parent": "",
+   "activityAt": 1785460166
   }
  ]
 }
 ```
 
-`total` is how many sessions exist, `shown` how many made it into the file. `projects` are the project lists this session appears in — its own `cwd` plus the ancestor mark, if any. `title` and `gist` are the same two strings the picker shows; `gist` is capped at 200 characters, because a pasted prompt runs to kilobytes and the list only ever shows a line of it.
+`total` is how many sessions exist, `shown` how many made it into the file. `activityAt` is when this session's hook last wrote, in epoch seconds, or 0 if it never did — the reader ranks same-titled candidates by it, and computing it here saves it a network `stat` per candidate. `kind` is `interactive` or `background`, and `parent` names the session a background agent was forked from.
+
+`ccfzf --state` is the other output and a richer one: it prints everything above plus `file`, `projects`, `gist`, `doing`, `age`, `frozen`, `pid`, `tty`, `tmux`, `agent` and `window` on stdout, for a picker on another machine. The dump is not a subset by accident — the two have different readers.
+
+### The facts memo
+
+`CCFZF_FACTS_FILE` caches what the last run learned about each transcript — its title, first prompt and size — keyed by path, so the next `--state` or `--dump` does not reread every transcript's tail just to get `title` back. `--dump` never needs the first prompt, so its record carries no `gist`/`gistDone` keys at all — not "looked and found nothing" but "did not look" — and a later `--state`, even when the transcript's `mtime` still matches, sees the missing keys and goes looking anyway rather than trusting a half-empty record. A record is recomputed once its transcript's `mtime` moves; the cached `gist` is separately dropped whenever the transcript's `size` has shrunk since it was last measured, the signature of a transcript replaced outright — restored from a backup, compacted — rather than appended to, which an `mtime` bump alone would not catch (a stable `gist` otherwise survives any number of appends unchanged). The stored `gist` is capped at 200 characters, matching the field it feeds in `--state`. The file carries a version number; a version it does not recognise is read as an empty memo, so a format change costs one cold run rather than a wrong one.
 
 ### Откуда берётся `live`
 
@@ -214,11 +219,11 @@ Every run also writes down what it saw, so whatever else you script around Claud
 }
 ```
 
-Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading 200 file tails costs more than the picker itself (~0.3 s here). Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
+Both files are written through a temporary file and renamed into place, so a reader never sees half a list. The dump runs as a detached child and nothing on screen waits for it — reading `--limit` file tails costs more than the picker itself (~0.3 s here, at the default of 100). Set either variable to an empty string to turn that half off; set both and nothing is spawned at all.
 
 ## The one file that comes the other way
 
-`ccfzf --state` prints the whole answer as JSON on stdout, for a reader on another machine: `generated`, `sessions`, `projects`, `windowHost` and `windowPid`. The sessions are the same 200 as in the dump, each with `pid`, `tty`, `tmux`, `agent` and `window` on top of the dumped fields. `projects` is the list the first picker shows, minus the colouring — `{path, name, mark, sessions, live, mtime}`, no `age`, because a reader that formats the age itself would otherwise carry two answers that drift apart. A marked project nobody has ever opened has no transcripts to date it, so its `mtime` is `0` — and those are precisely the rows the reader needs the list for.
+`ccfzf --state` prints the whole answer as JSON on stdout, for a reader on another machine: `generated`, `sessions`, `projects`, `windowHost` and `windowPid`. The sessions are the same set as in the dump, with the extra fields listed above. `projects` is the list the first picker shows, minus the colouring — `{path, name, mark, sessions, live, mtime}`, no `age`, because a reader that formats the age itself would otherwise carry two answers that drift apart. A marked project nobody has ever opened has no transcripts to date it, so its `mtime` is `0` — and those are precisely the rows the reader needs the list for.
 
 The one file it writes is the sessions dump, and only when that has gone stale (30 s) — the picker that used to keep it fresh is the one that now calls `--state`.
 
