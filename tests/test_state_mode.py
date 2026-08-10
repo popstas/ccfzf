@@ -79,10 +79,16 @@ def test_activity_at_comes_from_the_hook_file():
         state_file = os.path.join(hooks, A + ".state.json")
         with open(state_file, "w", encoding="utf-8") as fh:
             fh.write("{}")
-        os.utime(state_file, (1234567890, 1234567890))
+        # Дробная часть — нарочно: mtime файловой системы дробный, а
+        # activityAt обязан быть int и floor от него. `1234567890 ==
+        # 1234567890.0` в Python истинно, так что сравнение одним `==` не
+        # поймало бы регрессию, потерявшую int(...) в ccfzf — json.loads
+        # тихо вернул бы float, и assert прошёл бы как ни в чём не бывало.
+        os.utime(state_file, (1234567890.7, 1234567890.7))
         out = run_state(tmp, os.path.join(tmp, "dump.json"))
         by_id = {s["id"]: s for s in out["sessions"]}
         assert by_id[A]["activityAt"] == 1234567890, by_id[A]
+        assert isinstance(by_id[A]["activityAt"], int), by_id[A]
         # Хук про неё не писал — ноль, ровно то же, что сегодня возвращает
         # сетевой вызов у читателя при отсутствии файла.
         assert by_id[B]["activityAt"] == 0, by_id[B]
