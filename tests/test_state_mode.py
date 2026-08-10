@@ -40,9 +40,8 @@ def build_home(tmp, sids):
     return cwd
 
 
-def run_state(tmp, dump_path, *extra):
-    env = dict(os.environ)
-    env.update({
+def _facts_env(tmp, dump_path):
+    return {
         "HOME": tmp,
         "FZF_MARKS_FILE": os.path.join(tmp, "no-marks"),
         "CCFZF_SESSIONS_FILE": dump_path,
@@ -50,11 +49,48 @@ def run_state(tmp, dump_path, *extra):
         "CCFZF_WINDOWS_FILE": "",
         "CCFZF_FACTS_FILE": os.path.join(tmp, "facts.json"),
         "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
-    })
+    }
+
+
+def run_state(tmp, dump_path, *extra):
+    env = dict(os.environ)
+    env.update(_facts_env(tmp, dump_path))
     r = subprocess.run(["bash", SRC, "--state", *extra],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, (r.returncode, r.stderr)
     return json.loads(r.stdout)
+
+
+def run_dump(tmp, dump_path):
+    # Тот же общий facts.json (CCFZF_FACTS_FILE), что и у run_state — оба
+    # режима пишут одну памятку, и находки второго круга ревью ровно про то,
+    # как записи одного писателя читает другой.
+    env = dict(os.environ)
+    env.update(_facts_env(tmp, dump_path))
+    r = subprocess.run(["bash", SRC, "--dump"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, (r.returncode, r.stderr)
+
+
+def build_reply_session(tmp, sid, first_prompt, later_reply, mtime=2000):
+    """Транскрипт с различимыми gist (первый промпт) и doing (более поздний
+    ответ) — нужен, чтобы в тесте отличить, какое из двух значений вернул
+    --state после утечки памятки."""
+    cwd = os.path.join(tmp, "proj")
+    os.makedirs(cwd, exist_ok=True)
+    d = os.path.join(tmp, ".claude", "projects", re.sub(r"[^a-zA-Z0-9]", "-", cwd))
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, sid + ".jsonl")
+    _write_reply_session(path, cwd, first_prompt, later_reply)
+    os.utime(path, (mtime, mtime))
+    return path, cwd
+
+
+def _write_reply_session(path, cwd, first_prompt, later_reply):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"cwd": cwd, "type": "user",
+                             "message": {"role": "user", "content": first_prompt}}) + "\n")
+        fh.write(json.dumps({"type": "assistant",
+                             "message": {"role": "assistant", "content": later_reply}}) + "\n")
 
 
 def test_state_lists_the_fixture_sessions():
@@ -161,6 +197,48 @@ def test_a_removed_fixture_drops_out_of_the_memo():
         with open(facts_path, encoding="utf-8") as fh:
             after = json.load(fh)
         assert not any(p.endswith(A + ".jsonl") for p in after["files"]), after
+
+
+def test_state_after_a_cold_dump_still_answers_the_first_prompt_not_the_latest_reply():
+    # Сценарий B из второго круга ревью. Порядок важен: dump должен увидеть
+    # сессию первым, на холодной памятке — тогда его старая запись несла
+    # gist="", gistDone=False с уже настоящим mtime. Следующий --state ловил
+    # её как полное попадание (mtime совпал), f["gist"] был пуст, и сборка
+    # ответа (`f["gist"] or f["doing"]`) молча подставляла последний ответ
+    # агента вместо первого промпта — и так на каждом следующем опросе, пока
+    # у простаивающей сессии не сдвинется mtime, то есть никогда.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_reply_session(tmp, A, "FIRST PROMPT", "LATER REPLY")
+        dump_path = os.path.join(tmp, "dump.json")
+
+        run_dump(tmp, dump_path)  # тот самый писатель, что раньше отравлял памятку
+
+        out = run_state(tmp, dump_path)
+        assert out["sessions"][0]["gist"] == "FIRST PROMPT", out["sessions"]
+
+
+def test_truncation_guard_survives_a_dump_in_the_middle():
+    # Сценарий D из второго круга ревью. dump раньше сам обновлял size на
+    # укороченный размер, не тронув gist, — и тем самым стирал подпись
+    # усечения (size меньше сохранённого) для следующего --state. Починка не
+    # опирается только на size: dump-запись без ключа gist читается как
+    # «не искали», и --state пересчитывает gist сам вне зависимости от того,
+    # что лежит в size.
+    with tempfile.TemporaryDirectory() as tmp:
+        path, cwd = build_reply_session(
+            tmp, A, "OLD PROMPT " * 5, "OLD REPLY " * 5, mtime=2000)
+        dump_path = os.path.join(tmp, "dump.json")
+        run_state(tmp, dump_path)
+
+        # Файл под тем же путём переписан заново, короче прежнего — ровно та
+        # подмена, ради которой сторож и заведён.
+        _write_reply_session(path, cwd, "NEW", "NEW REPLY")
+        os.utime(path, (3000, 3000))
+
+        run_dump(tmp, dump_path)
+
+        out = run_state(tmp, dump_path)
+        assert out["sessions"][0]["gist"] == "NEW", out["sessions"]
 
 
 if __name__ == "__main__":

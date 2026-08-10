@@ -180,7 +180,14 @@ HOOK_LIVE_TTL = 120
 # Ключ — mtime файла. Про врущий mtime здесь говорить нечего: каталог
 # локальный, ext4; тот шрам — про чтение V: с Windows, где атрибуты отдаёт
 # кэш SMB долгоживущему процессу. Пустая строка выключает памятку.
-FACTS_VERSION = 1
+#
+# Версия 2: у записи появилось поле size (сторож усечения) и обрезка gist до
+# 200 символов. Записи версии 1 не знали ни того, ни другого — их size
+# отсутствовал бы (сторож молчал бы до первой смены mtime), а старый
+# необрезанный gist не обрезался бы никогда (обрезка стоит только на пути
+# свежего head_gist). Поднятая версия лечит обе разом ценой одного холодного
+# прогона: load_facts отбрасывает файл чужой версии как пустой.
+FACTS_VERSION = 2
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -1254,10 +1261,21 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     пересчитываются заново, как будто памятки для них не было.
 
     `want_gist=False` — режим `dump`, куда `gist` не уезжает (см. DUMP_KEEP):
-    head_gist не зовётся вовсе, а gist/gistDone остаются такими, какими
-    нашлись в памятке. Без этого параметра холодная памятка в `--dump`
-    платила бы за head_gist те же 165 мс из 320, которые задача 4 уже
-    вычеркнула из этой ветки.
+    head_gist не зовётся вовсе. Запись, которую в этом случае кладёт промах,
+    НЕ несёт ключей `gist`/`gistDone` вовсе — не «искали и не нашли», а «не
+    искали». Класть туда `gist: "", gistDone: False` нельзя: `--state` читает
+    ту же памятку, и по попаданию mtime ловил бы эту бедную запись как
+    полную — простаивающая сессия (а это почти каждая строка списка) молча
+    показывала бы человеку последний ответ агента вместо первого промпта
+    вечно, потому что mtime у неё больше не сдвинется никогда. Ровно это и
+    произошло на сквозной проверке `--state` → `--dump` → `--state`, пока
+    отсутствие ключей не стало условием попадания ниже.
+
+    Отсюда и условие попадания на входе: mtime совпал — не значит «можно
+    вернуть как есть», если звонящему нужен gist, а запись его не знает.
+    Такая запись (mtime свежий, gist ещё не спрошен) — промах наполовину:
+    title/doing пересчитывать незачем, они не изменились бы при том же
+    mtime, а gist — обязаны.
 
     Заголовок кладётся уже причёсанным (`clean`): его так читают оба режима, а
     сам `clean` — регулярка, и на двухстах сессиях считается заметно.
@@ -1265,37 +1283,49 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     tail = tail or tail_facts
     head = head or head_gist
     old = cache.get(path) or {}
-    if old.get("mtime") == mtime:
+    same_mtime = old.get("mtime") == mtime
+    gist_known = "gist" in old and "gistDone" in old
+
+    if same_mtime and (not want_gist or gist_known):
         return old
-    title, doing = tail(path)
+
+    if same_mtime:
+        title, doing = old.get("title", ""), old.get("doing", "")
+    else:
+        title, doing = tail(path)
+        title = clean(title)
+
     try:
         size = size_of(path)
     except OSError:
         size = None
 
-    if not want_gist:
-        gist, done = old.get("gist", ""), bool(old.get("gistDone"))
-    else:
-        truncated = (size is not None and old.get("size") is not None
-                     and size < old["size"])
-        gist = "" if truncated else (old.get("gist") or "")
-        done = bool(gist) or (not truncated and bool(old.get("gistDone")))
-        if not done:
-            gist = head(path)
-            if gist:
-                # Тот же предел, что у doing (tail_facts, `t[:200]`) и у
-                # читателей ответа (`--state`, `f["gist"][:200]`) — хранить
-                # длиннее незачем, а памятка целиком перезаписывается на
-                # каждый опрос, где у выбранного файла сдвинулся mtime.
-                gist = gist[:200]
-                done = True
-            else:
-                done = size is not None and size > HEAD_LIMIT
-
-    result = {"mtime": mtime, "title": clean(title), "doing": doing,
-              "gist": gist, "gistDone": done}
+    result = {"mtime": mtime, "title": title, "doing": doing}
     if size is not None:
         result["size"] = size
+
+    if not want_gist:
+        return result
+
+    truncated = (size is not None and old.get("size") is not None
+                 and size < old["size"])
+    gist = "" if (truncated or not gist_known) else (old.get("gist") or "")
+    done = bool(gist) or (gist_known and not truncated
+                           and bool(old.get("gistDone")))
+    if not done:
+        gist = head(path)
+        if gist:
+            # Тот же предел, что у doing (tail_facts, `t[:200]`) и у
+            # читателей ответа (`--state`, `f["gist"][:200]`) — хранить
+            # длиннее незачем, а памятка целиком перезаписывается на
+            # каждый опрос, где у выбранного файла сдвинулся mtime.
+            gist = gist[:200]
+            done = True
+        else:
+            done = size is not None and size > HEAD_LIMIT
+
+    result["gist"] = gist
+    result["gistDone"] = done
     return result
 
 

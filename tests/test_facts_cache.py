@@ -114,17 +114,52 @@ def test_want_gist_false_never_calls_head():
     calls, tail, head = counting()
     got = CC["facts_for"](P, 100.0, {}, tail=tail, head=head, want_gist=False)
     assert calls["head"] == 0, calls
-    assert got["gist"] == "" and got["gistDone"] is False, got
+    assert "gist" not in got and "gistDone" not in got, got
 
 
-def test_want_gist_false_keeps_whatever_the_memo_already_has():
+def test_want_gist_false_never_writes_a_stale_gist_on_a_miss():
+    # Критично: класть здесь gist="", gistDone=False было багом — --state
+    # читает ту же памятку, попал бы по mtime и решил бы, что gist известен
+    # и пуст, хотя dump его попросту не искал. Простаивающая сессия после
+    # этого показывала бы человеку последний ответ агента вместо первого
+    # промпта вечно, потому что mtime у неё больше не сдвинется. Отсутствие
+    # ключей — единственный безопасный способ сказать «не искали», и dump не
+    # переносит даже старый известный gist: у него нет своего способа
+    # проверить его на усечение (см. test_a_shrunk_file_invalidates_...).
     calls, tail, head = counting()
     cache = {P: {"mtime": 100.0, "title": "old", "doing": "old",
                  "gist": "уже есть", "gistDone": True, "size": 5}}
     got = CC["facts_for"](P, 200.0, cache, tail=tail, head=head,
                           want_gist=False)
     assert calls["head"] == 0, calls
-    assert got["gist"] == "уже есть" and got["gistDone"] is True, got
+    assert "gist" not in got and "gistDone" not in got, got
+
+
+def test_want_gist_false_hit_passes_the_known_gist_through_unmodified():
+    # Настоящее попадание (mtime совпал, gist уже был известен) не портится:
+    # dump ничего не пересчитывает и просто возвращает всю старую запись.
+    calls, tail, head = counting()
+    cache = {P: {"mtime": 100.0, "title": "T", "doing": "D",
+                 "gist": "G", "gistDone": True, "size": 5}}
+    got = CC["facts_for"](P, 100.0, cache, tail=tail, head=head,
+                          want_gist=False)
+    assert got == cache[P], got
+    assert calls == {"tail": 0, "head": 0}, calls
+
+
+def test_a_gist_unknown_record_is_a_half_miss_even_at_the_same_mtime():
+    # Тот самый баг с находки 3: dump мог записать факты первым — title и
+    # doing на этот mtime уже верны, а ключей gist/gistDone в записи нет
+    # вовсе. Для звонка, которому gist нужен, совпавший mtime не должен
+    # считаться попаданием: пересчитывать title/doing незачем (они не
+    # изменились бы при том же mtime), а gist искать обязаны.
+    calls, tail, head = counting(gist="первый промпт")
+    cache = {P: {"mtime": 100.0, "title": "T", "doing": "D", "size": 5}}
+    got = CC["facts_for"](P, 100.0, cache, tail=tail, head=head)
+    assert calls["tail"] == 0, calls
+    assert calls["head"] == 1, calls
+    assert got["title"] == "T" and got["doing"] == "D", got
+    assert got["gist"] == "первый промпт" and got["gistDone"] is True, got
 
 
 def test_a_broken_memo_reads_as_empty():
