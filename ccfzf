@@ -11,6 +11,8 @@
 #   ccfzf --dump                rewrite the sessions/projects json dumps and exit
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
+#   ccfzf --limit <n>           how many newest sessions to look at at all
+#                               (default 100; applies to --state and --dump)
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -18,7 +20,8 @@
 #   CCFZF_PROJECT_COMMAND[2,3]       what to run (first defaults to codex)
 #   CCFZF_PROJECT_COMMAND_NAME[2,3]  label in the list (defaults to first word)
 #   CCFZF_CLAUDE_COMMAND             the claude binary itself (default: claude)
-#   CCFZF_SESSIONS_FILE              json dump: 200 newest sessions, all projects
+#   CCFZF_SESSIONS_FILE              json dump for the window tracker: the
+#                                    newest sessions (see --limit), all projects
 #                                    (default ~/.ccfzf.sessions.json, empty — off);
 #                                    --dump always rewrites it, --state only when
 #                                    it is older than STATE_DUMP_MAX_AGE
@@ -42,9 +45,9 @@ MARKS="${FZF_MARKS_FILE:-$HOME/.fzf-marks}"
 # Treated as a shell fragment, like the project commands below.
 CLAUDE_CMD="${CCFZF_CLAUDE_COMMAND:-claude}"
 
-# What ccfzf sees is also dumped as json for whatever else wants to know it:
-# every project, and the 200 newest sessions across all of them. Set either to
-# an empty string to turn that dump off.
+# What ccfzf sees is also dumped as json for the window tracker on the other
+# machine: every project, and the newest --limit sessions across all of them.
+# Set either to an empty string to turn that dump off.
 SESSIONS_FILE="${CCFZF_SESSIONS_FILE-$HOME/.ccfzf.sessions.json}"
 PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 
@@ -68,7 +71,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -76,6 +79,10 @@ dump_only=0
 state_only=0
 project=""
 session_id=""
+# Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
+# рассчитаны на список для человека; читателю дампа столько не нужно никогда,
+# а платит за них и он (разбор), и pc-virt (двести хвостов на каждый опрос).
+limit=100
 claude_args=()
 
 while (($#)); do
@@ -86,11 +93,15 @@ while (($#)); do
     --state) state_only=1; shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
+    --limit) limit="${2-}"; [[ -n $limit ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }; shift 2 ;;
+    --limit=*) limit="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; claude_args=("$@"); break ;;
     *) project="$1"; shift; [[ ${1:-} == "--" ]] && shift; claude_args=("$@"); break ;;
   esac
 done
+
+[[ $limit =~ ^[1-9][0-9]*$ ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }
 
 ((kiosk && print_mode)) && { echo "ccfzf: --kiosk and --print are mutually exclusive" >&2; exit 2; }
 ((dump_only && (kiosk || print_mode || ${#session_id} || ${#project}))) && {
@@ -133,7 +144,7 @@ FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 STATUS_DIR = os.path.expanduser("~/.claude/claude-wt")
 HEAD_LIMIT = 512 * 1024   # how far in to look for the first prompt
 TAIL = 256 * 1024         # tail budget for the title and the latest activity
-DUMP_SESSIONS = 200       # newest sessions written to the sessions dump
+DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
 # дольше этого значит, что машину выключили или демон умер, а не что расклад
@@ -1273,6 +1284,7 @@ elif mode == "dump":
     sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
     projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
     windows_path = sys.argv[5] if len(sys.argv) > 5 else ""
+    limit = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else DUMP_SESSIONS
     now = time.time()
 
     dirs = scan_dirs()
@@ -1303,7 +1315,7 @@ elif mode == "dump":
         total = len(files)
 
         sessions = []
-        for path, mtime, cwd in files[:DUMP_SESSIONS]:
+        for path, mtime, cwd in files[:limit]:
             sid = os.path.basename(path)[:-6]
             title, doing = tail_facts(path)
             title = clean(title)
@@ -1340,6 +1352,7 @@ elif mode == "state":
     # раньше это делал, заменён на того, кто зовёт --state.
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     now = time.time()
 
     dirs = scan_dirs()
@@ -1379,7 +1392,7 @@ elif mode == "state":
     files.sort(key=lambda x: -x[1])
 
     sessions = []
-    for path, mtime, cwd in files[:DUMP_SESSIONS]:
+    for path, mtime, cwd in files[:limit]:
         sid = os.path.basename(path)[:-6]
         title, doing = tail_facts(path)
         agent = agents.get(sid) or {}
@@ -1471,13 +1484,13 @@ PYEOF
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE"
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit"
   exit 0
 fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE"
+  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit"
   exit 0
 fi
 
@@ -1513,7 +1526,7 @@ build_srows() {
 # the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" \
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" \
     >/dev/null 2>&1 &
 }
 
