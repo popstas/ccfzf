@@ -271,6 +271,30 @@ def dir_cwd(files):
     return ""
 
 
+def sid_of(path):
+    """Id сессии по имени её транскрипта."""
+    return os.path.basename(path)[:-6]
+
+
+def pick_files(files, limit, keep_ids):
+    """Первые `limit` по свежести плюс те, кого терять нельзя.
+
+    `files` отсортирован по убыванию mtime, поэтому добавка всегда старше
+    головы и порядок сохраняется сам — пересортировывать нечего.
+
+    Объединение — не перестраховка. Один срез по времени отрезал бы сессию,
+    чей транскрипт не трогали дольше среза, а окно её открыто до сих пор: у
+    читателя дампа она единственный способ понять, чьё это окно. Фильтровать
+    вместо этого по `live` нельзя — флаг уже врал (2026-08-01, работающая
+    сессия с `live: false`), а объединение только добавляет и потому соврать
+    не может.
+    """
+    head = files[:limit]
+    if len(files) <= limit or not keep_ids:
+        return head
+    return head + [f for f in files[limit:] if sid_of(f[0]) in keep_ids]
+
+
 def head_gist(path):
     """The first meaningful user prompt."""
     read = 0
@@ -1314,8 +1338,12 @@ elif mode == "dump":
         files.sort(key=lambda x: -x[1])
         total = len(files)
 
+        # `live` здесь уже вобрал сессии с открытым окном (`live |= set(windows)`
+        # выше), так что второго множества не нужно.
+        picked = pick_files(files, limit, live)
+
         sessions = []
-        for path, mtime, cwd in files[:limit]:
+        for path, mtime, cwd in picked:
             sid = os.path.basename(path)[:-6]
             title, doing = tail_facts(path)
             title = clean(title)
@@ -1391,8 +1419,12 @@ elif mode == "state":
         files += [(f, mt, entry["cwd"]) for f, mt in entry["files"]]
     files.sort(key=lambda x: -x[1])
 
+    # `live` здесь уже вобрал сессии с открытым окном (`live |= set(windows)`
+    # выше), так что второго множества не нужно.
+    picked = pick_files(files, limit, live)
+
     sessions = []
-    for path, mtime, cwd in files[:limit]:
+    for path, mtime, cwd in picked:
         sid = os.path.basename(path)[:-6]
         title, doing = tail_facts(path)
         agent = agents.get(sid) or {}
