@@ -184,6 +184,55 @@ def test_save_then_load_round_trips():
         assert CC["load_facts"](p) == facts, CC["load_facts"](p)
 
 
+def test_an_unexpanded_tilde_still_works_and_leaves_no_stray_dir():
+    # CCFZF_FACTS_FILE — значение конфига, не слово шелла: шелл его не
+    # разворачивает, и `~/...` доезжает до load_facts/save_facts буквально.
+    # write_json разворачивает путь сама (ccfzf:1336), а раньше эти две — нет:
+    # save_facts создавала каталог с именем `~` в текущей директории процесса
+    # (os.makedirs — путь относительный), write_json тут же падал на
+    # несуществующем настоящем каталоге, а load_facts всегда читал бы {}.
+    # Памятка при этом выключена молча — никакого исключения наружу.
+    with tempfile.TemporaryDirectory() as home, \
+            tempfile.TemporaryDirectory() as cwd:
+        old_home, old_cwd = os.environ.get("HOME"), os.getcwd()
+        os.environ["HOME"] = home
+        os.chdir(cwd)
+        try:
+            facts = {P: {"mtime": 100.0, "title": "T", "doing": "D",
+                         "gist": "G", "gistDone": True}}
+            CC["save_facts"]("~/.cache/ccfzf/facts.json", facts)
+            assert not os.path.exists(os.path.join(cwd, "~")), \
+                "не должно быть каталога с буквальным именем ~"
+            real = os.path.join(home, ".cache", "ccfzf", "facts.json")
+            assert os.path.exists(real), "памятка должна лечь в настоящий HOME"
+            got = CC["load_facts"]("~/.cache/ccfzf/facts.json")
+            assert got == facts, got
+        finally:
+            os.chdir(old_cwd)
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+
+
+def test_a_bare_filename_does_not_disable_the_memo():
+    # Родственный случай: os.path.dirname("facts.json") — пустая строка, а
+    # os.makedirs("") кидает FileNotFoundError. Тот же except OSError её
+    # ловил и молча выключал памятку. Каталог создаём, только когда он вообще
+    # указан.
+    with tempfile.TemporaryDirectory() as cwd:
+        old_cwd = os.getcwd()
+        os.chdir(cwd)
+        try:
+            facts = {P: {"mtime": 100.0, "title": "T", "doing": "D",
+                         "gist": "G", "gistDone": True}}
+            CC["save_facts"]("facts.json", facts)
+            assert os.path.exists(os.path.join(cwd, "facts.json"))
+            assert CC["load_facts"]("facts.json") == facts
+        finally:
+            os.chdir(old_cwd)
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]

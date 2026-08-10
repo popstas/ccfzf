@@ -71,7 +71,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
 
 print_mode=0
 kiosk=0
@@ -81,7 +81,7 @@ project=""
 session_id=""
 # Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
 # рассчитаны на список для человека; читателю дампа столько не нужно никогда,
-# а платит за них и он (разбор), и pc-virt (двести хвостов на каждый опрос).
+# а платит за них и он (разбор), и машина-писатель (двести хвостов на каждый опрос).
 limit=100
 claude_args=()
 
@@ -1220,6 +1220,11 @@ def load_facts(path):
     """
     if not path:
         return {}
+    # `write_json` (ccfzf:1336) разворачивает `~` сама, а сюда путь приходит
+    # и как переменная конфига (CCFZF_FACTS_FILE), не только как слово
+    # шелла — без развёртки здесь неразвёрнутый `~/...` читался бы как
+    # каталог `~` в текущей директории, и памятка тихо всегда была бы пустой.
+    path = os.path.expanduser(path)
     try:
         with open(path, encoding="utf-8") as fh:
             o = json.load(fh)
@@ -1236,10 +1241,17 @@ def save_facts(path, facts):
     верно: у двух памяток об одних и тех же файлах расходиться нечему."""
     if not path:
         return
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    except OSError:
-        return
+    # Та же развёртка, что в load_facts, и по той же причине. Плюс голое имя
+    # файла без каталога: `os.path.dirname("facts.json")` — пустая строка, а
+    # `os.makedirs("")` кидает FileNotFoundError — тоже OSError, тоже тихо
+    # выключил бы памятку. Каталог создаём, только когда он вообще указан.
+    path = os.path.expanduser(path)
+    dirname = os.path.dirname(path)
+    if dirname:
+        try:
+            os.makedirs(dirname, exist_ok=True)
+        except OSError:
+            return
     write_json(path, {"v": FACTS_VERSION, "files": facts}, indent=None)
 
 
@@ -1460,10 +1472,12 @@ elif mode == "sessions":
     print(len(files), file=sys.stderr)
 
 elif mode == "dump":
-    # Everything ccfzf can see, for whatever else wants to know it: every
-    # project, and the newest DUMP_SESSIONS sessions across all of them. Reading
-    # 200 tails costs more than the picker itself, which is why the caller runs
-    # this off to the side instead of on the way to the screen.
+    # Каждый проект и `limit` (argv[6]) новейших сессий по всем проектам —
+    # DUMP_SESSIONS тут лишь запасное значение на случай, если argv пуст.
+    # Читателей у результата два, и «for whatever else wants to know it» уже
+    # тогда было неправдой — см. обоснование у DUMP_KEEP. Хвостов запрошено
+    # сто, но большинство читать не приходится: попадание в памятку фактов
+    # (load_facts/save_facts) экономит разбор всем, у кого не сдвинулся mtime.
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[3] if len(sys.argv) > 3 else ""
     projects_path = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -1624,11 +1638,14 @@ elif mode == "state":
     if facts != cache:
         save_facts(FACTS_FILE, facts)
 
-    # Дамп — подмножество того же списка: одни и те же файлы, те же хвосты, тот
-    # же срез DUMP_SESSIONS. Собран здесь проекцией, а не вторым проходом,
-    # потому что весь его расход — чтение двухсот хвостов — уже оплачен выше.
+    # Дамп — подмножество того же списка, собранное здесь проекцией, а не
+    # вторым проходом. Не «тот же срез DUMP_SESSIONS» — у режима `dump` свой
+    # `limit` из своего argv, он может отличаться от этого. И не «расход уже
+    # оплачен выше» — читать двести хвостов не пришлось и здесь: памятка
+    # фактов (load_facts/save_facts) отдаёт большинство из кеша по mtime.
     # Лишние поля (pid, tty, tmux, agent, window) читателю дампа не нужны:
-    # процессы он видит свои, а окна сам сюда и кладёт.
+    # процессы он видит свои, а окна сам сюда и кладёт. Список полей и
+    # обоснование — у DUMP_KEEP.
     if stale_dump(sessions_path, now, STATE_DUMP_MAX_AGE):
         write_json(sessions_path, {
             "generated": now, "total": len(files), "shown": len(sessions),
