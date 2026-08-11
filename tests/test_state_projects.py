@@ -70,6 +70,17 @@ def test_rows_without_a_hotkey_keep_their_shape():
     assert "hotkey" not in out[0], out
 
 
+def test_synthetic_hotkey_rows_sort_alongside_others_not_at_the_tail():
+    # Синтетическая строка — mtime 0.0, как у мёртвой закладки без сессий; она
+    # обязана встать по имени среди таких же, а не хвостом после сортировки
+    # project_rows — иначе список дёргается: строки с хоткеем всегда внизу,
+    # даже если по алфавиту им место наверху.
+    rows = CC["project_rows"]([], set(), {"/p/zzz": "zzz"})
+    out = CC["merge_project_hotkeys"](rows, [{"cwd": "/p/aaa", "name": "aaa",
+                                              "hotkey": "Ctrl+F11"}])
+    assert [r["path"] for r in out] == ["/p/aaa", "/p/zzz"], out
+
+
 def test_a_hotkey_project_does_not_displace_the_marked_name():
     # Имя закладки человек написал сам; имя из менеджера — служебное, и
     # перебивать им закладку нельзя.
