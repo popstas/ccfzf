@@ -439,9 +439,10 @@ def read_windows(path, now):
     старше WINDOWS_TTL — возвращается пустота, и ни ошибки, ни строчки в stderr.
     Список сессий обязан пережить любой мусор в добавке: порченый файл должен
     стоить пометки, а не списка. Со снимками то же правило: кривая запись стоит
-    себя, порченое поле — только поля.
+    себя, порченое поле — только поля. То же правило действует и с хоткеями
+    проектов.
     """
-    empty = ({}, "", 0, [])
+    empty = ({}, "", 0, [], [])
     if not path:
         return empty
     try:
@@ -500,7 +501,29 @@ def read_windows(path, now):
                 })
             snaps.append({"id": sid, "created": num(s.get("created")), "sessions": sessions})
 
-    return out, host, pid, snaps
+    # Хоткеи проектов. Знать их отсюда неоткуда: список живёт в конфиге
+    # windows11-manager, а регистрирует клавиши читатель. Здесь это просто ещё
+    # одно поле, и недоверие к нему то же, что к окнам: запись без каталога или
+    # без клавиши не значит ничего и выбрасывается молча.
+    projects = []
+    raw_projects = o.get("projects")
+    if isinstance(raw_projects, list):
+        for p in raw_projects:
+            if not isinstance(p, dict):
+                continue
+            cwd = p.get("cwd")
+            hotkey = p.get("hotkey")
+            if not isinstance(cwd, str) or not cwd:
+                continue
+            if not isinstance(hotkey, str) or not hotkey:
+                continue
+            projects.append({
+                "cwd": cwd,
+                "name": p.get("name") if isinstance(p.get("name"), str) else "",
+                "hotkey": hotkey,
+            })
+
+    return out, host, pid, snaps, projects
 
 
 def usage_text(sid):
@@ -1191,6 +1214,59 @@ def project_rows(dirs, live, marks):
     return rows
 
 
+def merge_project_hotkeys(rows, projects):
+    """Приклеить к строкам проектов их хоткеи из файла оконного трекера.
+
+    Единственный источник хоткеев — конфиг windows11-manager: клавиши
+    регистрирует читатель (ccfzf-picker), а знать про них ему больше неоткуда.
+    Здесь они встречаются со строками, которые собраны из закладок и каталогов
+    сессий, — по одному только пути.
+
+    Проекту с хоткеем, у которого нет ни сессий, ни закладки, строка заводится:
+    иначе клавиша проекта, в котором давно не работали, пропадала бы из ответа
+    ровно тогда, когда она и нужна. Имя такой строке даёт менеджер; у строки,
+    которая уже есть, имя не трогается — закладку человек назвал сам.
+
+    Строка без хоткея остаётся без ключа, а не с пустым: у читателя «нет
+    клавиши» и «клавиша пустая» — разные вещи.
+    """
+    # `cwd` здесь перепроверяется, а `hotkey` ниже (`hit["hotkey"]`, `p["hotkey"]`)
+    # берётся прямым индексом без своей проверки — это не забытая симметрия.
+    # Единственный вызывающий, `read_windows`, уже отдаёт только записи, где
+    # оба поля — непустые строки: он выбрасывает молча всё остальное сам
+    # (read_windows, разбор `projects`). Проверка `cwd` здесь не о недоверии ко входу, а о его
+    # использовании как ключа словаря: не строка или пустая строка ключом не
+    # годится. `hotkey` в такой роли не бывает, вторая проверка была бы мёртвым
+    # кодом.
+    by_path = {}
+    for p in projects or []:
+        cwd = p.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            by_path.setdefault(cwd, p)
+
+    out = []
+    seen = set()
+    for r in rows:
+        row = dict(r)
+        hit = by_path.get(row["path"])
+        if hit:
+            row["hotkey"] = hit["hotkey"]
+        seen.add(row["path"])
+        out.append(row)
+
+    for cwd, p in by_path.items():
+        if cwd in seen:
+            continue
+        out.append({"path": cwd, "name": p.get("name") or os.path.basename(cwd) or cwd,
+                    "mark": False, "n": 0, "live": 0, "mtime": 0.0,
+                    "hotkey": p["hotkey"]})
+    # Синтетические строки дописаны после сортировки project_rows — без
+    # пересортировки они всегда падали бы в хвост, даже когда по её же ключу
+    # (mtime, потом имя) им место среди других мёртвых закладок наверху.
+    out.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
+    return out
+
+
 # Что уезжает в дамп. Читателей у файла два, оба в
 # windows11-manager/src/claude-wt/sessions.js (loadSessionIndex,
 # loadBackgroundAgents), и это ровно те поля, которые они читают. Остальное —
@@ -1492,7 +1568,7 @@ elif mode == "dump":
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
     # с двух сторон незачем — число уезжает полем.
     stamps = hook_stamps()
-    windows, _, _, _ = read_windows(windows_path, now)
+    windows, _, _, _, _ = read_windows(windows_path, now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
     # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
@@ -1570,7 +1646,7 @@ elif mode == "state":
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
     # машине. Их владелец кладёт файл рядом, и дальше это просто ещё одно поле.
-    windows, window_host, window_pid, window_snapshots = read_windows(
+    windows, window_host, window_pid, window_snapshots, window_projects = read_windows(
         sys.argv[3] if len(sys.argv) > 3 else "", now)
     # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
     # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но
@@ -1656,9 +1732,13 @@ elif mode == "state":
     # читателю, стоит ли вообще поднимать окно: на чужом экране это бессмысленно.
     # Второе нужно, чтобы выдать тому процессу право на передний план — Windows
     # отдаёт его только владельцу или тому, кто получил последнее событие ввода.
-    # Проекты — то же, что видит режим `projects`, только без раскраски. Читателю
-    # они нужны, чтобы начать новую сессию там, где сессий ещё не было: по cwd
-    # приехавших сессий такой проект не восстановить, он приходит из marks.
+    # Проекты — то, что видит режим `projects`, плюс синтетические строки от
+    # merge_project_hotkeys: проекту с хоткеем, у которого нет ни сессий, ни
+    # закладки, режим `projects` строку не покажет вовсе, а здесь она нужна —
+    # иначе клавиша пропадала бы из ответа ровно тогда, когда она и нужна.
+    # Читателю проекты нужны, чтобы начать новую сессию там, где сессий ещё не
+    # было: по cwd приехавших сессий такой проект не восстановить, он приходит
+    # из marks (или из хоткея).
     #
     # Даром: dirs и live уже собраны выше, project_rows — арифметика над ними.
     # `age` не отдаётся намеренно: возраст в строке считает читатель, и вторая
@@ -1670,8 +1750,10 @@ elif mode == "state":
     # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
     json.dump({"generated": now, "sessions": sessions,
                "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
-                             "sessions": r["n"], "live": r["live"], "mtime": r["mtime"]}
-                            for r in project_rows(dirs, live, marks)],
+                             "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
+                             **({"hotkey": r["hotkey"]} if r.get("hotkey") else {})}
+                            for r in merge_project_hotkeys(
+                                project_rows(dirs, live, marks), window_projects)],
                "windowHost": window_host, "windowPid": window_pid,
                # Раскладки, которые помнит трекер. Оттуда же, откуда окна:
                # здесь видны процессы, а окна — на другой машине.

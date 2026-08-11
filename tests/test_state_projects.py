@@ -39,6 +39,57 @@ def test_live_sessions_are_counted_per_project():
     assert rows[0]["live"] == 1, rows
 
 
+def test_hotkey_sticks_to_the_row_it_belongs_to():
+    # Клеится по path и только к своей строке: второй список проектов у
+    # читателя завёлся бы ровно затем, чтобы разойтись с первым.
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/a.jsonl", 1000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {})
+    out = CC["merge_project_hotkeys"](rows, [{"cwd": "/p/one", "name": "one",
+                                              "hotkey": "Ctrl+F11"}])
+    assert [r["path"] for r in out] == ["/p/one"], out
+    assert out[0]["hotkey"] == "Ctrl+F11", out
+
+
+def test_project_with_a_hotkey_and_nothing_else_gets_a_row():
+    # Ради этого случая всё и делается: у проекта, в котором давно не работали,
+    # ни сессий, ни закладки нет — и его хоткей пропал бы именно тогда, когда он
+    # и нужен.
+    out = CC["merge_project_hotkeys"]([], [{"cwd": "/p/cold", "name": "cold",
+                                            "hotkey": "Ctrl+F12"}])
+    assert len(out) == 1, out
+    assert out[0] == {"path": "/p/cold", "name": "cold", "mark": False,
+                      "n": 0, "live": 0, "mtime": 0.0, "hotkey": "Ctrl+F12"}, out
+
+
+def test_rows_without_a_hotkey_keep_their_shape():
+    # Строка без хоткея не должна обзавестись пустым полем: читатель отличает
+    # «нет клавиши» от «клавиша пустая» только отсутствием ключа.
+    rows = CC["project_rows"]([], set(), {"/p/empty": "empty"})
+    out = CC["merge_project_hotkeys"](rows, [])
+    assert "hotkey" not in out[0], out
+
+
+def test_synthetic_hotkey_rows_sort_alongside_others_not_at_the_tail():
+    # Синтетическая строка — mtime 0.0, как у мёртвой закладки без сессий; она
+    # обязана встать по имени среди таких же, а не хвостом после сортировки
+    # project_rows — иначе список дёргается: строки с хоткеем всегда внизу,
+    # даже если по алфавиту им место наверху.
+    rows = CC["project_rows"]([], set(), {"/p/zzz": "zzz"})
+    out = CC["merge_project_hotkeys"](rows, [{"cwd": "/p/aaa", "name": "aaa",
+                                              "hotkey": "Ctrl+F11"}])
+    assert [r["path"] for r in out] == ["/p/aaa", "/p/zzz"], out
+
+
+def test_a_hotkey_project_does_not_displace_the_marked_name():
+    # Имя закладки человек написал сам; имя из менеджера — служебное, и
+    # перебивать им закладку нельзя.
+    rows = CC["project_rows"]([], set(), {"/p/one": "МОЙ проект"})
+    out = CC["merge_project_hotkeys"](rows, [{"cwd": "/p/one", "name": "one",
+                                              "hotkey": "Ctrl+F11"}])
+    assert out[0]["name"] == "МОЙ проект", out
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
