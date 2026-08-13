@@ -1,0 +1,154 @@
+"""Слияние нескольких файлов трекеров. Запуск: python3 tests/test_windows_merge.py"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness
+
+CC = harness.load()
+UUID_A = "aaaaaaaa-1111-2222-3333-444444444444"
+UUID_B = "bbbbbbbb-1111-2222-3333-444444444444"
+NOW = 1785958293
+
+
+def _write(path, obj):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh)
+
+
+def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None):
+    out = {"generated": NOW - 1, "host": host, "pid": pid, "windows": windows}
+    if focus is not None:
+        out["focus"] = focus
+    if projects is not None:
+        out["projects"] = projects
+    if snapshots is not None:
+        out["snapshots"] = snapshots
+    return out
+
+
+def _win(title, last_seen=NOW - 5):
+    return {"title": title, "desktop": None, "lastSeen": last_seen, "focusedAt": 0}
+
+
+def _merge(legacy=None, dir_files=None, now=NOW):
+    """read_window_sources принимает путь к файлу и путь к каталогу."""
+    with tempfile.TemporaryDirectory() as d:
+        file_path = ""
+        if legacy is not None:
+            file_path = os.path.join(d, "legacy.json")
+            _write(file_path, legacy)
+        dir_path = os.path.join(d, "windows")
+        os.makedirs(dir_path)
+        for name, obj in (dir_files or {}).items():
+            _write(os.path.join(dir_path, name), obj)
+        return CC["read_window_sources"](file_path, dir_path, now)
+
+
+def test_windows_from_two_trackers_land_in_one_map():
+    # Ради этого всё и затевается: две машины, один список. Без слияния окна
+    # второго трекера не видны никому — поле `window` есть только у сессий с
+    # окнами того трекера, чей файл прочитали единственным.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")}),
+        dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")}, pid=7)},
+    )
+    assert set(windows) == {UUID_A, UUID_B}, windows
+    assert windows[UUID_A]["host"] == "windows-box", windows[UUID_A]
+    assert windows[UUID_B]["host"] == "mac-host", windows[UUID_B]
+    assert windows[UUID_B]["pid"] == 7, windows[UUID_B]
+
+
+def test_window_carries_focus_ability_of_its_own_tracker():
+    # Машина строки и умение её трекера — разные вопросы, и оба нужны построчно.
+    # Одно верхнее поле на весь ответ не отвечает ни на один из них.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")}),
+        dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")}, focus=False)},
+    )
+    assert windows[UUID_A]["canFocus"] is True, windows[UUID_A]
+    assert windows[UUID_B]["canFocus"] is False, windows[UUID_B]
+
+
+def test_same_session_in_two_trackers_goes_to_the_fresher_one():
+    # Одна сессия, открытая с обеих машин. Спор разрешается свежестью, а не
+    # порядком чтения: порядок задан нами и о том, где сессию видели последней,
+    # не знает ничего.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf", last_seen=NOW - 90)}),
+        dir_files={"mac-host.json": _file("mac-host", {UUID_A: _win("ccfzf", last_seen=NOW - 2)})},
+    )
+    assert windows[UUID_A]["host"] == "mac-host", windows[UUID_A]
+
+
+def test_stale_source_drops_whole_and_alone():
+    # Протухший файл выбрасывается целиком и в одиночку: соседний трекер жив, и
+    # его окна обязаны пережить смерть чужого демона.
+    stale = _file("windows-box", {UUID_A: _win("ccfzf")})
+    stale["generated"] = NOW - 100000
+    windows, _, _, _, _, hosts = _merge(
+        legacy=stale,
+        dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")})},
+    )
+    assert set(windows) == {UUID_B}, windows
+    assert [h["host"] for h in hosts] == ["mac-host"], hosts
+
+
+def test_hosts_list_names_every_live_tracker():
+    # Пикеру нужно отличать «моей машины среди трекеров нет» от «есть, но окон
+    # у неё сейчас нет». По окнам этого не понять: у здорового трекера без
+    # открытых терминалов список окон пуст.
+    _, _, _, _, _, hosts = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")}),
+        dir_files={"mac-host.json": _file("mac-host", {}, pid=7, focus=False)},
+    )
+    assert hosts == [
+        {"host": "windows-box", "pid": 42, "canFocus": True},
+        {"host": "mac-host", "pid": 7, "canFocus": False},
+    ], hosts
+
+
+def test_top_level_fields_follow_the_tracker_that_has_hotkeys():
+    # Верхние windowHost/windowPid/projects кормят проектные хоткеи, и пикер
+    # сверяет с ними своё имя. Взять их у первого попавшегося источника значило
+    # бы, что клавиши пропадают, стоит соседнему трекеру подняться раньше.
+    _, host, pid, _, projects, _ = _merge(
+        legacy=_file("mac-host", {}, pid=7),
+        dir_files={"windows-box.json": _file(
+            "windows-box", {UUID_A: _win("ccfzf")}, pid=42,
+            projects=[{"cwd": "/projects/js/ccfzf-picker", "name": "picker", "hotkey": "Ctrl+F11"}])},
+    )
+    assert host == "windows-box" and pid == 42, (host, pid)
+    assert [p["hotkey"] for p in projects] == ["Ctrl+F11"], projects
+
+
+def test_missing_directory_is_not_an_error():
+    # Каталога может не быть вовсе — на машине, где никто не переезжал на новую
+    # схему. Это норма, а не отказ: единственный файл остаётся источником.
+    with tempfile.TemporaryDirectory() as d:
+        file_path = os.path.join(d, "legacy.json")
+        _write(file_path, _file("windows-box", {UUID_A: _win("ccfzf")}))
+        windows, host, _, _, _, _ = CC["read_window_sources"](
+            file_path, os.path.join(d, "nope"), NOW)
+    assert set(windows) == {UUID_A} and host == "windows-box", (windows, host)
+
+
+def test_sources_are_ordered_file_then_directory_by_name():
+    # Порядок задан, а не случаен: из него берутся верхние поля ответа, и без
+    # него они прыгали бы от запуска к запуску.
+    with tempfile.TemporaryDirectory() as d:
+        dir_path = os.path.join(d, "windows")
+        os.makedirs(dir_path)
+        for name in ["b.json", "a.json", "skip.txt"]:
+            _write(os.path.join(dir_path, name), {})
+        got = CC["window_sources"](os.path.join(d, "legacy.json"), dir_path)
+    assert [os.path.basename(p) for p in got] == ["legacy.json", "a.json", "b.json"], got
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(list(globals().items())):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)

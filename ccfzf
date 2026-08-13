@@ -57,6 +57,9 @@ PROJECTS_FILE="${CCFZF_PROJECTS_FILE-$HOME/.ccfzf.projects.json}"
 # транскрипту. Файл необязательный — нет его, и ответ просто беднее на одно
 # поле. Пустая строка выключает чтение вовсе.
 WINDOWS_FILE="${CCFZF_WINDOWS_FILE-$HOME/.ccfzf.sessions.claude-wt.json}"
+# Каталог файлов трекеров: по одному на машину, где открыты терминалы. Старый
+# одиночный файл читается по-прежнему и остаётся первым источником.
+WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
@@ -532,6 +535,70 @@ def read_windows(path, now):
         focus = True
 
     return out, host, pid, snaps, projects, focus
+
+
+def window_sources(file_path, dir_path):
+    """Пути ко всем файлам трекеров: старый одиночный плюс каталог.
+
+    Порядок задан и потому предсказуем — одиночный файл, затем файлы каталога
+    по имени. Из первого подходящего источника берутся верхние поля ответа, и
+    случайный порядок означал бы, что они меняются от запуска к запуску.
+
+    Отсутствие каталога — норма, а не отказ: на машине, где никто не переезжал
+    на новую схему, источник по-прежнему один.
+    """
+    out = []
+    if file_path:
+        out.append(file_path)
+    if dir_path:
+        try:
+            names = sorted(os.listdir(dir_path))
+        except OSError:
+            names = []
+        out += [os.path.join(dir_path, n) for n in names if n.endswith(".json")]
+    return out
+
+
+def read_window_sources(file_path, dir_path, now):
+    """Слить файлы трекеров в один вид: окна, машины, снимки, хоткеи.
+
+    Трекеров теперь может быть несколько — по одному на машину, где открыты
+    терминалы. «Чьё это окно» перестаёт быть свойством всего ответа и
+    становится свойством записи: к каждой приписывается `host`, `pid` и
+    `canFocus` того файла, из которого она приехала.
+
+    Живость источника читается по непустому `host`: `read_windows` на любой
+    отказ — нет файла, не разобрался json, протух `generated` — возвращает
+    пустоту целиком. Второго признака заводить не нужно, и заводить его было
+    бы вредно: два признака расходятся на первой же правке.
+
+    Одну сессию могут показывать два трекера (её терминал открыт с обеих
+    машин). Спор разрешается свежестью `lastSeen`, а не порядком чтения:
+    порядок задан нами и о том, где сессию видели последней, не знает ничего.
+
+    Верхние `host` / `pid` / `projects` остаются такими, какими были, потому
+    что их читает не список окон, а проектные хоткеи. Берутся они у источника,
+    который несёт хоткеи; если таких нет — у первого живого.
+    """
+    windows = {}
+    hosts = []
+    snaps = []
+    lead = None
+    for path in window_sources(file_path, dir_path):
+        w, host, pid, sn, pr, focus = read_windows(path, now)
+        if not host:
+            continue
+        hosts.append({"host": host, "pid": pid, "canFocus": focus})
+        snaps += sn
+        if lead is None or (pr and not lead[2]):
+            lead = (host, pid, pr)
+        for sid, rec in w.items():
+            prev = windows.get(sid)
+            if prev is not None and prev["lastSeen"] >= rec["lastSeen"]:
+                continue
+            windows[sid] = dict(rec, host=host, pid=pid, canFocus=focus)
+    host, pid, projects = lead if lead else ("", 0, [])
+    return windows, host, pid, snaps, projects, hosts
 
 
 def usage_text(sid):
@@ -1576,7 +1643,8 @@ elif mode == "dump":
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
     # с двух сторон незачем — число уезжает полем.
     stamps = hook_stamps()
-    windows, _, _, _, _, _ = read_windows(windows_path, now)
+    windows, _, _, _, _, _ = read_window_sources(
+        windows_path, sys.argv[7] if len(sys.argv) > 7 else "", now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
     # в общем файле зависело бы от того, кто записал последним. Про сам зачёт
@@ -1654,8 +1722,9 @@ elif mode == "state":
     # Необязательная добавка: у какой сессии открыто окно терминала. Знать это
     # отсюда неоткуда — здесь видны процессы, а не окна, и окна вообще на другой
     # машине. Их владелец кладёт файл рядом, и дальше это просто ещё одно поле.
-    windows, window_host, window_pid, window_snapshots, window_projects, _ = read_windows(
-        sys.argv[3] if len(sys.argv) > 3 else "", now)
+    windows, window_host, window_pid, window_snapshots, window_projects, window_hosts = \
+        read_window_sources(sys.argv[3] if len(sys.argv) > 3 else "",
+                            sys.argv[6] if len(sys.argv) > 6 else "", now)
     # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
     # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но
     # чей терминал открыт на экране, жива. Протухший файл трекера read_windows
@@ -1763,6 +1832,11 @@ elif mode == "state":
                             for r in merge_project_hotkeys(
                                 project_rows(dirs, live, marks), window_projects)],
                "windowHost": window_host, "windowPid": window_pid,
+               # Живые трекеры поимённо. Пикеру нужно отличать «моей машины
+               # среди трекеров нет» от «есть, но окон у неё сейчас нет»: по
+               # списку окон этого не понять, у здорового трекера без открытых
+               # терминалов он пуст.
+               "windowHosts": window_hosts,
                # Раскладки, которые помнит трекер. Оттуда же, откуда окна:
                # здесь видны процессы, а окна — на другой машине.
                "snapshots": window_snapshots},
@@ -1798,13 +1872,13 @@ PYEOF
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit"
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR"
   exit 0
 fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit"
+  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR"
   exit 0
 fi
 
@@ -1840,7 +1914,7 @@ build_srows() {
 # which the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" \
+  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR" \
     >/dev/null 2>&1 &
 }
 
