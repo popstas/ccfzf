@@ -451,7 +451,7 @@ git commit -m "feat(state): --state отдаёт зелийные сессии �
   возвращает `'attach'` и для zellij; `buildOpenCommand(row, 'attach', opts)`
   собирает `zellij attach <name>`, когда `row.tmux` пуст, а `row.zellij` нет.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 В `test/open-strategy.test.js` добавить:
 
@@ -483,13 +483,13 @@ test('строка зелийной сессии присоединяется с
 });
 ```
 
-- [ ] **Step 2: Прогнать тесты, убедиться, что падают**
+- [x] **Step 2: Прогнать тесты, убедиться, что падают**
 
 Запуск: `npm test -- --test-name-pattern="zellij"`
 Ожидание: FAIL — `chooseOpenStrategy` возвращает `'reptyr'`/`'resume'`, а
 команда собирается с `tmux attach -t 'undefined'` либо `null`.
 
-- [ ] **Step 3: Поле в строке сессии**
+- [x] **Step 3: Поле в строке сессии**
 
 В `frontend-src/session-list.js`, в возвращаемом объекте после `tmux:`:
 
@@ -502,7 +502,7 @@ test('строка зелийной сессии присоединяется с
           zellij: s.zellij || null,
 ```
 
-- [ ] **Step 4: Ветка привязки**
+- [x] **Step 4: Ветка привязки**
 
 В `frontend-src/open-strategy.js`, в `chooseOpenStrategy`, заменить строку
 `if (row.tmux) return 'attach';` на:
@@ -530,12 +530,12 @@ test('строка зелийной сессии присоединяется с
     } else if (strategy === 'reptyr') {
 ```
 
-- [ ] **Step 5: Прогнать тесты**
+- [x] **Step 5: Прогнать тесты**
 
 Запуск: `npm test`
 Ожидание: все тесты проходят, включая три новых.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add frontend-src/session-list.js frontend-src/open-strategy.js test/open-strategy.test.js
@@ -559,7 +559,7 @@ git commit -m "feat(zellij): строка знает свою зелийную �
   `{kind: 'zellij', id: 'zellij:<name>', label, name, zellij, agents,
   lastActivity, live: true, cwd: ''}`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `test/zellij-list.test.js`:
 
@@ -604,12 +604,12 @@ test('недостающие числа становятся нулями, а н
 });
 ```
 
-- [ ] **Step 2: Прогнать тест, убедиться, что падает**
+- [x] **Step 2: Прогнать тест, убедиться, что падает**
 
 Запуск: `npm test -- --test-name-pattern="строка собирается"`
 Ожидание: FAIL — `Cannot find module '../frontend-src/zellij-list'`.
 
-- [ ] **Step 3: Написать модуль**
+- [x] **Step 3: Написать модуль**
 
 Создать `frontend-src/zellij-list.js`:
 
@@ -665,12 +665,12 @@ test('недостающие числа становятся нулями, а н
 });
 ```
 
-- [ ] **Step 4: Прогнать тест**
+- [x] **Step 4: Прогнать тест**
 
 Запуск: `npm test -- --test-name-pattern="zellij"`
 Ожидание: четыре новых теста проходят.
 
-- [ ] **Step 5: Зарегистрировать модуль в сборке фронтенда**
+- [x] **Step 5: Зарегистрировать модуль в сборке фронтенда**
 
 В `scripts/prepare-frontend.js`, в массиве `FILES`, после
 `'frontend-src/project-list.js',` добавить:
@@ -686,14 +686,14 @@ test('недостающие числа становятся нулями, а н
 <script src="zellij-list.js"></script>
 ```
 
-- [ ] **Step 6: Прогнать весь набор**
+- [x] **Step 6: Прогнать весь набор**
 
 Запуск: `npm test`
 Ожидание: все тесты проходят. `frontend-load.test.js` сторожит, что каждый
 тег `<script>` в `sessions.html` имеет файл в списке сборки, — забытая
 регистрация упадёт здесь.
 
-- [ ] **Step 7: Коммит**
+- [x] **Step 7: Коммит**
 
 ```bash
 git add frontend-src/zellij-list.js test/zellij-list.test.js scripts/prepare-frontend.js sessions.html
@@ -718,7 +718,7 @@ git commit -m "feat(zellij): строки зелийных сессий из о�
   `{label: 'Zellij - N', sessions: [...]}` последней; `availableActions(row)`
   на строке `kind: 'zellij'` даёт только `[{id: 'info', label: 'Session info'}]`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 В `test/session-groups.test.js` добавить:
 
@@ -773,13 +773,13 @@ test('строке зелийной сессии предлагается тол
 });
 ```
 
-- [ ] **Step 2: Прогнать тесты, убедиться, что падают**
+- [x] **Step 2: Прогнать тесты, убедиться, что падают**
 
 Запуск: `npm test -- --test-name-pattern="зелийн"`
 Ожидание: FAIL — группы `Zellij - 1` нет, а `availableActions` возвращает
 `New session`/`Session info`.
 
-- [ ] **Step 3: Завести группу**
+- [x] **Step 3: Завести группу**
 
 В `frontend-src/session-groups.js`, в начало `groupSessions`, сразу после
 `const mode = normalizeSort(sort);`:
@@ -830,7 +830,7 @@ test('строке зелийной сессии предлагается тол
     : globalThis.ZellijList;
 ```
 
-- [ ] **Step 4: Ограничить действия**
+- [x] **Step 4: Ограничить действия**
 
 В `frontend-src/session-actions.js`, в `availableActions`, сразу после ветки
 `kind === 'project'`:
@@ -842,7 +842,7 @@ test('строке зелийной сессии предлагается тол
     if ((row || {}).kind === 'zellij') return [{ id: 'info', label: 'Session info' }];
 ```
 
-- [ ] **Step 5: Закрепить, что Enter уходит местной дорогой**
+- [x] **Step 5: Закрепить, что Enter уходит местной дорогой**
 
 `sessions.html` править не нужно, и это не везение, а уже заложенная защита:
 `chooseEnterAction` (`open-transport.js:156`) уводит в `'local'` любой вид
@@ -888,12 +888,12 @@ test('строка зелийной сессии доезжает до отри�
 `renderSnapshotRows` собраны там же по одному образцу), и добавить сестринскую
 для строк общего списка.
 
-- [ ] **Step 6: Прогнать весь набор**
+- [x] **Step 6: Прогнать весь набор**
 
 Запуск: `npm test`
 Ожидание: все тесты проходят, включая шесть новых.
 
-- [ ] **Step 7: Коммит**
+- [x] **Step 7: Коммит**
 
 ```bash
 git add frontend-src/session-groups.js frontend-src/session-actions.js \
@@ -915,7 +915,7 @@ git commit -m "feat(zellij): своя группа в списке и дейст
 
 **Files:** правок нет, только выкатка и проверка.
 
-- [ ] **Step 1: Запушить коммиты пикера**
+- [x] **Step 1: Запушить коммиты пикера**
 
 Обязательно **до** выкатки, а не после: `deploy-win.sh` не копирует файлы с
 этой машины — он делает `git fetch && git checkout && git pull --ff-only` в
@@ -934,7 +934,7 @@ git log --oneline origin/HEAD -1
 `windows-mqtt-migrate`). Если работа шла в другой ветке — либо влить её в эту,
 либо запустить деплой с `BRANCH=<своя> ./data/scripts/deploy-win.sh`.
 
-- [ ] **Step 2: Убедиться, что сторона агрегатора уже на месте**
+- [x] **Step 2: Убедиться, что сторона агрегатора уже на месте**
 
 Запуск: `ssh pc-virt 'cd ~/projects/shell/ccfzf && git log --oneline -1 && ~/bin/ccfzf --state | jq -c ".zellij"'`
 Ожидание: последний коммит — из задачи 2, и список зелийных сессий непустой
@@ -944,7 +944,7 @@ git log --oneline origin/HEAD -1
 `ccfzf` выкатывать не нужно: он читается по ssh прямо из рабочего каталога на
 pc-virt, и задачи 1–2 уже положили его туда.
 
-- [ ] **Step 3: Выкатить пикер**
+- [x] **Step 3: Выкатить пикер**
 
 Запуск: `./data/scripts/deploy-win.sh`
 Ожидание: по шагам — обновление репозитория, `EXE_OK`, сборка, регистрация
@@ -952,7 +952,7 @@ pc-virt, и задачи 1–2 уже положили его туда.
 в сессии 1 (не 0 — там нет рабочего стола). Скрипт лежит вне git
 (`data/` в .gitignore).
 
-- [ ] **Step 4: Проверить, что новый модуль доехал**
+- [x] **Step 4: Проверить, что новый модуль доехал**
 
 Запуск: `ssh popstas-pc 'dir /b D:\projects\js\ccfzf-picker\frontend\zellij-list.js'`
 Ожидание: файл назван, а не `File Not Found`. Забытая регистрация в
@@ -972,7 +972,7 @@ pc-virt, и задачи 1–2 уже положили его туда.
 6. Ожидание: открывается та же зелийная сессия, а не второй процесс `claude`
    рядом с первым.
 
-- [ ] **Step 6: Убедиться, что скрытый пикер не крутится впустую**
+- [x] **Step 6: Убедиться, что скрытый пикер не крутится впустую**
 
 Правка добавила ключ в ответ, а `poller.rs::fingerprint` хеширует ответ
 целиком — посекундно меняющееся поле в записи zellij убило бы бэкофф скрытого
