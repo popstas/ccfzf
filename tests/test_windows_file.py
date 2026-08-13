@@ -208,6 +208,40 @@ def test_stale_file_gives_no_projects_either():
     assert _read_projects(payload) == []
 
 
+def _read_focus(obj, now=NOW):
+    """Шестое значение read_windows: умеет ли этот трекер поднимать окно."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "windows.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+        return CC["read_windows"](path, now)[5]
+
+
+def test_focus_flag_absent_means_able():
+    # Трекер прежней версии поля не пишет, а поднимать окна умеет и умел
+    # всегда. Прочитать его отсутствие как «не умеет» значило бы выключить
+    # подъём на Windows правкой, которая Windows не касается вовсе.
+    assert _read_focus(_payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})) is True
+
+
+def test_focus_flag_false_is_respected():
+    # Трекер, который окон не поднимает, говорит об этом сам. Без этого поля
+    # заполненное имя машины в конфиге пикера включало бы ветку подъёма, и
+    # просьба уезжала бы менеджеру на другой машине.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["focus"] = False
+    assert _read_focus(payload) is False
+
+
+def test_focus_garbage_reads_as_able():
+    # Недоверие к файлу здесь то же, что к остальным полям: мусор стоит себя,
+    # а не ветки поведения. «Умеет» — то же умолчание, что и у отсутствия.
+    for junk in ["no", 0, None, {}, []]:
+        payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+        payload["focus"] = junk
+        assert _read_focus(payload) is True, junk
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
