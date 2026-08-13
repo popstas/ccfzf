@@ -85,7 +85,7 @@
   `zellij_env_name(items) -> str` (имя или `""`),
   `proc_zellij(pid) -> str | None` (имя или `None`).
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Создать `tests/test_zellij.py`:
 
@@ -161,12 +161,12 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 ```
 
-- [ ] **Step 2: Прогнать тест, убедиться, что падает**
+- [x] **Step 2: Прогнать тест, убедиться, что падает**
 
 Запуск: `python3 tests/test_zellij.py`
 Ожидание: `KeyError: 'zellij_server_name'` — функции ещё нет.
 
-- [ ] **Step 3: Написать разборщики**
+- [x] **Step 3: Написать разборщики**
 
 В `ccfzf`, сразу после `proc_tmux()` (кончается на `return target or None`,
 `ccfzf:862`), добавить:
@@ -226,18 +226,18 @@ def proc_zellij(pid):
     return zellij_env_name(env) or None
 ```
 
-- [ ] **Step 4: Прогнать тест, убедиться, что проходит**
+- [x] **Step 4: Прогнать тест, убедиться, что проходит**
 
 Запуск: `python3 tests/test_zellij.py`
 Ожидание: `9/9 passed`
 
-- [ ] **Step 5: Прогнать весь набор — соседей не задели**
+- [x] **Step 5: Прогнать весь набор — соседей не задели**
 
 Запуск: `for t in tests/test_*.py; do echo "$t: $(python3 "$t" 2>&1 | tail -1)"; done`
 Ожидание: у каждого файла строка `N/N passed`; у `test_windows_merge.py`
 итоговой строки нет — там достаточно, чтобы не было ни одного `FAIL`.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add ccfzf tests/test_zellij.py
@@ -264,7 +264,7 @@ git commit -m "feat(zellij): разбор argv сервера и перемен�
   отсортированный по `name`. В ответе `--state` появляются ключ верхнего уровня
   `zellij` (тот же список) и поле `zellij` у каждой записи сессии (`str | null`).
 
-- [ ] **Step 1: Написать падающий тест формы ответа**
+- [x] **Step 1: Написать падающий тест формы ответа**
 
 В `tests/test_state_mode.py`, рядом с
 `test_the_state_answer_keeps_its_rich_shape`, добавить:
@@ -297,12 +297,12 @@ def test_every_session_says_which_zellij_holds_it():
         assert s["zellij"] is None or isinstance(s["zellij"], str), s["zellij"]
 ```
 
-- [ ] **Step 2: Прогнать тест, убедиться, что падает**
+- [x] **Step 2: Прогнать тест, убедиться, что падает**
 
 Запуск: `python3 tests/test_state_mode.py`
 Ожидание: два `FAIL` — `zellij` нет ни в ответе, ни в записи сессии.
 
-- [ ] **Step 3: Собрать список в running_sessions**
+- [x] **Step 3: Собрать список в running_sessions**
 
 В `ccfzf`, в `running_sessions()`. Заменить строку инициализации:
 
@@ -369,7 +369,7 @@ def test_every_session_says_which_zellij_holds_it():
     return live, agents, procs, sorted(zellij.values(), key=lambda r: r["name"])
 ```
 
-- [ ] **Step 4: Поправить три места вызова**
+- [x] **Step 4: Поправить три места вызова**
 
 `ccfzf:1556` — было `live, _, _ = running_sessions()`, стало:
 
@@ -389,7 +389,7 @@ def test_every_session_says_which_zellij_holds_it():
     live, agents, procs, zellij_rows = running_sessions()
 ```
 
-- [ ] **Step 5: Вывести оба поля наружу**
+- [x] **Step 5: Вывести оба поля наружу**
 
 В записи сессии (`ccfzf:1794`, строка `"tmux": ...`) — добавить следом:
 
@@ -410,24 +410,24 @@ def test_every_session_says_which_zellij_holds_it():
                "zellij": zellij_rows},
 ```
 
-- [ ] **Step 6: Прогнать тесты**
+- [x] **Step 6: Прогнать тесты**
 
 Запуск: `python3 tests/test_state_mode.py`
 Ожидание: все тесты файла `passed`, включая два новых.
 
-- [ ] **Step 7: Проверить на живой машине**
+- [x] **Step 7: Проверить на живой машине**
 
 Запуск: `~/bin/ccfzf --state | jq '{zellij, session: .sessions[0] | {id, tmux, zellij}}'`
 Ожидание: `zellij` — список записей с четырьмя полями, по одной на каждый
 живой `zellij --server` (сверить с `pgrep -af "zellij --server"`); у записи
 сессии поле `zellij` присутствует.
 
-- [ ] **Step 8: Прогнать весь набор**
+- [x] **Step 8: Прогнать весь набор**
 
 Запуск: `for t in tests/test_*.py; do echo "$t: $(python3 "$t" 2>&1 | tail -1)"; done`
 Ожидание: ни одного `FAIL`.
 
-- [ ] **Step 9: Коммит**
+- [x] **Step 9: Коммит**
 
 ```bash
 git add ccfzf tests/test_state_mode.py

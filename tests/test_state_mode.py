@@ -154,6 +154,33 @@ def test_the_state_answer_keeps_its_rich_shape():
             assert key in s, (key, sorted(s))
 
 
+def test_the_state_answer_carries_the_zellij_list():
+    # Список зависит от того, что запущено на машине прямо сейчас, поэтому
+    # проверяется форма, а не содержимое: тест, требующий пустоты, падал бы у
+    # того, у кого zellij открыт, а требующий непустоты — у всех остальных.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        assert isinstance(out.get("zellij"), list), sorted(out)
+        for row in out["zellij"]:
+            assert sorted(row) == ["agents", "created", "name", "pid"], sorted(row)
+            assert isinstance(row["name"], str) and row["name"], row
+            assert isinstance(row["created"], int), row
+            assert isinstance(row["agents"], int), row
+
+
+def test_every_session_says_which_zellij_holds_it():
+    # Поле обязано быть у каждой записи, даже когда zellij не при делах:
+    # у отрисовщика не должно быть третьего случая «поля нет вовсе» — то же
+    # правило, что у `window` и `tmux`.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        s = out["sessions"][0]
+        assert "zellij" in s, sorted(s)
+        assert s["zellij"] is None or isinstance(s["zellij"], str), s["zellij"]
+
+
 def _sorted_sessions(out):
     # `age` завязан на «сейчас» и отличается на каждом опросе по построению
     # (см. комментарий про fingerprint в ccfzf) — сравнивать тёплый и холодный

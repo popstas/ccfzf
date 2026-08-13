@@ -1226,17 +1226,40 @@ def running_sessions():
       content, not by mtime — see fresh_ids.
     """
     live, fresh, agents, procs = set(), [], {}, {}
+    # Держатели зелийных сессий и счётчик агентов по именам. Считается двумя
+    # словарями, а не одним: сервер и живущий в нём claude встречаются в
+    # произвольном порядке — /proc отдаёт pid'ы как попало, и счётчик обязан
+    # пережить случай «агент найден раньше своего сервера».
+    zellij, zellij_agents = {}, {}
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
-        return live, agents, procs
+        return live, agents, procs, []
     for pid in pids:
         try:
             args = proc_args(pid)
         except OSError:
             continue
+        # Сервер зелийной сессии — не сессия агента, и дальше по циклу ему
+        # делать нечего. Возраст берётся у каталога процесса: сверено с mtime
+        # сокета сессии, совпадает секунда в секунду.
+        server = zellij_server_name(args)
+        if server:
+            try:
+                created = int(os.path.getmtime("/proc/%s" % pid))
+            except OSError:
+                created = 0
+            zellij[server] = {"name": server, "created": created,
+                              "pid": int(pid), "agents": 0}
+            continue
         if not is_claude(args):
             continue
+        # До отсева NOT_A_SESSION намеренно: счётчик отвечает на вопрос «есть
+        # ли внутри чему пропасть», а демон фоновых агентов — это ровно оно.
+        # Поле про свою сессию берётся здесь же, одним чтением на процесс.
+        here = proc_zellij(pid)
+        if here:
+            zellij_agents[here] = zellij_agents.get(here, 0) + 1
         sub = args[1] if len(args) > 1 else ""
         if sub in NOT_A_SESSION or "--bg-spare" in args:
             continue
@@ -1268,7 +1291,7 @@ def running_sessions():
         # проекта, когда id сессии сменился внутри процесса. Наружу поле не
         # уходит — режим state перечисляет то, что отдаёт, поимённо.
         procs[sid] = {"pid": int(pid), "tty": proc_tty(pid), "tmux": proc_tmux(pid),
-                      "cwd": proc_cwd(pid)}
+                      "zellij": here, "cwd": proc_cwd(pid)}
         # A background agent is hosted by the daemon through a pty host; that
         # ancestry is the only honest mark of one. `--fork-session` alone is
         # not: it is a normal way to branch a session by hand.
@@ -1299,7 +1322,13 @@ def running_sessions():
     moved, resolved = reattribute_by_pid(live, procs, agents, pid_owners())
     moved |= reattribute(live, procs, agents, stamps, now, skip_procs=resolved)
     live_by_hook(live, stamps, now, skip=moved)
-    return live, agents, procs
+    for name, n in zellij_agents.items():
+        if name in zellij:
+            zellij[name]["agents"] = n
+    # Порядок по имени, а не по времени: список читает отпечаток ответа
+    # (poller.rs), и порядок, зависящий от обхода /proc, дёргал бы его без
+    # всякой причины.
+    return live, agents, procs, sorted(zellij.values(), key=lambda r: r["name"])
 
 
 def scan_dirs():
@@ -1607,7 +1636,7 @@ if mode == "projects":
     now = time.time()
 
     dirs = scan_dirs()
-    live, _, _ = running_sessions()
+    live, _, _, _ = running_sessions()
 
     with open(index_path, "w", encoding="utf-8") as fh:
         json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
@@ -1705,7 +1734,7 @@ elif mode == "dump":
     now = time.time()
 
     dirs = scan_dirs()
-    live, agents, _ = running_sessions()
+    live, agents, _, _ = running_sessions()
     # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
     # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
@@ -1780,7 +1809,7 @@ elif mode == "state":
     now = time.time()
 
     dirs = scan_dirs()
-    live, agents, procs = running_sessions()
+    live, agents, procs, zellij_rows = running_sessions()
     # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
     # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
@@ -1846,6 +1875,7 @@ elif mode == "state":
             "pid": (procs.get(sid) or {}).get("pid", 0),
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
+            "zellij": (procs.get(sid) or {}).get("zellij"),
             "agent": agent_of(sid, path),
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
@@ -1907,7 +1937,13 @@ elif mode == "state":
                "windowHosts": window_hosts,
                # Раскладки, которые помнит трекер. Оттуда же, откуда окна:
                # здесь видны процессы, а окна — на другой машине.
-               "snapshots": window_snapshots},
+               "snapshots": window_snapshots,
+               # Открытые зелийные сессии, все до одной. Не только те, внутри
+               # которых агента нет: список сессий обрезан (`--limit`), агент
+               # может в срез не попасть, и тогда пропала бы и его строка, и
+               # строка его зелийной сессии — ровно та невидимость, ради
+               # которой всё делается.
+               "zellij": zellij_rows},
               sys.stdout, ensure_ascii=False)
 
 elif mode == "newname":
