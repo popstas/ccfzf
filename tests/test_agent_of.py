@@ -1,4 +1,5 @@
 """Тесты записи агента. Запуск: python3 tests/test_agent_of.py"""
+import datetime
 import json
 import os
 import sys
@@ -17,14 +18,29 @@ def _write(d, sid, suffix, obj):
         json.dump(obj, fh)
 
 
-def _agent_of(d, sid):
+def _transcript(d, at):
+    """Транскрипт, чья последняя запись со временем — `at`.
+
+    Хвост дописан служебными записями без `timestamp`: Claude Code кладёт их
+    спустя дни после разговора, и именно из-за них mtime тут не годится.
+    """
+    path = os.path.join(d, UUID_A + ".jsonl")
+    stamp = datetime.datetime.fromtimestamp(
+        at, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "assistant", "timestamp": stamp}) + "\n")
+        fh.write(json.dumps({"type": "last-prompt", "lastPrompt": "/do"}) + "\n")
+    return path
+
+
+def _agent_of(d, sid, transcript=""):
     """agent_of читает каталог из глобального STATUS_DIR, его и подменяем.
 
     Память meta_all ключуется каталогом, поэтому временный каталог каждого
     теста свой и в чужой ответ не попадает.
     """
     CC["STATUS_DIR"] = d
-    return CC["agent_of"](sid)
+    return CC["agent_of"](sid, transcript)
 
 
 def test_agent_of_passes_the_four_fields_from_their_own_files():
@@ -121,18 +137,36 @@ def test_agent_of_does_not_let_the_statusline_move_last_activity():
         assert got["contextPct"] == 40, got["contextPct"]
 
 
-def test_agent_of_falls_back_to_the_statusline_without_a_state_file():
-    # Старая сессия, поднятая до появления хука: других отметок времени нет.
+def test_agent_of_dates_a_stateless_session_by_its_last_message():
+    # Сессия открыта двенадцатый день и всё это время молчит. state.json у неё
+    # съела чистка (prune_state роняет файл, которого неделю не касались), а
+    # status.json жив: статуслайн переписывает его по таймеру, пока открыт
+    # терминал. Отката на этот пульс быть не должно — сессия всплывала бы
+    # наверх сортировки `recent` вечно, отвечая «активность секунду назад» про
+    # разговор двенадцатидневной давности.
+    quiet = NOW - 12 * 24 * 3600
     with tempfile.TemporaryDirectory() as d:
         _write(d, UUID_A, ".status.json", {"costUsd": 1, "updated": NOW})
-        assert _agent_of(d, UUID_A)["updated"] == NOW
+        got = _agent_of(d, UUID_A, _transcript(d, quiet))
+        assert got["updated"] == quiet, got["updated"]
+        # Деньги статуслайн по-прежнему знает лучше всех: обнулять их незачем.
+        assert got["costUsd"] == 1, got["costUsd"]
 
 
-def test_agent_of_falls_back_to_the_statusline_on_a_spoiled_stamp():
+def test_agent_of_leaves_last_activity_unknown_without_a_transcript():
+    # Транскрипта нет (сессию стёрли, а файлы состояния остались) — честный
+    # ответ «не знаем», ноль. Читатель топит такие строки вниз сам.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".status.json", {"costUsd": 1, "updated": NOW})
+        assert _agent_of(d, UUID_A)["updated"] == 0
+
+
+def test_agent_of_dates_a_spoiled_stamp_by_the_transcript_too():
+    quiet = NOW - 3 * 24 * 3600
     with tempfile.TemporaryDirectory() as d:
         _write(d, UUID_A, ".state.json", {"state": "idle", "updated": "nope"})
         _write(d, UUID_A, ".status.json", {"updated": NOW})
-        assert _agent_of(d, UUID_A)["updated"] == NOW
+        assert _agent_of(d, UUID_A, _transcript(d, quiet))["updated"] == quiet
 
 
 def test_agent_of_returns_nothing_when_the_hook_never_ran():
