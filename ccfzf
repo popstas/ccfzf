@@ -862,6 +862,60 @@ def proc_tmux(pid):
     return target or None
 
 
+def zellij_server_name(args):
+    """Имя зелийной сессии по argv её сервера, иначе "".
+
+    Сервер живёт как `zellij --server <путь-сокета>`, и basename пути — это и
+    есть имя сессии, то самое, которым её зовут в `zellij attach`.
+
+    Имя бинаря проверяется отдельно от флага, и это не перестраховка:
+    `--server` встречается в argv у кого угодно, а спутать чужой процесс с
+    держателем сессии значило бы завести в списке строку, к которой не
+    присоединиться.
+
+    Воскресимые сессии (`EXITED - attach to resurrect`) сюда не попадают
+    даром: процесса у них нет. Отдельного условия под них не нужно.
+    """
+    if not args or os.path.basename(args[0]) != "zellij":
+        return ""
+    try:
+        i = args.index("--server")
+    except ValueError:
+        return ""
+    path = args[i + 1] if i + 1 < len(args) else ""
+    return os.path.basename(path.rstrip("/"))
+
+
+def zellij_env_name(items):
+    """Имя зелийной сессии по строкам /proc/<pid>/environ, иначе "".
+
+    Сравнение вместе со знаком `=`: без него префикс поймал бы соседнюю
+    переменную с более длинным именем.
+    """
+    tag = "ZELLIJ_SESSION_NAME="
+    for item in items:
+        if item.startswith(tag):
+            return item[len(tag):]
+    return ""
+
+
+def proc_zellij(pid):
+    """Имя зелийной сессии, в которой живёт процесс, иначе None.
+
+    Вдвое тоньше proc_tmux, и разница не в стиле: tmux кладёт в окружение id
+    панели (`%3`), а адрес, по которому к ней можно присоединиться,
+    разворачивает только сам tmux — то есть подпроцессом. Zellij кладёт
+    готовое имя, разворачивать нечего, и на горячий путь `--state` не выходит
+    ни одного нового процесса.
+    """
+    try:
+        with open("/proc/%s/environ" % pid, "rb") as fh:
+            env = fh.read().decode("utf-8", "ignore").split("\0")
+    except OSError:
+        return None
+    return zellij_env_name(env) or None
+
+
 def hook_stamps(path=STATUS_DIR):
     """{id сессии: когда её хук писал в последний раз}.
 
