@@ -242,6 +242,67 @@ def test_focus_garbage_reads_as_able():
         assert _read_focus(payload) is True, junk
 
 
+def _read_caps(obj, now=NOW):
+    """Седьмое и восьмое значения read_windows: берётся ли менеджер этой машины
+    открывать сессии и по какому адресу его просить. Отдельным помощником, как
+    и _read_projects: прежние тесты распаковывают четыре значения, и
+    переписывать их ради новых полей незачем."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "windows.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+        out = CC["read_windows"](path, now)
+        return out[6], out[7]
+
+
+def test_mqtt_base_reaches_the_reader():
+    # Адрес, по которому у этой машины просят поднять окно. Знать его отсюда
+    # неоткуда: топик живёт в конфиге трекера, а публикует читатель.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["mqttBase"] = "home/room/mac/windows"
+    _, base = _read_caps(payload)
+    assert base == "home/room/mac/windows", base
+
+
+def test_mqtt_base_missing_is_empty_not_absent():
+    # Windows-трекер поля не пишет и не должен: пустая строка значит «спроси
+    # свой конфиг», и читатель ведёт себя как до появления поля.
+    _, base = _read_caps(_payload({"title": "ccfzf", "desktop": None, "lastSeen": 0}))
+    assert base == "", base
+
+
+def test_junk_mqtt_base_reads_as_missing():
+    # Недоверие к файлу то же, что у остальных полей: мусор стоит поля, а не
+    # списка окон.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["mqttBase"] = 17
+    _, base = _read_caps(payload)
+    assert base == "", base
+
+
+def test_open_session_defaults_to_yes():
+    # Отсутствие поля — «берётся»: windows11-manager его не пишет и не должен,
+    # открытие сессий там работало всегда.
+    opens, _ = _read_caps(_payload({"title": "ccfzf", "desktop": None, "lastSeen": 0}))
+    assert opens is True, opens
+
+
+def test_open_session_can_say_no():
+    # Мак сессий не открывает — их открывает сам пикер. Без этого признака
+    # пикер на маке назначил бы менеджером мак и получил молчащий Enter.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["openSession"] = False
+    opens, _ = _read_caps(payload)
+    assert opens is False, opens
+
+
+def test_junk_open_session_reads_as_yes():
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["openSession"] = "нет"
+    opens, _ = _read_caps(payload)
+    assert opens is True, opens
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

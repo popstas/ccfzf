@@ -459,7 +459,7 @@ def read_windows(path, now):
     себя, порченое поле — только поля. То же правило действует и с хоткеями
     проектов.
     """
-    empty = ({}, "", 0, [], [], True)
+    empty = ({}, "", 0, [], [], True, True, "")
     if not path:
         return empty
     try:
@@ -548,7 +548,22 @@ def read_windows(path, now):
     if not isinstance(focus, bool):
         focus = True
 
-    return out, host, pid, snaps, projects, focus
+    # Берётся ли менеджер этой машины открывать сессии и терминалы. Отсутствие
+    # поля — «берётся», по той же причине, что и у `focus`: windows11-manager
+    # его не пишет и не должен. Мак пишет False — терминалы там открывает сам
+    # пикер, и просьба, ушедшая маку, не нашла бы разбирающего.
+    open_session = o.get("openSession")
+    if not isinstance(open_session, bool):
+        open_session = True
+
+    # Топик, на котором менеджер этой машины слушает просьбы. Пустая строка
+    # значит «спроси свой конфиг» — так себя вёл читатель до появления поля, и
+    # так он обязан вести себя с трекером прежней версии.
+    mqtt_base = o.get("mqttBase")
+    if not isinstance(mqtt_base, str):
+        mqtt_base = ""
+
+    return out, host, pid, snaps, projects, focus, open_session, mqtt_base
 
 
 def window_sources(file_path, dir_path):
@@ -593,16 +608,22 @@ def read_window_sources(file_path, dir_path, now):
     Верхние `host` / `pid` / `projects` остаются такими, какими были, потому
     что их читает не список окон, а проектные хоткеи. Берутся они у источника,
     который несёт хоткеи; если таких нет — у первого живого.
+
+    Адрес просьбы (`mqttBase`) приписывается и записи окна, и записи машины:
+    по первому выбирается, куда просить о подъёме, по второму — куда просить
+    об открытии сессии. `openSession` живёт только в записи машины: у строки
+    проекта окна нет вовсе, а спросить «кто откроет терминал» надо и про неё.
     """
     windows = {}
     hosts = []
     snaps = []
     lead = None
     for path in window_sources(file_path, dir_path):
-        w, host, pid, sn, pr, focus = read_windows(path, now)
+        w, host, pid, sn, pr, focus, open_session, mqtt_base = read_windows(path, now)
         if not host:
             continue
-        hosts.append({"host": host, "pid": pid, "canFocus": focus})
+        hosts.append({"host": host, "pid": pid, "canFocus": focus,
+                      "openSession": open_session, "mqttBase": mqtt_base})
         snaps += sn
         if lead is None or (pr and not lead[2]):
             lead = (host, pid, pr)
@@ -610,7 +631,8 @@ def read_window_sources(file_path, dir_path, now):
             prev = windows.get(sid)
             if prev is not None and prev["lastSeen"] >= rec["lastSeen"]:
                 continue
-            windows[sid] = dict(rec, host=host, pid=pid, canFocus=focus)
+            windows[sid] = dict(rec, host=host, pid=pid, canFocus=focus,
+                                mqttBase=mqtt_base)
     host, pid, projects = lead if lead else ("", 0, [])
     return windows, host, pid, snaps, projects, hosts
 

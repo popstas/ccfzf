@@ -18,7 +18,8 @@ def _write(path, obj):
         json.dump(obj, fh)
 
 
-def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None):
+def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None,
+          open_session=None, mqtt_base=None):
     out = {"generated": NOW - 1, "host": host, "pid": pid, "windows": windows}
     if focus is not None:
         out["focus"] = focus
@@ -26,6 +27,10 @@ def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None):
         out["projects"] = projects
     if snapshots is not None:
         out["snapshots"] = snapshots
+    if open_session is not None:
+        out["openSession"] = open_session
+    if mqtt_base is not None:
+        out["mqttBase"] = mqtt_base
     return out
 
 
@@ -105,8 +110,10 @@ def test_hosts_list_names_every_live_tracker():
         dir_files={"mac-host.json": _file("mac-host", {}, pid=7, focus=False)},
     )
     assert hosts == [
-        {"host": "windows-box", "pid": 42, "canFocus": True},
-        {"host": "mac-host", "pid": 7, "canFocus": False},
+        {"host": "windows-box", "pid": 42, "canFocus": True,
+         "openSession": True, "mqttBase": ""},
+        {"host": "mac-host", "pid": 7, "canFocus": False,
+         "openSession": True, "mqttBase": ""},
     ], hosts
 
 
@@ -145,6 +152,38 @@ def test_sources_are_ordered_file_then_directory_by_name():
             _write(os.path.join(dir_path, name), {})
         got = CC["window_sources"](os.path.join(d, "legacy.json"), dir_path)
     assert [os.path.basename(p) for p in got] == ["legacy.json", "a.json", "b.json"], got
+
+
+def test_window_carries_the_address_of_its_own_tracker():
+    # Подъём просят у той машины, где стоит окно, а адрес у каждой свой.
+    # Верхнего поля тут не хватило бы: оно называет одну машину, а окна
+    # приезжают от нескольких.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")},
+                     mqtt_base="home/room/pc/windows"),
+        dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")},
+                                          mqtt_base="home/room/mac/windows")},
+    )
+    assert windows[UUID_A]["mqttBase"] == "home/room/pc/windows", windows[UUID_A]
+    assert windows[UUID_B]["mqttBase"] == "home/room/mac/windows", windows[UUID_B]
+
+
+def test_tracker_list_carries_address_and_open_ability():
+    # Кто откроет терминал — вопрос про машину, и задаётся он этому списку.
+    # У записи окна `openSession` не значил бы ничего: у строки проекта окна
+    # нет вовсе, а спросить надо и про неё.
+    _, _, _, _, _, hosts = _merge(
+        legacy=_file("windows-box", {}, pid=42),
+        dir_files={"mac-host.json": _file("mac-host", {}, pid=7,
+                                          open_session=False,
+                                          mqtt_base="home/room/mac/windows")},
+    )
+    assert hosts == [
+        {"host": "windows-box", "pid": 42, "canFocus": True,
+         "openSession": True, "mqttBase": ""},
+        {"host": "mac-host", "pid": 7, "canFocus": True,
+         "openSession": False, "mqttBase": "home/room/mac/windows"},
+    ], hosts
 
 
 if __name__ == "__main__":
