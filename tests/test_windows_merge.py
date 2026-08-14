@@ -186,6 +186,26 @@ def test_tracker_list_carries_address_and_open_ability():
     ], hosts
 
 
+def test_snapshot_carries_the_machine_that_took_it():
+    # Восстанавливают снимок на той машине, где его сняли. Плоский список без
+    # владельца заставил бы пикер угадывать — а промах здесь молчащий: у
+    # публикации нет ответа.
+    snap_pc = [{"id": "2026-08-14T01-00-00", "created": 100,
+                "sessions": [{"id": UUID_A, "title": "ccfzf", "cwd": "/x"}]}]
+    snap_mac = [{"id": "2026-08-14T02-00-00", "created": 200,
+                 "sessions": [{"id": UUID_B, "title": "other", "cwd": "/y"}]}]
+    _, _, _, snaps, _, _ = _merge(
+        legacy=_file("windows-box", {}, snapshots=snap_pc),
+        dir_files={"mac-host.json": _file("mac-host", {}, snapshots=snap_mac,
+                                          mqtt_base="home/room/mac/windows")},
+    )
+    by_id = {s["id"]: s for s in snaps}
+    assert by_id["2026-08-14T01-00-00"]["host"] == "windows-box", snaps
+    assert by_id["2026-08-14T01-00-00"]["mqttBase"] == "", snaps
+    assert by_id["2026-08-14T02-00-00"]["host"] == "mac-host", snaps
+    assert by_id["2026-08-14T02-00-00"]["mqttBase"] == "home/room/mac/windows", snaps
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_"):

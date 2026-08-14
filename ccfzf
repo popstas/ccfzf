@@ -613,6 +613,11 @@ def read_window_sources(file_path, dir_path, now):
     по первому выбирается, куда просить о подъёме, по второму — куда просить
     об открытии сессии. `openSession` живёт только в записи машины: у строки
     проекта окна нет вовсе, а спросить «кто откроет терминал» надо и про неё.
+
+    Снимку приписывается машина, которая его сняла. Восстанавливают раскладку
+    там же, где снимали, а список у читателя один на все источники: без
+    владельца он не отличил бы свой снимок от чужого, и промах был бы молчащим —
+    у публикации нет ответа.
     """
     windows = {}
     hosts = []
@@ -624,7 +629,9 @@ def read_window_sources(file_path, dir_path, now):
             continue
         hosts.append({"host": host, "pid": pid, "canFocus": focus,
                       "openSession": open_session, "mqttBase": mqtt_base})
-        snaps += sn
+        # Машина-владелец приписывается снимку здесь и только здесь: сам трекер
+        # её не пишет — он не знает, что снимков бывает несколько источников.
+        snaps += [dict(s, host=host, mqttBase=mqtt_base) for s in sn]
         if lead is None or (pr and not lead[2]):
             lead = (host, pid, pr)
         for sid, rec in w.items():
