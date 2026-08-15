@@ -12,12 +12,15 @@ CC = harness.load()
 P = "/d/a1.jsonl"
 
 
-def counting(title="T", doing="D", gist="G"):
+def counting(title="T", doing="D", gist="G", turn_at=0.0):
     calls = {"tail": 0, "head": 0}
 
     def tail(path):
         calls["tail"] += 1
-        return title, doing
+        # Три значения, как у настоящей tail_facts: начало хода считается из
+        # того же хвоста, что title и doing, и живёт в памятке по тому же
+        # правилу — ключ mtime, промах пересчитывает.
+        return title, doing, turn_at
 
     def head(path):
         calls["head"] += 1

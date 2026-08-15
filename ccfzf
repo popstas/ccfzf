@@ -147,6 +147,17 @@ FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 STATUS_DIR = os.path.expanduser("~/.claude/claude-wt")
 HEAD_LIMIT = 512 * 1024   # how far in to look for the first prompt
 TAIL = 256 * 1024         # tail budget for the title and the latest activity
+# Второй, широкий хвост — только ради начала хода, и только когда в обычном
+# человеческой записи не нашлось. Замерено 2026-08-15 на живой сессии: файл
+# 1.71 МБ, реплика человека в 319 КБ от конца, то есть уже за TAIL. Ход длиной
+# в полчаса с сотнями вызовов инструментов выталкивает её всегда — а это ровно
+# тот случай, когда на ход и смотрят.
+#
+# Платят за этот проход единицы: сессии, стоящие в длинном ходе прямо сейчас.
+# Остальным он не нужен — у них человеческая запись нашлась в первом же хвосте.
+# Файл при этом только что писался и лежит в кеше страниц, так что цена — разбор
+# json, а не чтение диска.
+TURN_TAIL = 4 * TAIL
 DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
@@ -190,7 +201,7 @@ HOOK_LIVE_TTL = 120
 # необрезанный gist не обрезался бы никогда (обрезка стоит только на пути
 # свежего head_gist). Поднятая версия лечит обе разом ценой одного холодного
 # прогона: load_facts отбрасывает файл чужой версии как пустой.
-FACTS_VERSION = 2
+FACTS_VERSION = 3
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -369,7 +380,7 @@ def usage_of(sid):
     return int(num(o.get("contextPct"))), int(num(o.get("costUsd")))
 
 
-def agent_of(sid, transcript=""):
+def agent_of(sid, transcript="", turn_at=0):
     """Склеенные <id>.state.json, <id>.status.json и <id>.meta.json, или None.
 
     Склейка живёт здесь, а не у читателя: файлы локальные, а читатель —
@@ -380,6 +391,10 @@ def agent_of(sid, transcript=""):
     `transcript` нужен ровно для одного: датировать сессию, у которой
     state.json нет вовсе. Путь передаётся, а не читается — читать его незачем
     у всех, а только у таких сессий, и `or` ниже это и обеспечивает.
+
+    `turn_at` — начало хода, посчитанное по транскрипту (`tail_facts`).
+    Передаётся готовым по той же причине, по какой title и doing: хвост уже
+    прочитан один раз, и памятка фактов бережёт двести чтений на каждом опросе.
 
     meta берётся после проверки на пустоту, и это не про экономию — читает её
     всё равно общий проход meta_all. Это про смысл: одна отметка старта записи
@@ -437,9 +452,22 @@ def agent_of(sid, transcript=""):
         # которой его же смотрит fresh_ids: mtime двигают служебные записи. Нет
         # транскрипта — ноль, «не знаем»; врать про секунду назад хуже.
         "updated": num(state.get("updated")) or int(last_message_at(transcript)),
-        # Начало текущего хода. Тоже только из state.json, и по той же причине:
-        # своего понятия о ходе у статуслайна нет вовсе.
-        "turnAt": num(state.get("turnAt")),
+        # Начало текущего хода — время последнего сообщения человека в
+        # транскрипте, а отметка хука лишь запасной ход.
+        #
+        # Порядок именно такой, и это не вкусовщина. `turnAt` в state.json
+        # пишет хук агента, а хук молчащий: перестал писать — и ход застыл,
+        # тогда как сессия по-прежнему числится работающей. Транскрипт —
+        # наблюдение, а не отметка о намерении, и врать ему нечем.
+        #
+        # Ноль от `tail_facts` значит «в хвосте человеческой записи не
+        # нашлось», а не «хода не было»: длинный ход выталкивает реплику
+        # человека за TAIL. Там отметка хука и остаётся единственным ответом —
+        # и она же, скорее всего, верна: тот ход и правда начался давно.
+        #
+        # Статуслайн в этой развилке не участвует вовсе, как и у `updated`:
+        # своего понятия о ходе у него нет.
+        "turnAt": num(turn_at) or num(state.get("turnAt")),
         # Старт сессии в текущем виде: meta.json хук переписывает на каждом
         # SessionStart, а /clear, resume и сжатие — тоже старт.
         "started": num(meta.get("started")),
@@ -650,15 +678,105 @@ def usage_text(sid):
     return pad("%d%%" % pct if pct else "", 5) + pad("$%d" % cost if cost else "", 5)
 
 
+def content_of(o):
+    """Содержимое сообщения записи, или None — «сказать нечего».
+
+    Проверка на словарь обязательна, и это не перестраховка: разбирается чужой
+    файл, и `message` в порченой записи бывает строкой. Прежняя форма
+    `(o.get("message") or {}).get("content")` на такой записи падала бы
+    AttributeError — а падение здесь стоит не строки, а всего ответа `--state`:
+    хвосты читаются в одном проходе по двум сотням файлов, и один мусорный
+    байт погасил бы список целиком. Правило то же, что у read_windows: порченое
+    поле стоит поля, а не списка.
+    """
+    if not isinstance(o, dict):
+        return None
+    message = o.get("message")
+    return message.get("content") if isinstance(message, dict) else None
+
+
+def is_human_message(o):
+    """Запись транскрипта — сообщение человека, а не всё остальное под `user`.
+
+    Под `type: "user"` в транскрипте лежит далеко не только человек. Замерено
+    2026-08-15 на живой сессии: 109 записей `user`, из них человеческих 5.
+    Остальное — результаты инструментов, которые агент кладёт сам себе, и
+    служебные вставки. Приняв их за реплику человека, ход считался бы от
+    последнего вызова grep, то есть не считался бы вовсе.
+
+    Отсеиваются четыре вида, и каждый по своему признаку:
+
+    * `toolUseResult` — ответ инструмента, пришитый к записи целиком;
+    * блок `tool_result` в содержимом — он же, со стороны сообщения;
+    * `isMeta` — служебные вставки самого Claude Code (напоминания, вставки
+      каталога), человек их не писал и не видел;
+    * `isSidechain` — реплики субагента. Ход человека они не начинают:
+      субагента позвал агент, а не человек.
+    """
+    if not isinstance(o, dict) or o.get("type") != "user":
+        return False
+    if o.get("toolUseResult") is not None or o.get("isMeta") or o.get("isSidechain"):
+        return False
+    content = content_of(o)
+    # Нечитаемое содержимое — не человек. Настоящая реплика несёт либо строку,
+    # либо список блоков; всё прочее означает порченую запись, а датировать ход
+    # по ней значило бы врать про «секунду назад» на основании мусора.
+    if not isinstance(content, (str, list)):
+        return False
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                return False
+    return True
+
+
+def stamp_of(o):
+    """Время записи в epoch, или 0 — «у этой записи времени нет»."""
+    ts = o.get("timestamp") if isinstance(o, dict) else None
+    if not isinstance(ts, str):
+        return 0.0
+    try:
+        # Тот же разбор, что в last_message_at, и по той же причине: `Z` сам
+        # fromisoformat понимает только с 3.11, а агрегатор запускают через ssh
+        # на машине, версию питона на которой никто не выбирал.
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def tail_facts(path):
-    """(title, latest activity) from the tail of the file.
+    """(title, latest activity, turn start) from the tail of the file.
 
     A manual title (custom-title) outranks the generated one (ai-title). Both
     records repeat throughout the file, so the tail almost always has them; a
     full pass happens only when the tail turned up no title at all.
+
+    Начало хода — время последнего сообщения человека (`is_human_message`), и
+    это честный признак в отличие от `turnAt`, который пишет хук агента: хук
+    молчащий, перестал писать — и ход застыл, а сессия по-прежнему числится
+    работающей.
+
+    Ищется в том же обратном проходе, что и `doing`, а не вторым чтением файла:
+    хвост уже прочитан, а на двухстах сессиях второй проход платился бы зря.
+    Выход из цикла поэтому не по первой находке, а по обеим.
+
+    Не нашлось — читается второй хвост, вчетверо шире (`TURN_TAIL`). Длинный
+    ход выталкивает реплику человека за TAIL всегда (замер — у самой
+    константы), и это ровно тот случай, когда на ход и смотрят; без второго
+    прохода правило работало бы у простаивающих сессий и молчало у работающих.
+    Платят за него только те, у кого первый хвост ничего не дал.
+
+    Ноль после обоих проходов значит «не нашлось», а не «хода не было»:
+    бывает и ход длиннее `TURN_TAIL`. Отличать одно от другого обязан
+    вызывающий, и `agent_of` откатывается на отметку хука.
+
+    Полный проход по файлу, который случается ради ненайденного заголовка,
+    начала хода не уточняет намеренно: он бывает редко и не тогда, когда о нём
+    просят, — и ответ выходил бы то глубоким, то нет, без видимой причины.
     """
     def pick(data):
         custom = ai = doing = ""
+        turn_at = 0.0
         lines = data.split(b"\n")
         for raw in lines:
             if b'-title"' not in raw:
@@ -676,24 +794,30 @@ def tail_facts(path):
                 o = json.loads(raw)
             except Exception:
                 continue
-            if o.get("type") in ("user", "assistant"):
-                t = clean(text_of((o.get("message") or {}).get("content")))
+            if not turn_at and is_human_message(o):
+                turn_at = stamp_of(o)
+            if not doing and o.get("type") in ("user", "assistant"):
+                t = clean(text_of(content_of(o)))
                 if t and not noisy(t):
                     doing = t[:200]
-                    break
-        return custom or ai, doing
+            if doing and turn_at:
+                break
+        return custom or ai, doing, turn_at
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing = pick(fh.read())
+            title, doing, turn_at = pick(fh.read())
+            if not turn_at and size > TAIL:
+                fh.seek(max(0, size - TURN_TAIL))
+                turn_at = pick(fh.read())[2]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
-            return title, doing
+            return title, doing, turn_at
     except OSError:
-        return "", ""
+        return "", "", 0.0
 
 
 def free_session_name(base, taken):
@@ -1580,8 +1704,9 @@ def facts_for(path, mtime, cache, tail=None, head=None,
 
     if same_mtime:
         title, doing = old.get("title", ""), old.get("doing", "")
+        turn_at = old.get("turnAt", 0)
     else:
-        title, doing = tail(path)
+        title, doing, turn_at = tail(path)
         title = clean(title)
 
     try:
@@ -1589,7 +1714,11 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     except OSError:
         size = None
 
-    result = {"mtime": mtime, "title": title, "doing": doing}
+    # `turnAt` живёт в памятке по тому же правилу, что title и doing: считается
+    # из того же хвоста и меняется только вместе с файлом, так что ключ mtime
+    # для него верен. Отдельным чтением на каждый опрос он стоил бы двухсот
+    # хвостов там, где сейчас читаются единицы.
+    result = {"mtime": mtime, "title": title, "doing": doing, "turnAt": turn_at}
     if size is not None:
         result["size"] = size
 
@@ -1905,7 +2034,7 @@ elif mode == "state":
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
             "zellij": (procs.get(sid) or {}).get("zellij"),
-            "agent": agent_of(sid, path),
+            "agent": agent_of(sid, path, f.get("turnAt", 0)),
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
             # некому — она не видна ни в одной строке списка.

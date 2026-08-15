@@ -33,14 +33,14 @@ def _transcript(d, at):
     return path
 
 
-def _agent_of(d, sid, transcript=""):
+def _agent_of(d, sid, transcript="", turn_at=0):
     """agent_of читает каталог из глобального STATUS_DIR, его и подменяем.
 
     Память meta_all ключуется каталогом, поэтому временный каталог каждого
     теста свой и в чужой ответ не попадает.
     """
     CC["STATUS_DIR"] = d
-    return CC["agent_of"](sid, transcript)
+    return CC["agent_of"](sid, transcript, turn_at)
 
 
 def test_agent_of_passes_the_four_fields_from_their_own_files():
@@ -188,3 +188,45 @@ if __name__ == "__main__":
     total = len([n for n in globals() if n.startswith("test_")])
     print("%d/%d passed" % (total - fails, total))
     sys.exit(1 if fails else 0)
+
+
+# ── Начало хода считается по транскрипту, а не по отметке хука ─────────────
+
+
+def test_turn_from_the_transcript_beats_a_hook_that_went_silent():
+    # Ровно та поломка, ради которой правило и заведено: хук перестал писать,
+    # `turnAt` в state.json застыл сутки назад, а человек написал минуту назад.
+    # Показывать сутки — значит утверждать, что сессия думает над репликой
+    # сутки, и это выглядит поломкой пикера, а не молчанием хука.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json",
+               {"state": "active", "updated": NOW, "turnAt": TURN - 86400})
+        assert _agent_of(d, UUID_A, turn_at=TURN)["turnAt"] == TURN
+
+
+def test_turn_falls_back_to_the_hook_when_the_tail_says_nothing():
+    # Ноль от tail_facts значит «в хвосте человеческой записи не нашлось» —
+    # длинный ход вытолкнул её за TAIL. Отметка хука там единственный ответ, и
+    # она же, скорее всего, верна: тот ход и правда начался давно.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json",
+               {"state": "active", "updated": NOW, "turnAt": TURN})
+        assert _agent_of(d, UUID_A, turn_at=0)["turnAt"] == TURN
+
+
+def test_turn_stays_zero_when_neither_source_knows():
+    # Ноль — «не знаем», и врать про «секунду назад» хуже: читатель рисует по
+    # этому полю длительность хода.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "idle", "updated": NOW})
+        assert _agent_of(d, UUID_A, turn_at=0)["turnAt"] == 0
+
+
+def test_a_spoiled_transcript_stamp_falls_back_to_the_hook():
+    # num() просеивает вход, а приезжает он из разбора чужого файла: мусор не
+    # должен ни ронять запись, ни выдавать себя за ход.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json",
+               {"state": "active", "updated": NOW, "turnAt": TURN})
+        assert _agent_of(d, UUID_A, turn_at="позавчера")["turnAt"] == TURN
+        assert _agent_of(d, UUID_A, turn_at=-5)["turnAt"] == TURN
