@@ -41,6 +41,23 @@ def _tool_result(at):
                         "content": [{"type": "tool_result", "content": "ok"}]}}
 
 
+def _notification(at):
+    """Уведомление о конце субагента. Форма снята с живой записи (2.1.233)."""
+    return {"type": "user", "timestamp": _stamp(at), "isSidechain": False,
+            "promptSource": "system", "origin": {"kind": "task-notification"},
+            "message": {"role": "user",
+                        "content": "<task-notification>\n<task-id>a22ef</task-id>\n"
+                                   "<status>completed</status>\n</task-notification>"}}
+
+
+def _slash_command(at):
+    """Слэш-команда: обёртки в тексте есть, но набрал её человек."""
+    return {"type": "user", "timestamp": _stamp(at),
+            "message": {"role": "user",
+                        "content": "<command-message>do</command-message>\n"
+                                   "<command-name>/do</command-name>"}}
+
+
 def _write(path, records):
     with open(path, "w", encoding="utf-8") as fh:
         for r in records:
@@ -88,6 +105,37 @@ def test_a_sidechain_record_is_not_human():
     assert CC["is_human_message"](o) is False
 
 
+def test_a_task_notification_is_not_human():
+    # Конец субагента приезжает в транскрипт записью `user` — не мета, не
+    # сайдчейн, содержимое строкой, — и от реплики человека отличается только
+    # своими полями. Пришло оно не от человека: работу закончил агент.
+    assert CC["is_human_message"](_notification(TOOL_AT)) is False
+
+
+def test_a_task_notification_without_the_new_field_is_not_human():
+    # `promptSource` завёлся не сразу: на 583 уведомлениях в живых транскриптах
+    # (замер 2026-08-16) `origin.kind` стоит у всех, а `promptSource` — у всех,
+    # кроме трёх, записанных 2.1.159. Признака поэтому два, и это не запас: без
+    # второго старый транскрипт разбирался бы по-прежнему неверно.
+    o = _notification(TOOL_AT)
+    del o["promptSource"]
+    assert CC["is_human_message"](o) is False
+
+
+def test_a_system_submission_of_an_unknown_kind_is_not_human():
+    # Обратная половина той же пары: `promptSource: system` называет вставку
+    # вообще, а не один её вид, и новый вид уведомления не потребует правки.
+    o = _notification(TOOL_AT)
+    del o["origin"]
+    assert CC["is_human_message"](o) is False
+
+
+def test_a_slash_command_is_still_human():
+    # Отсев по обёрткам в тексте («начинается с <») забрал бы и слэш-команды, а
+    # их набирает человек, и ход они начинают. Отсюда разбор по полям записи.
+    assert CC["is_human_message"](_slash_command(HUMAN_AT)) is True
+
+
 def test_an_assistant_record_is_not_human():
     assert CC["is_human_message"]({"type": "assistant", "timestamp": _stamp(HUMAN_AT)}) is False
 
@@ -115,6 +163,18 @@ def test_tool_results_after_the_human_do_not_move_the_turn():
     # Ровно то, ради чего разбор и заведён: длинный ход — это сотни записей
     # `user` от инструментов, и по ним ход был бы всегда «секунду назад».
     _, _, turn_at = _tail([_human(HUMAN_AT)] + [_tool_result(TOOL_AT + i) for i in range(20)])
+    assert turn_at == HUMAN_AT, turn_at
+
+
+def test_a_notification_after_the_human_does_not_move_the_turn():
+    # Тот самый случай, ради которого разбор и правился (сессия a973,
+    # 2026-08-15): человек спросил в 22:39, субагенты отчитывались до 23:19, и
+    # ход датировался последним отчётом — «минуту назад» вместо сорока.
+    _, _, turn_at = _tail([
+        _human(HUMAN_AT),
+        {"type": "assistant", "timestamp": _stamp(HUMAN_AT + 5)},
+        _notification(TOOL_AT),
+    ])
     assert turn_at == HUMAN_AT, turn_at
 
 
@@ -184,7 +244,11 @@ def test_the_facts_version_was_bumped_for_the_new_field():
     # Иначе памятка прошлой версии отдавала бы записи без `turnAt` как полные,
     # и ход у простаивающей сессии не появился бы никогда: mtime у неё больше
     # не сдвинется. Ровно та ошибка, за которую уже заплачено на `gist`.
-    assert CC["FACTS_VERSION"] >= 3, CC["FACTS_VERSION"]
+    #
+    # Второй раз версия поднята за то же самое, но по другому поводу: поле
+    # осталось, изменилось его значение (отчёт субагента ход больше не
+    # начинает), а неверное значение лежит в памятке под тем же ключом.
+    assert CC["FACTS_VERSION"] >= 4, CC["FACTS_VERSION"]
 
 
 # ── Второй, широкий хвост ──────────────────────────────────────────────────
@@ -230,3 +294,21 @@ def test_the_wide_tail_is_wider_than_the_narrow_one():
     # Равные константы означали бы второй проход, который ничего не добавляет,
     # и цену без ответа.
     assert CC["TURN_TAIL"] > CC["TAIL"], (CC["TURN_TAIL"], CC["TAIL"])
+
+
+# Тот же хвост, что у остальных файлов в tests/. Без него запуск, обещанный
+# первой строкой этого файла, молча ничего не проверяет и выходит с нулём — и
+# ровно так уведомление субагента дожило до живого пикера.
+TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+
+if __name__ == "__main__":
+    failed = 0
+    for t in TESTS:
+        try:
+            t()
+            print("ok   %s" % t.__name__)
+        except AssertionError as e:
+            failed += 1
+            print("FAIL %s: %s" % (t.__name__, e))
+    print("%d/%d passed" % (len(TESTS) - failed, len(TESTS)))
+    sys.exit(1 if failed else 0)
