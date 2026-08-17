@@ -2,6 +2,8 @@
 
 Pick a [Claude Code](https://claude.com/claude-code) project and session with `fzf`, then resume it — or start something else in that directory.
 
+> Рекомендуемый интерфейс — [ccfzf-picker](https://github.com/popstas/ccfzf-picker).
+
 Two pickers. First the projects, sorted by how recently you touched them:
 
 ```
