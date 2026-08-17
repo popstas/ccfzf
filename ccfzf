@@ -632,6 +632,23 @@ def window_sources(file_path, dir_path):
     return out
 
 
+def sort_windows(recs):
+    """Окна одной сессии: свежайший взгляд первым.
+
+    `focusedAt` — отметка человека («перевёл взгляд на окно»), `lastSeen` —
+    отметка трекера («видел окно на своём тике»). Вторая и есть источник
+    гонки: у одного трекера она растёт раз в секунду, у другого раз в
+    тридцать, и первым по ней оказывается то одно окно, то другое.
+
+    Имя машины третьим ключом — ради устойчивости, а не красоты: у двух окон,
+    на которые ни разу не смотрели, первые два ключа равны, а читатель
+    перерисовывает список раз в секунду.
+    """
+    return sorted(recs, key=lambda r: (-num(r.get("focusedAt")),
+                                       -num(r.get("lastSeen")),
+                                       str(r.get("host") or "").lower()))
+
+
 def read_window_sources(file_path, dir_path, now):
     """Слить файлы трекеров в один вид: окна, машины, снимки, хоткеи.
 
@@ -646,8 +663,10 @@ def read_window_sources(file_path, dir_path, now):
     бы вредно: два признака расходятся на первой же правке.
 
     Одну сессию могут показывать два трекера (её терминал открыт с обеих
-    машин). Спор разрешается свежестью `lastSeen`, а не порядком чтения:
-    порядок задан нами и о том, где сессию видели последней, не знает ничего.
+    машин), и это не ошибка: работали на одной машине, продолжили на другой.
+    Обе записи остаются — `windows[sid]` список, — а порядок задаёт
+    `sort_windows`: свежайший взгляд первым. Прежде запись с меньшим
+    `lastSeen` выбрасывалась, и читатель видел то одно окно, то другое.
 
     Верхние `host` / `pid` / `projects` остаются такими, какими были, потому
     что их читает не список окон, а проектные хоткеи. Берутся они у источника,
@@ -679,11 +698,9 @@ def read_window_sources(file_path, dir_path, now):
         if lead is None or (pr and not lead[2]):
             lead = (host, pid, pr)
         for sid, rec in w.items():
-            prev = windows.get(sid)
-            if prev is not None and prev["lastSeen"] >= rec["lastSeen"]:
-                continue
-            windows[sid] = dict(rec, host=host, pid=pid, canFocus=focus,
-                                mqttBase=mqtt_base)
+            windows.setdefault(sid, []).append(
+                dict(rec, host=host, pid=pid, canFocus=focus, mqttBase=mqtt_base))
+    windows = {sid: sort_windows(recs) for sid, recs in windows.items()}
     host, pid, projects = lead if lead else ("", 0, [])
     return windows, host, pid, snaps, projects, hosts
 
@@ -2075,7 +2092,12 @@ elif mode == "state":
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
             # некому — она не видна ни в одной строке списка.
-            "window": windows.get(sid),
+            #
+            # `windows[sid]` теперь список (сессию видят два трекера), но поле
+            # `window` этой задаче не принадлежит — она остаётся одиночной
+            # записью, первой по свежести взгляда. Список целиком под именем
+            # `windows` уедет в ответ следующей задачей.
+            "window": windows[sid][0] if sid in windows else None,
         })
 
     # Записи файлов, выпавших из среза, в памятку не попали — чистка выходит

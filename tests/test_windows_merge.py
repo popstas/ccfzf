@@ -61,9 +61,34 @@ def test_windows_from_two_trackers_land_in_one_map():
         dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")}, pid=7)},
     )
     assert set(windows) == {UUID_A, UUID_B}, windows
-    assert windows[UUID_A]["host"] == "windows-box", windows[UUID_A]
-    assert windows[UUID_B]["host"] == "mac-host", windows[UUID_B]
-    assert windows[UUID_B]["pid"] == 7, windows[UUID_B]
+    assert windows[UUID_A][0]["host"] == "windows-box", windows[UUID_A]
+    assert windows[UUID_B][0]["host"] == "mac-host", windows[UUID_B]
+    assert windows[UUID_B][0]["pid"] == 7, windows[UUID_B]
+
+
+def test_two_windows_of_one_session_are_kept_newest_look_first():
+    # Ровно нынешняя гонка, записанная тестом: у windows-box запись свежее по
+    # `lastSeen` (его демон тикнул только что), но на окно ни разу не смотрели;
+    # у mac-host тик старее, а взгляд был. Побеждает взгляд — он отметка
+    # человека, а `lastSeen` отметка трекера.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("windows-box", {UUID_A: dict(_win("ccfzf", NOW - 2), focusedAt=0)}),
+        dir_files={"mac.json": _file(
+            "mac-host", {UUID_A: dict(_win("ccfzf", NOW - 40), focusedAt=NOW - 60)})},
+    )
+    assert [w["host"] for w in windows[UUID_A]] == ["mac-host", "windows-box"], windows[UUID_A]
+
+
+def test_windows_order_is_stable_when_keys_are_equal():
+    # На два окна, на которые не смотрели ни разу и чьи трекеры тикнули в одну
+    # секунду, первых двух ключей не хватает. Без третьего порядок зависел бы
+    # от порядка чтения файлов, а читатель перерисовывает список раз в секунду —
+    # дрожь была бы видна глазом.
+    windows, _, _, _, _, _ = _merge(
+        legacy=_file("zeta-box", {UUID_A: _win("ccfzf")}),
+        dir_files={"alpha.json": _file("alpha-box", {UUID_A: _win("ccfzf")})},
+    )
+    assert [w["host"] for w in windows[UUID_A]] == ["alpha-box", "zeta-box"], windows[UUID_A]
 
 
 def test_window_carries_focus_ability_of_its_own_tracker():
@@ -73,8 +98,8 @@ def test_window_carries_focus_ability_of_its_own_tracker():
         legacy=_file("windows-box", {UUID_A: _win("ccfzf")}),
         dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")}, focus=False)},
     )
-    assert windows[UUID_A]["canFocus"] is True, windows[UUID_A]
-    assert windows[UUID_B]["canFocus"] is False, windows[UUID_B]
+    assert windows[UUID_A][0]["canFocus"] is True, windows[UUID_A]
+    assert windows[UUID_B][0]["canFocus"] is False, windows[UUID_B]
 
 
 def test_same_session_in_two_trackers_goes_to_the_fresher_one():
@@ -85,7 +110,7 @@ def test_same_session_in_two_trackers_goes_to_the_fresher_one():
         legacy=_file("windows-box", {UUID_A: _win("ccfzf", last_seen=NOW - 90)}),
         dir_files={"mac-host.json": _file("mac-host", {UUID_A: _win("ccfzf", last_seen=NOW - 2)})},
     )
-    assert windows[UUID_A]["host"] == "mac-host", windows[UUID_A]
+    assert windows[UUID_A][0]["host"] == "mac-host", windows[UUID_A]
 
 
 def test_stale_source_drops_whole_and_alone():
@@ -164,8 +189,8 @@ def test_window_carries_the_address_of_its_own_tracker():
         dir_files={"mac-host.json": _file("mac-host", {UUID_B: _win("other")},
                                           mqtt_base="home/room/mac/windows")},
     )
-    assert windows[UUID_A]["mqttBase"] == "home/room/pc/windows", windows[UUID_A]
-    assert windows[UUID_B]["mqttBase"] == "home/room/mac/windows", windows[UUID_B]
+    assert windows[UUID_A][0]["mqttBase"] == "home/room/pc/windows", windows[UUID_A]
+    assert windows[UUID_B][0]["mqttBase"] == "home/room/mac/windows", windows[UUID_B]
 
 
 def test_tracker_list_carries_address_and_open_ability():
