@@ -69,6 +69,30 @@ def test_junk_focus_stamp_does_not_cost_the_window():
     assert windows[UUID_A]["title"] == "ccfzf", windows[UUID_A]
 
 
+def test_terminal_name_reaches_the_reader():
+    # Имя приложения — единственное, чем читатель отличает Windows Terminal от
+    # WezTerm в строке: окно есть у обоих, и пометка ▣ у них одна и та же.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1,
+                                       "lastSeen": NOW, "app": "WindowsTerminal.exe"}))
+    assert windows[UUID_A]["app"] == "WindowsTerminal.exe", windows[UUID_A]
+
+
+def test_terminal_name_missing_is_empty_not_absent():
+    # Трекер прежней версии поля не пишет. Пустая строка читается как «не
+    # назвал», а отсутствие ключа стоило бы читателю проверки на каждом
+    # использовании — то же правило, что у focusedAt.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": None, "lastSeen": 0}))
+    assert windows[UUID_A]["app"] == "", windows[UUID_A]
+
+
+def test_junk_terminal_name_does_not_cost_the_window():
+    # Файл пишет чужая машина: порченое поле стоит поля, а не пометки об окне.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1,
+                                       "lastSeen": NOW, "app": {"нет": "строки"}}))
+    assert windows[UUID_A]["app"] == "", windows[UUID_A]
+    assert windows[UUID_A]["title"] == "ccfzf", windows[UUID_A]
+
+
 def test_stale_file_is_dropped_whole():
     # Срок годности проверяется до полей: демон, который умер, не должен
     # оставлять после себя ни пометок об окнах, ни отметок о просмотре.
