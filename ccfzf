@@ -61,6 +61,12 @@ WINDOWS_FILE="${CCFZF_WINDOWS_FILE-$HOME/.ccfzf.sessions.claude-wt.json}"
 # одиночный файл читается по-прежнему и остаётся первым источником.
 WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 
+# Комментарии человека к сессиям, три-четыре слова о том, что здесь делается.
+# Файл живёт на ЭТОЙ машине, а её --state читают по ssh пикеры всех машин
+# сразу: общим список выходит сам, без второго транспорта и без брокера.
+# Пустая строка выключает и чтение, и запись.
+COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
+
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
 # Note that --expect steals these keys from fzf: ctrl-f no longer moves the
@@ -80,6 +86,8 @@ print_mode=0
 kiosk=0
 dump_only=0
 state_only=0
+comment_id=""
+comment_host=""
 project=""
 session_id=""
 # Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
@@ -94,6 +102,13 @@ while (($#)); do
     -k|--kiosk) kiosk=1; shift ;;
     --dump) dump_only=1; shift ;;
     --state) state_only=1; shift ;;
+    # Текст комментария приходит на stdin, а не аргументом: `ssh host cmd
+    # args…` склеивает аргументы в строку для удалённого шелла, и комментарий
+    # с `;` был бы командой. Второй аргумент — имя машины, назвавшей его: сама
+    # она здесь не угадывается, ssh приходит с любой.
+    --comment) comment_id="${2-}"; comment_host="${3-}"
+      [[ -n $comment_id ]] || { echo "ccfzf: --comment requires a session id" >&2; exit 2; }
+      shift 2; [[ -n $comment_host ]] && shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
     --limit) limit="${2-}"; [[ -n $limit ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }; shift 2 ;;
@@ -118,6 +133,10 @@ done
 claude_tail=""
 ((${#claude_args[@]})) && claude_tail=" $(printf '%q ' "${claude_args[@]}")"
 claude_tail=${claude_tail% }
+
+if [[ -n $comment_id ]]; then
+  command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
+fi
 
 if ((dump_only || state_only)); then
   command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
@@ -158,6 +177,52 @@ TAIL = 256 * 1024         # tail budget for the title and the latest activity
 # Файл при этом только что писался и лежит в кеше страниц, так что цена — разбор
 # json, а не чтение диска.
 TURN_TAIL = 4 * TAIL
+# Спека и план сессии — те, что пишут и читают скиллы superpowers. Хука для
+# них нет: state.json пишет claude-wt, поля про бумаги там не заводили, а
+# завести нечем — репозиторий чужой. Зато путь называет сам разговор, и хвост
+# его транскрипта уже читается ради заголовка.
+#
+# Дорог у спеки две, у плана одна, и асимметрия эта не оплошность.
+# `docs/superpowers/specs/` и короткий `docs/specs/` — один и тот же каталог
+# спек, просто разных лет: у windows11-manager рядом лежат оба, и новейшая
+# спека как раз в коротком. А `docs/plans/` без `superpowers/` — планы
+# ralphex: они живут по другому правилу и открываются иначе, и поймай их
+# регулярка, пункт меню обещал бы человеку не то, куда ведёт.
+#
+# Поймано на живой сессии 9974: путь `docs/specs/…-claude-place-layouts-…`
+# назван в хвосте транскрипта двадцать семь раз, а колонка бумаги пуста —
+# отказ здесь молчащий, отличить «спеки нет» от «спеку не узнали» нечем.
+#
+# Алфавит имени узкий намеренно: путь уезжает дальше в argv команды открытия,
+# а `[^/]+` пропустил бы туда пробел, кавычку и перевод строки.
+DOC_RE = re.compile(rb"docs/superpowers/(specs|plans)/[0-9A-Za-z._-]+\.md"
+                    rb"|docs/(specs)/[0-9A-Za-z._-]+\.md")
+DOC_KINDS = {b"specs": "spec", b"plans": "plan"}
+
+
+def doc_exists(root, rel):
+    """Лежит ли названная бумага на диске.
+
+    Разговор называет и пути, которых нет: имя, только предложенное и не
+    написанное; файл чужого репозитория, о котором зашла речь; сокращённый в
+    письме путь вроде `docs/specs/...md` — узкий алфавит имени такую запись
+    пропускает, точка в нём разрешена. Пункт меню по любому из них ведёт в
+    никуда, и узнать об этом человеку неоткуда, кроме как нажав: у сессии 9120
+    спекой числился как раз `...md`, у 9974 планом — `feature-plan.md` из
+    соседнего проекта (2026-08-18).
+
+    Отбор стоит **в обратном проходе**, а не над готовым ответом: правило
+    «побеждает последнее упоминание» им не отменяется, а сужается до последнего
+    существующего — иначе выдуманное имя, названное позже настоящего, прятало
+    бы настоящее.
+
+    Пустой корень значит «проверять нечем»: каталог знают не все зовущие —
+    интерактивному списку tail_facts нужна одна строка заголовка. Там ответ
+    прежний, без отбора.
+    """
+    if not root:
+        return True
+    return os.path.isfile(os.path.join(root, rel))
 DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
@@ -206,7 +271,16 @@ HOOK_LIVE_TTL = 120
 # Поле то же и форма та же — изменилось значение, а ключ памятки это mtime
 # файла, и у простаивающей сессии он больше не сдвинется: без поднятой версии
 # неверный ход остался бы в ней навсегда.
-FACTS_VERSION = 4
+# 5: у записи появились `spec` и `plan`. Поднято ради разового пересчёта:
+# памятка ключуется по mtime, а у простаивающей сессии он не сдвинется больше
+# никогда — без этого бумаги нашлись бы только у тех, кому ещё напишут.
+# 6: у записи появились `prompts` и `countedTo`.
+# 7: спекой стал считаться и короткий `docs/specs/`. Поднято по той же
+# причине, что и 5: памятка ключуется по mtime, и у простаивающей сессии он
+# больше не сдвинется — без этого спеку нашли бы только те, кому ещё напишут.
+# 8: бумагой считается только существующий файл. Причина та же: выдуманные
+# пути уже лежат в памятках, и без версии остались бы там навсегда.
+FACTS_VERSION = 8
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -798,7 +872,7 @@ def stamp_of(o):
         return 0.0
 
 
-def tail_facts(path):
+def tail_facts(path, doc_root=None):
     """(title, latest activity, turn start) from the tail of the file.
 
     A manual title (custom-title) outranks the generated one (ai-title). Both
@@ -831,6 +905,7 @@ def tail_facts(path):
     def pick(data):
         custom = ai = doing = ""
         turn_at = 0.0
+        docs = {}
         lines = data.split(b"\n")
         for raw in lines:
             if b'-title"' not in raw:
@@ -843,7 +918,26 @@ def tail_facts(path):
                 custom = o.get("customTitle") or custom
             elif o.get("type") == "ai-title":
                 ai = o.get("aiTitle") or ai
+        # Бумаги ищутся по сырой строке, до разбора JSON: путь встречается и в
+        # тексте реплики, и в аргументах вызова инструмента, и во втором случае
+        # никакого `text` у записи нет вовсе.
+        #
+        # Проход обратный, и первым найденным побеждает последнее упоминание:
+        # сессия за день трогает и прошлый план, и новый, а спрошено «над чем
+        # она сейчас».
+        #
+        # Выход из цикла по-прежнему по `doing и turn_at`, и бумаги его не
+        # держат: у большинства сессий их нет вовсе (27 из 100 на живой
+        # машине), и ждать их значило бы дочитывать хвост до конца всегда.
         for raw in reversed(lines):
+            for m in DOC_RE.finditer(raw):
+                # Групп две, потому что дороги у спеки две: длинная с
+                # `superpowers/` и короткая без него. Совпала всегда ровно одна.
+                kind = DOC_KINDS[m.group(1) or m.group(2)]
+                rel = m.group(0).decode("utf-8", "replace")
+                if kind in docs or not doc_exists(doc_root, rel):
+                    continue
+                docs[kind] = rel
             try:
                 o = json.loads(raw)
             except Exception:
@@ -856,22 +950,22 @@ def tail_facts(path):
                     doing = t[:200]
             if doing and turn_at:
                 break
-        return custom or ai, doing, turn_at
+        return custom or ai, doing, turn_at, docs
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing, turn_at = pick(fh.read())
+            title, doing, turn_at, docs = pick(fh.read())
             if not turn_at and size > TAIL:
                 fh.seek(max(0, size - TURN_TAIL))
                 turn_at = pick(fh.read())[2]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
-            return title, doing, turn_at
+            return title, doing, turn_at, docs
     except OSError:
-        return "", "", 0.0
+        return "", "", 0.0, {}
 
 
 def free_session_name(base, taken):
@@ -890,6 +984,121 @@ def free_session_name(base, taken):
         name = "%s-%d" % (base, n)
         n += 1
     return name
+
+
+# Комментарий человека к сессии: три-четыре слова о том, что здесь делается.
+# Предел не про вкус, а про файл: строка приезжает в список на каждой машине.
+COMMENT_LIMIT = 200
+
+
+def read_comments(path):
+    """Общий список комментариев: id сессии → запись.
+
+    Файл живёт на этой машине, а её `--state` читают по ssh пикеры всех машин
+    сразу — значит, общим список выходит сам, без второго транспорта и без
+    брокера. Ровно поэтому хранилище здесь, а не у пикера: у каждого из них
+    свой диск, и синхронизировать их было бы нечем.
+
+    Разбор белым списком, как у записи окна (`read_windows`): файл пишет чужая
+    версия ccfzf с чужой машины, и незнакомая или кривая запись обязана
+    потеряться молча, а не уронить ответ. Испорченный файл читается пустотой по
+    той же причине.
+    """
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for sid, rec in raw.items():
+        if not isinstance(sid, str) or not UUID_RE.match(sid):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        text = rec.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        out[sid] = {"text": text[:COMMENT_LIMIT],
+                    "at": num(rec.get("at")),
+                    "host": rec.get("host") if isinstance(rec.get("host"), str) else ""}
+    return out
+
+
+def set_comment(path, sid, text, now, host):
+    """Записать или стереть комментарий. Ответ — удалось ли.
+
+    Пустой текст стирает запись: отдельного «удалить» у комментария нет, и без
+    этого убрать его было бы нечем.
+
+    Пишется файл целиком, но из **прочитанного** словаря: пишут в него с
+    разных машин, и перезапись одной записью стирала бы чужие молча.
+    Атомарность даёт write_json — он кладёт через временный файл и rename, так
+    что читатель половины списка не увидит никогда.
+
+    Ключ проверяется по алфавиту id: он уезжает именем поля json и приезжает
+    обратно на чужую машину, где опознать чужую строку будет уже некому.
+    """
+    if not isinstance(sid, str) or not UUID_RE.match(sid):
+        return False
+    all_ = read_comments(path)
+    clean_text = (text or "").strip()[:COMMENT_LIMIT]
+    if clean_text:
+        all_[sid] = {"text": clean_text, "at": num(now), "host": host or ""}
+    else:
+        all_.pop(sid, None)
+    write_json(os.path.expanduser(path), all_)
+    return True
+
+
+def count_prompts(path, start, prev):
+    """Сколько раз человек писал в этой сессии — досчитывая, а не пересчитывая.
+
+    Величина отвечает на вопрос, на который не отвечает процент контекста:
+    тот говорит, сколько осталось до сжатия, и после `/compact` падает, а у
+    сессии с миллионным окном и у соседки с двумястами тысячами значит разное.
+    Число реплик только растёт и сравнимо между сессиями.
+
+    Полный проход по транскрипту стоит дорого — замер на живой машине: 176 МБ
+    на сто сессий, 0.45 с. Платить его на каждом опросе нельзя, но и не надо:
+    транскрипт **только дописывают**, поэтому счёт продолжается с того места,
+    где остановился. Полный проход случается один раз на сессию, а дальше
+    читается только дописанное.
+
+    Отсюда и второе возвращаемое — смещение, а не размер файла. Хвост живого
+    транскрипта бывает без перевода строки: агент пишет запись прямо сейчас.
+    Досчитав такую строку, счёт бы завысили; шагнув смещением за неё —
+    потеряли бы реплику навсегда, второй раз её никто не прочтёт. Поэтому
+    смещение двигается ровно на целые строки.
+
+    Считаются только реплики человека (`is_human_message`): под `type: user`
+    лежат ещё результаты инструментов, служебные вставки и отчёты субагентов —
+    замер там же, 109 записей `user` на 5 человеческих.
+
+    Файла нет — счёт остаётся прежним, а не обнуляется: транскрипт мог уехать с
+    чисткой, строка списка при этом жива, и ноль читался бы как «человек тут
+    ни разу ничего не спросил».
+    """
+    count, at = prev, start
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    break  # запись ещё пишется — смещение за неё не шагает
+                at += len(raw)
+                if b'"user"' not in raw:
+                    continue
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(o, dict) and is_human_message(o):
+                    count += 1
+    except OSError:
+        return prev, start
+    return count, at
 
 
 def last_message_at(path):
@@ -1567,16 +1776,149 @@ def frozen_ids():
         return set()
 
 
-def project_rows(dirs, live, marks):
+TODO_REL = os.path.join("docs", "TODO.md")
+TODO_H1_RE = re.compile(r"^#\s+(.+?)\s*$")
+# Нулевая колонка обязательна в обоих: подпункт — это шаг одной задачи, а не
+# задача, и, считая его, счёт скакал бы от того, насколько подробно расписан
+# пункт, а не от объёма работы. Та же отсечка стоит умолчанием и в
+# statusline-block.sh (STATUSLINE_TODO_TOPLEVEL).
+TODO_DONE_RE = re.compile(r"^[-*]\s+\[[xX]\]")
+TODO_OPEN_RE = re.compile(r"^[-*]\s+\[ \]")
+
+
+def todo_sections(lines):
+    """Галочки docs/TODO.md по группам заголовков — порт statusline-block.sh.
+
+    Разбор повторяет тот, по которому те же числа показывает статуслайн
+    (skill-do, `statusline-block.sh`, а до него claude-statusline-todo): делим
+    по заголовку первого уровня, считаем галочки нулевой колонки, пустые
+    секции выбрасываем. Расходиться этим двум ответам нельзя — человек читает
+    их об одном и том же файле, и второй счёт был бы не второй колонкой, а
+    поводом не верить обеим.
+
+    Метка приводится к нижнему регистру и теряет хвостовое двоеточие: она
+    встаёт рядом с числом в строке списка, а не цитируется дословно.
+
+    Пустая метка значит «называть нечем» — галочки до первого заголовка, — а
+    не «секции нет». Пустой список значит «счёта нет вовсе», и читатель обязан
+    не рисовать колонку, а не показывать 0/0.
+    """
+    out, cur = [], None
+    for line in lines:
+        m = TODO_H1_RE.match(line)
+        if m:
+            cur = {"label": m.group(1).rstrip(":").strip().lower(),
+                   "done": 0, "todo": 0}
+            out.append(cur)
+            continue
+        done = bool(TODO_DONE_RE.match(line))
+        if not done and not TODO_OPEN_RE.match(line):
+            continue
+        if cur is None:
+            cur = {"label": "", "done": 0, "todo": 0}
+            out.append(cur)
+        cur["done" if done else "todo"] += 1
+    return [s for s in out if s["done"] + s["todo"]]
+
+
+def project_todo(cwd):
+    """Счётчики docs/TODO.md проекта, или пустота, если считать нечего.
+
+    Файла нет у двадцати проектов из сорока пяти на живой машине, и это не
+    исключительный случай, а обычный: пустой ответ здесь — не ошибка.
+    Читается файл целиком, и это дёшево — замер на той же машине: 25 файлов,
+    82 КБ, 3.8 мс на весь список. Памятка по mtime стоила бы дороже самой
+    работы.
+    """
+    try:
+        with open(os.path.join(cwd, TODO_REL), encoding="utf-8",
+                  errors="replace") as fh:
+            return todo_sections(fh)
+    except (OSError, ValueError):
+        return []
+
+
+def todo_memo(read=None):
+    """Счётчики по каталогу, с памятью на один ответ.
+
+    Счёт нужен и строкам проектов, и строкам сессий: человек читает его в том
+    же списке, где и работает, а список этот — сессии. Сессий сто, каталогов
+    под полсотни, и без памяти один и тот же docs/TODO.md перечитывался бы по
+    разу на каждую строку — на горячем пути, который зовут раз в секунду по
+    ssh.
+
+    Пустой ответ запоминается наравне с непустым: каталогов без docs/TODO.md
+    почти половина, и именно они дали бы больше всего лишних заходов.
+
+    Память живёт ровно один вызов режима и наружу не выносится: файл человек
+    правит прямо во время работы, и счёт, застрявший на весь век процесса, врал
+    бы ровно тому, кто галочки и ставит.
+    """
+    read = read or project_todo
+    cache = {}
+
+    def at(cwd):
+        if cwd not in cache:
+            cache[cwd] = read(cwd)
+        return cache[cwd]
+
+    return at
+
+
+def project_at(files, age_of=None):
+    """Когда в проекте последний раз разговаривали — по содержимому, не mtime.
+
+    mtime здесь не годится ровно по той причине, которая расписана у
+    `last_message_at`: в хвосте живого транскрипта лежат служебные записи без
+    времени — last-prompt, custom-title, mode, pr-link, — и Claude Code
+    переписывает их спустя дни после последней реплики. Строка проекта была
+    последним местом, которое всё ещё верило mtime, и наверх списка всплывали
+    проекты с открытым окном, где работы не было часами.
+
+    Обход точный, а не выборочный, и всё же почти всегда стоит одного чтения.
+    Время записи не может быть позже, чем момент, когда её дописали в файл, то
+    есть `last_message_at(f) <= mtime(f)` всегда; `files` приходит от
+    `scan_dirs` уже отсортированным по mtime убыванием. Значит, как только
+    накопленный ответ достиг mtime следующего файла, ни один из оставшихся его
+    не обгонит — и остановиться здесь можно, ничего не потеряв. Без остановки
+    это хвост по TAIL у каждого транскрипта проекта, а их в одном каталоге
+    бывает под сотню.
+
+    Ноль — «возраст неизвестен» (в хвосте нет ни одной записи со временем), и
+    такой файл обход просто пропускает. Что делать, когда ноль дали все,
+    решает вызывающий: здесь для этого нет данных, а `ago` по нулю рисует
+    1970 год.
+    """
+    age_of = age_of or last_message_at
+    best = 0.0
+    for path, mtime in files:
+        if best >= mtime:
+            break
+        at = age_of(path) or 0.0
+        if at > best:
+            best = at
+    return best
+
+
+def project_rows(dirs, live, marks, age_of=None, todo_at=None):
     """One row per project: marks and directories with sessions, newest first."""
     agg = {}
     for entry in dirs:
+        # Возраст считается один раз на каталог, а не на владельца: `owners_of`
+        # отдаёт и сам проект, и его закладки-предки, и без этого один и тот же
+        # каталог перечитывался бы столько раз, сколько над ним закладок.
+        #
+        # Откат на mtime — только когда содержимое не сказало ничего вовсе.
+        # Отдать в этом случае ноль значило бы датировать проект 1970 годом:
+        # `--dump` считает по этому полю `ago`, а `--state` отдаёт его читателю
+        # как `lastActivity`.
+        at = project_at(entry["files"], age_of) or entry["files"][0][1]
         for owner in owners_of(entry["cwd"], marks):
             a = agg.setdefault(owner, {"n": 0, "live": 0, "mtime": 0.0})
             a["n"] += len(entry["files"])
             a["live"] += sum(1 for f, _ in entry["files"]
                              if os.path.basename(f)[:-6] in live)
-            a["mtime"] = max(a["mtime"], entry["files"][0][1])
+            a["mtime"] = max(a["mtime"], at)
 
     rows = []
     for path in set(marks) | set(agg):
@@ -1588,6 +1930,13 @@ def project_rows(dirs, live, marks):
             "n": a["n"] if a else 0,
             "live": a["live"] if a else 0,
             "mtime": a["mtime"] if a else 0.0,
+            # Считается по `path`, а не по cwd каталога сессий: `owners_of`
+            # отдаёт и сам проект, и закладки-предки над ним, и у закладки свой
+            # docs/TODO.md — тот, который человек и открывает, придя в неё.
+            #
+            # Через ту же память, что и строки сессий: у проекта и его сессий
+            # каталог общий, и без неё файл читался бы дважды.
+            "todo": (todo_at or todo_memo())(path),
         })
     rows.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
     return rows
@@ -1759,8 +2108,9 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     if same_mtime:
         title, doing = old.get("title", ""), old.get("doing", "")
         turn_at = old.get("turnAt", 0)
+        docs = {}
     else:
-        title, doing, turn_at = tail(path)
+        title, doing, turn_at, docs = tail(path)
         title = clean(title)
 
     try:
@@ -1776,11 +2126,40 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     if size is not None:
         result["size"] = size
 
-    if not want_gist:
-        return result
-
     truncated = (size is not None and old.get("size") is not None
                  and size < old["size"])
+
+    # Счёт реплик человека — единственное поле памятки, которое не
+    # пересчитывается, а продолжается: транскрипт только дописывают. Считается
+    # он и в режиме `dump`, хотя в сам дамп не уезжает (DUMP_KEEP): памятка у
+    # режимов общая, и запись без счёта, положенная дампом, читалась бы
+    # `--state` как полная — у простаивающей сессии mtime больше не сдвинется
+    # никогда. Ровно эта болезнь уже описана выше у `gist`.
+    #
+    # Подмену файла счёт не переживает, и подпись та же: размер уменьшился.
+    counted_from = 0 if truncated else old.get("countedTo", 0)
+    prompts, counted_to = count_prompts(
+        path, counted_from, 0 if truncated else old.get("prompts", 0))
+    result["prompts"] = prompts
+    result["countedTo"] = counted_to
+
+    # Спека и план живут в памятке по тому же правилу, что и `gist`: найденное
+    # переносится через изменения файла. Путь, названный однажды и уехавший за
+    # TAIL, иначе пропал бы — а сессия над тем же планом и работает.
+    #
+    # Подмену файла память не переживает, и это та же подпись, по которой
+    # сбрасывается `gist`: размер уменьшился — id отдали другой сессии, файл
+    # восстановили из бэкапа, историю сжали. Чужой план на новой сессии врал бы
+    # молча.
+    #
+    # Свежая находка старую замещает: сессия за день переходит с плана на план.
+    for kind in ("spec", "plan"):
+        found = docs.get(kind) or ("" if truncated else old.get(kind, ""))
+        if found:
+            result[kind] = found
+
+    if not want_gist:
+        return result
     gist = "" if (truncated or not gist_known) else (old.get("gist") or "")
     done = bool(gist) or (gist_known and not truncated
                            and bool(old.get("gistDone")))
@@ -1988,7 +2367,10 @@ elif mode == "dump":
             sid = sid_of(path)
             # head_gist здесь не зовётся: `gist` в дамп не уезжает, а стоил
             # он 165 мс из 320 на двухстах сессиях.
-            f = facts_for(path, mtime, cache, want_gist=False)
+            # Каталог сессии — тот корень, от которого считается путь бумаги:
+            # без него в ответ уехало бы любое имя, названное в разговоре.
+            f = facts_for(path, mtime, cache, want_gist=False,
+                          tail=lambda p, root=cwd: tail_facts(p, root))
             facts[path] = f
             agent = agents.get(sid) or {}
             sessions.append(dump_record({
@@ -2018,6 +2400,10 @@ elif mode == "state":
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
+    comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
+    # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
+    # сессий, а каталоги у них те же самые.
+    todo_at = todo_memo()
     now = time.time()
 
     dirs = scan_dirs()
@@ -2071,13 +2457,40 @@ elif mode == "state":
     sessions = []
     for path, mtime, cwd in picked:
         sid = sid_of(path)
-        f = facts_for(path, mtime, cache)
+        # Тот же корень и по той же причине, что и в ветке дампа выше.
+        # Значение по умолчанию, а не свободная переменная: лямбда переживает
+        # виток цикла, и `cwd` в ней иначе означал бы последнюю сессию.
+        f = facts_for(path, mtime, cache,
+                      tail=lambda p, root=cwd: tail_facts(p, root))
         facts[path] = f
         agent = agents.get(sid) or {}
         wins = windows.get(sid)
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
+            # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
+            # этой машине, а открывает его читатель у себя, переведя путь через
+            # свой pathMap. Абсолютный путь той стороне пришлось бы разбирать
+            # обратно.
+            #
+            # Ключей нет, когда бумаг нет, — а нет их у трёх сессий из четырёх.
+            # Пустая строка в ответе на каждую строку списка стоила бы места
+            # ради того же, что значит отсутствие ключа.
+            **({"spec": f["spec"]} if f.get("spec") else {}),
+            **({"plan": f["plan"]} if f.get("plan") else {}),
+            # Размер сессии — число реплик человека. Отвечает на то, на что не
+            # отвечает `contextPct`: тот говорит, сколько осталось до сжатия, и
+            # после /compact падает. Ключ ставится всегда, даже нулём: ноль
+            # здесь честен — сессия, в которой человек ещё ничего не написал,
+            # бывает.
+            "prompts": f.get("prompts", 0),
+            # Счётчики docs/TODO.md каталога сессии. Те же, что у строки её
+            # проекта: файл один, и второй счёт рядом с первым был бы поводом
+            # не верить обоим.
+            **({"todo": todo_at(cwd)} if todo_at(cwd) else {}),
+            # Комментарий человека — общий на все машины: файл лежит здесь, а
+            # `--state` читают все пикеры. Ключа нет, когда комментария нет.
+            **({"comment": comments[sid]["text"]} if sid in comments else {}),
             "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
             "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
@@ -2143,11 +2556,19 @@ elif mode == "state":
     # Формат «сколько назад» по нулю нарисует 1970 год. Режим `dump` этот же
     # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
     json.dump({"generated": now, "sessions": sessions,
+               # `todo` уезжает только пустым-непустым: у двадцати проектов из
+               # сорока пяти docs/TODO.md нет вовсе, и ключ с пустым списком
+               # стоил бы места в ответе ради «считать нечего» — того же, что
+               # значит его отсутствие. В `dump` поля нет намеренно: панель и
+               # экспорт в HA про задачи не спрашивают, а разбор файла на их
+               # стороне был бы вторым счётом рядом со статуслайном.
                "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
                              "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
+                             **({"todo": r["todo"]} if r.get("todo") else {}),
                              **({"hotkey": r["hotkey"]} if r.get("hotkey") else {})}
                             for r in merge_project_hotkeys(
-                                project_rows(dirs, live, marks), window_projects)],
+                                project_rows(dirs, live, marks, todo_at=todo_at),
+                                window_projects)],
                "windowHost": window_host, "windowPid": window_pid,
                # Живые трекеры поимённо. Пикеру нужно отличать «моей машины
                # среди трекеров нет» от «есть, но окон у неё сейчас нет»: по
@@ -2164,6 +2585,27 @@ elif mode == "state":
                # которой всё делается.
                "zellij": zellij_rows},
               sys.stdout, ensure_ascii=False)
+
+elif mode == "comment":
+    # Запись комментария. Текст приходит на **stdin**, а не аргументом, и это
+    # не удобство: `ssh host cmd args…` склеивает аргументы в одну строку,
+    # которую заново разбирает удалённый шелл, — то есть комментарий вида
+    # `fix; rm -rf ~` был бы командой. Через stdin текст шелла не касается
+    # вовсе. Id при этом аргумент, и это безопасно: он UUID и проверяется по
+    # алфавиту в set_comment.
+    #
+    # Имя машины, назвавшей комментарий, приезжает вторым аргументом: сама она
+    # тут не угадывается — ssh приходит с любой из них, а $HOSTNAME назвал бы
+    # эту.
+    # Текст — из окружения, а не из stdin: stdin у этого процесса занят самим
+    # блоком (bash кормит им python), и читать оттуда нечего. Шелла на пути
+    # переменной нет вовсе, поэтому кавычить её не нужно и нечем.
+    ok = set_comment(sys.argv[3], sys.argv[2],
+                     os.environ.get("CCFZF_COMMENT_TEXT", ""), time.time(),
+                     sys.argv[4] if len(sys.argv) > 4 else "")
+    if not ok:
+        sys.stderr.write("ccfzf: not a session id\n")
+        sys.exit(2)
 
 elif mode == "newname":
     # Занятыми считаются заголовки живых сессий: имя сессии — это заголовок её
@@ -2191,22 +2633,48 @@ elif mode == "newname":
     print(free_session_name(base, taken))
 PYEOF
 
+# Блок уходит питону на stdin, а не аргументом `python3 -c`. Причина — жёсткий
+# потолок ядра: MAX_ARG_STRLEN, 32 страницы, то есть 128 КБ на ОДИН аргумент,
+# сколько бы места ни было под argv целиком. Блок дорос до него и перешагнул,
+# и отказ вышел непроходимый и без подсказки о причине: `Argument list too
+# long`, код 126, ни одного ответа --state. У stdin такого потолка нет вовсе.
+#
+# Не файл во временном каталоге: `$tmp` заводит только интерактивная ветка, а
+# `--state` намеренно обходится без `mktemp` — его зовут по ssh раз в секунду.
+# Своего stdin ни один режим не читает, так что занять его нечем.
+py() { printf '%s\n' "$PY" | python3 - "$@"; }
+
+# Комментарий пишется до всего остального: список для этого не нужен вовсе, а
+# ходит сюда пикер по ssh отдельным вызовом.
+#
+# Текст приезжает на stdin, а не аргументом: `ssh host cmd args…` склеивает
+# аргументы в строку, которую заново разбирает удалённый шелл, — комментарий с
+# `;` был бы командой. Дальше он идёт питону переменной окружения, и это не
+# каприз: stdin у python уже занят самим блоком (см. py() выше), а переменная
+# уходит в execve как есть — её не разбирает ни один шелл. Двухсот знаков
+# предела ей хватает с запасом.
+if [[ -n $comment_id ]]; then
+  [[ -n $COMMENTS_FILE ]] || { echo "ccfzf: comments file is off" >&2; exit 2; }
+  CCFZF_COMMENT_TEXT=$(cat) py comment "$comment_id" "$COMMENTS_FILE" "$comment_host"
+  exit $?
+fi
+
 # External callers (the picker) need the dumps rewritten without opening
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR"
+  py dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR"
   exit 0
 fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR"
+  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE"
   exit 0
 fi
 
 index="$tmp/index.json"
-rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+rows=$(py projects "$MARKS" "$index")
 [[ -n $rows ]] || { echo "ccfzf: no marks and no sessions found" >&2; exit 1; }
 
 # Border, height and layout are left to FZF_DEFAULT_OPTS.
@@ -2226,7 +2694,7 @@ done
 cmd_json+="]"
 
 build_srows() {
-  srows=$(python3 -c "$PY" sessions "$proj_path" "$tmp" "$MARKS" "$index" \
+  srows=$(py sessions "$proj_path" "$tmp" "$MARKS" "$index" \
     "$cmd_json" "$shell_key" 2>"$tmp/count")
   shown=$(cat "$tmp/count" 2>/dev/null || echo 0)
 }
@@ -2237,7 +2705,7 @@ build_srows() {
 # which the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR" \
+  py dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR" \
     >/dev/null 2>&1 &
 }
 
@@ -2301,7 +2769,7 @@ except OSError:
   cmd=${cmd% }
   if ((kiosk)); then
     (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
-    rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+    rows=$(py projects "$MARKS" "$index")
     all_rows=$rows
     dump_state
     picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
@@ -2428,7 +2896,7 @@ while :; do
     # трекер путает между собой. Отказ python3 не должен отнимать новую
     # сессию — тогда имя остаётся прежним, как было до суффиксов.
     __new__)
-      new_name=$(python3 -c "$PY" newname "$index" "$(basename "$dir")" 2>/dev/null)
+      new_name=$(py newname "$index" "$(basename "$dir")" 2>/dev/null)
       [[ -n $new_name ]] || new_name=$(basename "$dir")
       cmd="$CLAUDE_CMD -n $(printf '%q' "$new_name")$claude_tail" ;;
     *)         cmd="$CLAUDE_CMD --resume $(printf '%q' "$sid")$claude_tail" ;;
@@ -2447,7 +2915,7 @@ while :; do
   else
     (cd "$dir" && exec "$SHELL") || true
   fi
-  rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index")
   all_rows=$rows
   dump_state                                  # sessions changed under us
   picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")
