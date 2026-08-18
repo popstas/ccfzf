@@ -55,6 +55,18 @@ def test_a_transcript_without_documents_says_so():
         assert CC["tail_facts"](p)[3] == {}
 
 
+def test_a_spec_outside_superpowers_counts_too():
+    # Каталог спек в проектах бывает и без `superpowers/`: у windows11-manager
+    # рядом лежат оба, и новейшая спека — как раз в коротком. Поймано на живой
+    # сессии 9974, у которой путь назван в хвосте двадцать семь раз, а колонка
+    # бумаги была пуста.
+    with tempfile.TemporaryDirectory() as d:
+        p = write(d, "a.jsonl", [msg("см. docs/specs/2026-08-18-claude-place-layouts-design.md")])
+        assert CC["tail_facts"](p)[3] == {
+            "spec": "docs/specs/2026-08-18-claude-place-layouts-design.md",
+        }
+
+
 def test_only_superpowers_paths_count():
     # `docs/plans/` — это ralphex, и его планы живут по другому правилу и
     # открываются иначе. Ловить их этой же регуляркой значило бы обещать
