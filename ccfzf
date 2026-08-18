@@ -61,6 +61,12 @@ WINDOWS_FILE="${CCFZF_WINDOWS_FILE-$HOME/.ccfzf.sessions.claude-wt.json}"
 # одиночный файл читается по-прежнему и остаётся первым источником.
 WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 
+# Комментарии человека к сессиям, три-четыре слова о том, что здесь делается.
+# Файл живёт на ЭТОЙ машине, а её --state читают по ssh пикеры всех машин
+# сразу: общим список выходит сам, без второго транспорта и без брокера.
+# Пустая строка выключает и чтение, и запись.
+COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
+
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
 # Note that --expect steals these keys from fzf: ctrl-f no longer moves the
@@ -80,6 +86,8 @@ print_mode=0
 kiosk=0
 dump_only=0
 state_only=0
+comment_id=""
+comment_host=""
 project=""
 session_id=""
 # Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
@@ -94,6 +102,13 @@ while (($#)); do
     -k|--kiosk) kiosk=1; shift ;;
     --dump) dump_only=1; shift ;;
     --state) state_only=1; shift ;;
+    # Текст комментария приходит на stdin, а не аргументом: `ssh host cmd
+    # args…` склеивает аргументы в строку для удалённого шелла, и комментарий
+    # с `;` был бы командой. Второй аргумент — имя машины, назвавшей его: сама
+    # она здесь не угадывается, ssh приходит с любой.
+    --comment) comment_id="${2-}"; comment_host="${3-}"
+      [[ -n $comment_id ]] || { echo "ccfzf: --comment requires a session id" >&2; exit 2; }
+      shift 2; [[ -n $comment_host ]] && shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
     --limit) limit="${2-}"; [[ -n $limit ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }; shift 2 ;;
@@ -118,6 +133,10 @@ done
 claude_tail=""
 ((${#claude_args[@]})) && claude_tail=" $(printf '%q ' "${claude_args[@]}")"
 claude_tail=${claude_tail% }
+
+if [[ -n $comment_id ]]; then
+  command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
+fi
 
 if ((dump_only || state_only)); then
   command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
@@ -922,6 +941,72 @@ def free_session_name(base, taken):
         name = "%s-%d" % (base, n)
         n += 1
     return name
+
+
+# Комментарий человека к сессии: три-четыре слова о том, что здесь делается.
+# Предел не про вкус, а про файл: строка приезжает в список на каждой машине.
+COMMENT_LIMIT = 200
+
+
+def read_comments(path):
+    """Общий список комментариев: id сессии → запись.
+
+    Файл живёт на этой машине, а её `--state` читают по ssh пикеры всех машин
+    сразу — значит, общим список выходит сам, без второго транспорта и без
+    брокера. Ровно поэтому хранилище здесь, а не у пикера: у каждого из них
+    свой диск, и синхронизировать их было бы нечем.
+
+    Разбор белым списком, как у записи окна (`read_windows`): файл пишет чужая
+    версия ccfzf с чужой машины, и незнакомая или кривая запись обязана
+    потеряться молча, а не уронить ответ. Испорченный файл читается пустотой по
+    той же причине.
+    """
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for sid, rec in raw.items():
+        if not isinstance(sid, str) or not UUID_RE.match(sid):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        text = rec.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        out[sid] = {"text": text[:COMMENT_LIMIT],
+                    "at": num(rec.get("at")),
+                    "host": rec.get("host") if isinstance(rec.get("host"), str) else ""}
+    return out
+
+
+def set_comment(path, sid, text, now, host):
+    """Записать или стереть комментарий. Ответ — удалось ли.
+
+    Пустой текст стирает запись: отдельного «удалить» у комментария нет, и без
+    этого убрать его было бы нечем.
+
+    Пишется файл целиком, но из **прочитанного** словаря: пишут в него с
+    разных машин, и перезапись одной записью стирала бы чужие молча.
+    Атомарность даёт write_json — он кладёт через временный файл и rename, так
+    что читатель половины списка не увидит никогда.
+
+    Ключ проверяется по алфавиту id: он уезжает именем поля json и приезжает
+    обратно на чужую машину, где опознать чужую строку будет уже некому.
+    """
+    if not isinstance(sid, str) or not UUID_RE.match(sid):
+        return False
+    all_ = read_comments(path)
+    clean_text = (text or "").strip()[:COMMENT_LIMIT]
+    if clean_text:
+        all_[sid] = {"text": clean_text, "at": num(now), "host": host or ""}
+    else:
+        all_.pop(sid, None)
+    write_json(os.path.expanduser(path), all_)
+    return True
 
 
 def count_prompts(path, start, prev):
@@ -2239,6 +2324,7 @@ elif mode == "state":
     marks = read_marks(sys.argv[2])
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
+    comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
     now = time.time()
 
     dirs = scan_dirs()
@@ -2315,6 +2401,9 @@ elif mode == "state":
             # здесь честен — сессия, в которой человек ещё ничего не написал,
             # бывает.
             "prompts": f.get("prompts", 0),
+            # Комментарий человека — общий на все машины: файл лежит здесь, а
+            # `--state` читают все пикеры. Ключа нет, когда комментария нет.
+            **({"comment": comments[sid]["text"]} if sid in comments else {}),
             "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
             "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
@@ -2409,6 +2498,27 @@ elif mode == "state":
                "zellij": zellij_rows},
               sys.stdout, ensure_ascii=False)
 
+elif mode == "comment":
+    # Запись комментария. Текст приходит на **stdin**, а не аргументом, и это
+    # не удобство: `ssh host cmd args…` склеивает аргументы в одну строку,
+    # которую заново разбирает удалённый шелл, — то есть комментарий вида
+    # `fix; rm -rf ~` был бы командой. Через stdin текст шелла не касается
+    # вовсе. Id при этом аргумент, и это безопасно: он UUID и проверяется по
+    # алфавиту в set_comment.
+    #
+    # Имя машины, назвавшей комментарий, приезжает вторым аргументом: сама она
+    # тут не угадывается — ssh приходит с любой из них, а $HOSTNAME назвал бы
+    # эту.
+    # Текст — из окружения, а не из stdin: stdin у этого процесса занят самим
+    # блоком (bash кормит им python), и читать оттуда нечего. Шелла на пути
+    # переменной нет вовсе, поэтому кавычить её не нужно и нечем.
+    ok = set_comment(sys.argv[3], sys.argv[2],
+                     os.environ.get("CCFZF_COMMENT_TEXT", ""), time.time(),
+                     sys.argv[4] if len(sys.argv) > 4 else "")
+    if not ok:
+        sys.stderr.write("ccfzf: not a session id\n")
+        sys.exit(2)
+
 elif mode == "newname":
     # Занятыми считаются заголовки живых сессий: имя сессии — это заголовок её
     # окна, по нему оконный трекер привязывает сессию к слоту, и мешают друг
@@ -2446,6 +2556,21 @@ PYEOF
 # Своего stdin ни один режим не читает, так что занять его нечем.
 py() { printf '%s\n' "$PY" | python3 - "$@"; }
 
+# Комментарий пишется до всего остального: список для этого не нужен вовсе, а
+# ходит сюда пикер по ssh отдельным вызовом.
+#
+# Текст приезжает на stdin, а не аргументом: `ssh host cmd args…` склеивает
+# аргументы в строку, которую заново разбирает удалённый шелл, — комментарий с
+# `;` был бы командой. Дальше он идёт питону переменной окружения, и это не
+# каприз: stdin у python уже занят самим блоком (см. py() выше), а переменная
+# уходит в execve как есть — её не разбирает ни один шелл. Двухсот знаков
+# предела ей хватает с запасом.
+if [[ -n $comment_id ]]; then
+  [[ -n $COMMENTS_FILE ]] || { echo "ccfzf: comments file is off" >&2; exit 2; }
+  CCFZF_COMMENT_TEXT=$(cat) py comment "$comment_id" "$COMMENTS_FILE" "$comment_host"
+  exit $?
+fi
+
 # External callers (the picker) need the dumps rewritten without opening
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
@@ -2456,7 +2581,7 @@ fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR"
+  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE"
   exit 0
 fi
 
