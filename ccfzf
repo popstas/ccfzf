@@ -1567,6 +1567,68 @@ def frozen_ids():
         return set()
 
 
+TODO_REL = os.path.join("docs", "TODO.md")
+TODO_H1_RE = re.compile(r"^#\s+(.+?)\s*$")
+# Нулевая колонка обязательна в обоих: подпункт — это шаг одной задачи, а не
+# задача, и, считая его, счёт скакал бы от того, насколько подробно расписан
+# пункт, а не от объёма работы. Та же отсечка стоит умолчанием и в
+# statusline-block.sh (STATUSLINE_TODO_TOPLEVEL).
+TODO_DONE_RE = re.compile(r"^[-*]\s+\[[xX]\]")
+TODO_OPEN_RE = re.compile(r"^[-*]\s+\[ \]")
+
+
+def todo_sections(lines):
+    """Галочки docs/TODO.md по группам заголовков — порт statusline-block.sh.
+
+    Разбор повторяет тот, по которому те же числа показывает статуслайн
+    (skill-do, `statusline-block.sh`, а до него claude-statusline-todo): делим
+    по заголовку первого уровня, считаем галочки нулевой колонки, пустые
+    секции выбрасываем. Расходиться этим двум ответам нельзя — человек читает
+    их об одном и том же файле, и второй счёт был бы не второй колонкой, а
+    поводом не верить обеим.
+
+    Метка приводится к нижнему регистру и теряет хвостовое двоеточие: она
+    встаёт рядом с числом в строке списка, а не цитируется дословно.
+
+    Пустая метка значит «называть нечем» — галочки до первого заголовка, — а
+    не «секции нет». Пустой список значит «счёта нет вовсе», и читатель обязан
+    не рисовать колонку, а не показывать 0/0.
+    """
+    out, cur = [], None
+    for line in lines:
+        m = TODO_H1_RE.match(line)
+        if m:
+            cur = {"label": m.group(1).rstrip(":").strip().lower(),
+                   "done": 0, "todo": 0}
+            out.append(cur)
+            continue
+        done = bool(TODO_DONE_RE.match(line))
+        if not done and not TODO_OPEN_RE.match(line):
+            continue
+        if cur is None:
+            cur = {"label": "", "done": 0, "todo": 0}
+            out.append(cur)
+        cur["done" if done else "todo"] += 1
+    return [s for s in out if s["done"] + s["todo"]]
+
+
+def project_todo(cwd):
+    """Счётчики docs/TODO.md проекта, или пустота, если считать нечего.
+
+    Файла нет у двадцати проектов из сорока пяти на живой машине, и это не
+    исключительный случай, а обычный: пустой ответ здесь — не ошибка.
+    Читается файл целиком, и это дёшево — замер на той же машине: 25 файлов,
+    82 КБ, 3.8 мс на весь список. Памятка по mtime стоила бы дороже самой
+    работы.
+    """
+    try:
+        with open(os.path.join(cwd, TODO_REL), encoding="utf-8",
+                  errors="replace") as fh:
+            return todo_sections(fh)
+    except (OSError, ValueError):
+        return []
+
+
 def project_at(files, age_of=None):
     """Когда в проекте последний раз разговаривали — по содержимому, не mtime.
 
@@ -1632,6 +1694,10 @@ def project_rows(dirs, live, marks, age_of=None):
             "n": a["n"] if a else 0,
             "live": a["live"] if a else 0,
             "mtime": a["mtime"] if a else 0.0,
+            # Считается по `path`, а не по cwd каталога сессий: `owners_of`
+            # отдаёт и сам проект, и закладки-предки над ним, и у закладки свой
+            # docs/TODO.md — тот, который человек и открывает, придя в неё.
+            "todo": project_todo(path),
         })
     rows.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
     return rows
@@ -2187,8 +2253,15 @@ elif mode == "state":
     # Формат «сколько назад» по нулю нарисует 1970 год. Режим `dump` этот же
     # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
     json.dump({"generated": now, "sessions": sessions,
+               # `todo` уезжает только пустым-непустым: у двадцати проектов из
+               # сорока пяти docs/TODO.md нет вовсе, и ключ с пустым списком
+               # стоил бы места в ответе ради «считать нечего» — того же, что
+               # значит его отсутствие. В `dump` поля нет намеренно: панель и
+               # экспорт в HA про задачи не спрашивают, а разбор файла на их
+               # стороне был бы вторым счётом рядом со статуслайном.
                "projects": [{"path": r["path"], "name": r["name"], "mark": r["mark"],
                              "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
+                             **({"todo": r["todo"]} if r.get("todo") else {}),
                              **({"hotkey": r["hotkey"]} if r.get("hotkey") else {})}
                             for r in merge_project_hotkeys(
                                 project_rows(dirs, live, marks), window_projects)],
