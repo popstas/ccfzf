@@ -1795,6 +1795,33 @@ def project_todo(cwd):
         return []
 
 
+def todo_memo(read=None):
+    """Счётчики по каталогу, с памятью на один ответ.
+
+    Счёт нужен и строкам проектов, и строкам сессий: человек читает его в том
+    же списке, где и работает, а список этот — сессии. Сессий сто, каталогов
+    под полсотни, и без памяти один и тот же docs/TODO.md перечитывался бы по
+    разу на каждую строку — на горячем пути, который зовут раз в секунду по
+    ssh.
+
+    Пустой ответ запоминается наравне с непустым: каталогов без docs/TODO.md
+    почти половина, и именно они дали бы больше всего лишних заходов.
+
+    Память живёт ровно один вызов режима и наружу не выносится: файл человек
+    правит прямо во время работы, и счёт, застрявший на весь век процесса, врал
+    бы ровно тому, кто галочки и ставит.
+    """
+    read = read or project_todo
+    cache = {}
+
+    def at(cwd):
+        if cwd not in cache:
+            cache[cwd] = read(cwd)
+        return cache[cwd]
+
+    return at
+
+
 def project_at(files, age_of=None):
     """Когда в проекте последний раз разговаривали — по содержимому, не mtime.
 
@@ -1830,7 +1857,7 @@ def project_at(files, age_of=None):
     return best
 
 
-def project_rows(dirs, live, marks, age_of=None):
+def project_rows(dirs, live, marks, age_of=None, todo_at=None):
     """One row per project: marks and directories with sessions, newest first."""
     agg = {}
     for entry in dirs:
@@ -1863,7 +1890,10 @@ def project_rows(dirs, live, marks, age_of=None):
             # Считается по `path`, а не по cwd каталога сессий: `owners_of`
             # отдаёт и сам проект, и закладки-предки над ним, и у закладки свой
             # docs/TODO.md — тот, который человек и открывает, придя в неё.
-            "todo": project_todo(path),
+            #
+            # Через ту же память, что и строки сессий: у проекта и его сессий
+            # каталог общий, и без неё файл читался бы дважды.
+            "todo": (todo_at or todo_memo())(path),
         })
     rows.sort(key=lambda r: (-r["mtime"], r["name"].lower()))
     return rows
@@ -2325,6 +2355,9 @@ elif mode == "state":
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
+    # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
+    # сессий, а каталоги у них те же самые.
+    todo_at = todo_memo()
     now = time.time()
 
     dirs = scan_dirs()
@@ -2401,6 +2434,10 @@ elif mode == "state":
             # здесь честен — сессия, в которой человек ещё ничего не написал,
             # бывает.
             "prompts": f.get("prompts", 0),
+            # Счётчики docs/TODO.md каталога сессии. Те же, что у строки её
+            # проекта: файл один, и второй счёт рядом с первым был бы поводом
+            # не верить обоим.
+            **({"todo": todo_at(cwd)} if todo_at(cwd) else {}),
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
@@ -2480,7 +2517,8 @@ elif mode == "state":
                              **({"todo": r["todo"]} if r.get("todo") else {}),
                              **({"hotkey": r["hotkey"]} if r.get("hotkey") else {})}
                             for r in merge_project_hotkeys(
-                                project_rows(dirs, live, marks), window_projects)],
+                                project_rows(dirs, live, marks, todo_at=todo_at),
+                                window_projects)],
                "windowHost": window_host, "windowPid": window_pid,
                # Живые трекеры поимённо. Пикеру нужно отличать «моей машины
                # среди трекеров нет» от «есть, но окон у неё сейчас нет»: по

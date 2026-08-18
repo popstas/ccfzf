@@ -78,6 +78,41 @@ def test_unreadable_todo_is_not_an_error():
         assert CC["project_todo"](d) == []
 
 
+def test_the_same_directory_is_read_once_per_answer():
+    """Счёт нужен и строкам сессий, а их сто на четыре десятка каталогов.
+
+    Читать файл на каждую строку значило бы сто чтений вместо сорока пяти — и
+    это на горячем пути, который зовут раз в секунду по ssh.
+    """
+    seen = []
+
+    def counted(cwd):
+        seen.append(cwd)
+        return [{"label": "next", "done": 0, "todo": 1}]
+
+    memo = CC["todo_memo"](counted)
+    assert memo("/p/one") == [{"label": "next", "done": 0, "todo": 1}]
+    assert memo("/p/one") == [{"label": "next", "done": 0, "todo": 1}]
+    assert memo("/p/two") is not None
+    assert seen == ["/p/one", "/p/two"], seen
+
+
+def test_a_directory_without_a_todo_is_remembered_too():
+    # Иначе пустой ответ переспрашивался бы у каждой строки: каталогов без
+    # docs/TODO.md почти половина, и именно они дали бы больше всего лишних
+    # чтений.
+    seen = []
+
+    def counted(cwd):
+        seen.append(cwd)
+        return []
+
+    memo = CC["todo_memo"](counted)
+    assert memo("/p/none") == []
+    assert memo("/p/none") == []
+    assert seen == ["/p/none"], seen
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
