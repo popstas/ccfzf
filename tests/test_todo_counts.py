@@ -113,6 +113,82 @@ def test_a_directory_without_a_todo_is_remembered_too():
     assert seen == ["/p/none"], seen
 
 
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def settings(d, todo, local=False):
+    name = "settings.local.json" if local else "settings.json"
+    write(os.path.join(d, ".claude", name),
+          '{"env": {"STATUSLINE_TODO": "%s"}}' % todo)
+
+
+def test_settings_name_the_todo_file():
+    """Файл задач называет `env.STATUSLINE_TODO`, а `docs/TODO.md` — умолчание.
+
+    По этому ключу живёт статус-строка Claude Code, то есть названный там файл
+    и есть тот, который человек видит перед собой. У вольта Obsidian это
+    `tasks.md` в корне, и счёт по `docs/TODO.md` был бы счётом файла, который
+    в этом каталоге никто не открывает.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        settings(d, "tasks.md")
+        write(os.path.join(d, "tasks.md"), "# week\n\n- [x] a\n- [ ] b\n")
+        write(os.path.join(d, "docs", "TODO.md"), "# next\n\n- [ ] c\n")
+        assert CC["project_todo"](d) == [{"label": "week", "done": 1, "todo": 1}]
+
+
+def test_the_named_file_may_lie_outside_the_project():
+    # Относительный путь считается от каталога проекта, абсолютный берётся как
+    # есть — те же два правила, что у statusline-block.sh. Абсолютный тут не
+    # редкость: у соседних рабочих каталогов список задач лежит в чужом вольте.
+    with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as far:
+        outside = os.path.join(far, "tasks.md")
+        write(outside, "# week\n\n- [ ] a\n")
+        settings(d, outside)
+        assert CC["project_todo"](d) == [{"label": "week", "done": 0, "todo": 1}]
+
+
+def test_local_settings_win_over_the_shared_ones():
+    # Тот же порядок, каким слои настроек кладёт друг на друга сам Claude Code.
+    with tempfile.TemporaryDirectory() as d:
+        settings(d, "shared.md")
+        settings(d, "mine.md", local=True)
+        write(os.path.join(d, "shared.md"), "# shared\n\n- [ ] a\n")
+        write(os.path.join(d, "mine.md"), "# mine\n\n- [ ] b\n")
+        assert CC["project_todo"](d) == [{"label": "mine", "done": 0, "todo": 1}]
+
+
+def test_settings_without_the_key_leave_the_default_alone():
+    # Ключа нет у большинства проектов, и это обычный случай, а не поломка:
+    # у самого ccfzf-picker задачи и лежат в docs/TODO.md.
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, ".claude", "settings.json"), '{"env": {}}')
+        write(os.path.join(d, "docs", "TODO.md"), "# next\n\n- [ ] a\n")
+        assert CC["project_todo"](d) == [{"label": "next", "done": 0, "todo": 1}]
+
+
+def test_broken_settings_cost_the_default_and_not_the_answer():
+    # Счёт задач украшает строку. Уронив на нём разбор, мы потеряли бы весь
+    # ответ --state — то есть список целиком из-за запятой в чужом файле.
+    with tempfile.TemporaryDirectory() as d:
+        write(os.path.join(d, ".claude", "settings.json"), "{не json")
+        write(os.path.join(d, "docs", "TODO.md"), "# next\n\n- [ ] a\n")
+        assert CC["project_todo"](d) == [{"label": "next", "done": 0, "todo": 1}]
+
+
+def test_a_named_file_that_is_missing_is_not_the_default_either():
+    # Ключ назвали — значит `docs/TODO.md` в этом каталоге не список задач, а
+    # посторонний файл. Молча подставив его, счёт врал бы ровно там, где
+    # человек и просил считать другое.
+    with tempfile.TemporaryDirectory() as d:
+        settings(d, "tasks.md")
+        write(os.path.join(d, "docs", "TODO.md"), "# next\n\n- [ ] a\n")
+        assert CC["project_todo"](d) == []
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
