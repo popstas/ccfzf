@@ -1567,16 +1567,60 @@ def frozen_ids():
         return set()
 
 
-def project_rows(dirs, live, marks):
+def project_at(files, age_of=None):
+    """Когда в проекте последний раз разговаривали — по содержимому, не mtime.
+
+    mtime здесь не годится ровно по той причине, которая расписана у
+    `last_message_at`: в хвосте живого транскрипта лежат служебные записи без
+    времени — last-prompt, custom-title, mode, pr-link, — и Claude Code
+    переписывает их спустя дни после последней реплики. Строка проекта была
+    последним местом, которое всё ещё верило mtime, и наверх списка всплывали
+    проекты с открытым окном, где работы не было часами.
+
+    Обход точный, а не выборочный, и всё же почти всегда стоит одного чтения.
+    Время записи не может быть позже, чем момент, когда её дописали в файл, то
+    есть `last_message_at(f) <= mtime(f)` всегда; `files` приходит от
+    `scan_dirs` уже отсортированным по mtime убыванием. Значит, как только
+    накопленный ответ достиг mtime следующего файла, ни один из оставшихся его
+    не обгонит — и остановиться здесь можно, ничего не потеряв. Без остановки
+    это хвост по TAIL у каждого транскрипта проекта, а их в одном каталоге
+    бывает под сотню.
+
+    Ноль — «возраст неизвестен» (в хвосте нет ни одной записи со временем), и
+    такой файл обход просто пропускает. Что делать, когда ноль дали все,
+    решает вызывающий: здесь для этого нет данных, а `ago` по нулю рисует
+    1970 год.
+    """
+    age_of = age_of or last_message_at
+    best = 0.0
+    for path, mtime in files:
+        if best >= mtime:
+            break
+        at = age_of(path) or 0.0
+        if at > best:
+            best = at
+    return best
+
+
+def project_rows(dirs, live, marks, age_of=None):
     """One row per project: marks and directories with sessions, newest first."""
     agg = {}
     for entry in dirs:
+        # Возраст считается один раз на каталог, а не на владельца: `owners_of`
+        # отдаёт и сам проект, и его закладки-предки, и без этого один и тот же
+        # каталог перечитывался бы столько раз, сколько над ним закладок.
+        #
+        # Откат на mtime — только когда содержимое не сказало ничего вовсе.
+        # Отдать в этом случае ноль значило бы датировать проект 1970 годом:
+        # `--dump` считает по этому полю `ago`, а `--state` отдаёт его читателю
+        # как `lastActivity`.
+        at = project_at(entry["files"], age_of) or entry["files"][0][1]
         for owner in owners_of(entry["cwd"], marks):
             a = agg.setdefault(owner, {"n": 0, "live": 0, "mtime": 0.0})
             a["n"] += len(entry["files"])
             a["live"] += sum(1 for f, _ in entry["files"]
                              if os.path.basename(f)[:-6] in live)
-            a["mtime"] = max(a["mtime"], entry["files"][0][1])
+            a["mtime"] = max(a["mtime"], at)
 
     rows = []
     for path in set(marks) | set(agg):

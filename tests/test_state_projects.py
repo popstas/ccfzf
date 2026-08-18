@@ -90,6 +90,64 @@ def test_a_hotkey_project_does_not_displace_the_marked_name():
     assert out[0]["name"] == "МОЙ проект", out
 
 
+
+def test_project_age_comes_from_content_not_mtime():
+    # Наверх всплывали проекты с открытыми окнами, где разговора не было
+    # часами: mtime транскрипта двигают служебные записи — last-prompt,
+    # custom-title, pr-link, — и Claude Code переписывает их спустя дни после
+    # последней реплики. Про это в самом агрегаторе написано дважды, у
+    # last_message_at и у fresh_ids; строка проекта была последним местом,
+    # которое всё ещё верило mtime.
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/a.jsonl", 9000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {}, age_of=lambda p: 1000.0)
+    assert rows[0]["mtime"] == 1000.0, rows
+
+
+def test_project_age_stops_at_the_first_file_that_cannot_be_beaten():
+    # Возраст содержимого не может быть позже записи в файл, а files уже
+    # отсортирован по mtime убыванием: как только накопленный ответ достиг
+    # mtime следующего файла, ни один из оставшихся его не обгонит. Без
+    # остановки это чтение хвоста по 256 КБ у каждого транскрипта проекта — на
+    # живой машине их под сотню в одном каталоге.
+    seen = []
+
+    def age_of(path):
+        seen.append(path)
+        return 8000.0
+
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/new.jsonl", 9000.0),
+                       ("/d/-p-one/old.jsonl", 5000.0),
+                       ("/d/-p-one/older.jsonl", 4000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {}, age_of=age_of)
+    assert rows[0]["mtime"] == 8000.0, rows
+    assert seen == ["/d/-p-one/new.jsonl"], seen
+
+
+def test_a_newer_conversation_in_an_older_file_still_wins():
+    # Обратный случай: у новейшего по mtime файла хвост переписан служебной
+    # записью, а разговор в нём давний — тогда свежайшим оказывается соседний
+    # транскрипт, и остановка не должна срабатывать раньше него.
+    ages = {"/d/-p-one/new.jsonl": 1000.0, "/d/-p-one/old.jsonl": 4500.0}
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/new.jsonl", 9000.0),
+                       ("/d/-p-one/old.jsonl", 5000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {}, age_of=ages.get)
+    assert rows[0]["mtime"] == 4500.0, rows
+
+
+def test_unknown_content_age_falls_back_to_mtime():
+    # Ноль у last_message_at значит «в хвосте нет ни одной записи со
+    # временем», то есть возраст неизвестен, а не древний. Отдав его как есть,
+    # строка проекта уехала бы в 1970 год — а формат `ago` по нулю именно его
+    # и рисует.
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/a.jsonl", 9000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {}, age_of=lambda p: 0.0)
+    assert rows[0]["mtime"] == 9000.0, rows
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
