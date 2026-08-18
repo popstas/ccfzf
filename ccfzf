@@ -380,7 +380,14 @@ def dir_cwd(files):
                     except Exception:
                         continue
                     if o.get("cwd"):
-                        return o["cwd"].rstrip("/")
+                        # Корень остаётся корнём. `"/".rstrip("/")` — пустая
+                        # строка, а пустой ответ здесь значит «каталог не
+                        # читается»: scan_dirs выбрасывает такой каталог
+                        # целиком. Сессия, заведённая в `/` (так их заводит
+                        # запуск не из терминала), уносила с собой весь
+                        # каталог `~/.claude/projects/-` — все свои сессии
+                        # разом, молча и без единого признака.
+                        return o["cwd"].rstrip("/") or "/"
         except OSError:
             continue
     return ""
@@ -2760,7 +2767,10 @@ try:
             except Exception:
                 continue
             if o.get("cwd"):
-                print(o["cwd"].rstrip("/"))
+                # `or "/"` — та же оговорка, что в dir_cwd: без неё сессия из
+                # корня печатала бы пустую строку, а bash ниже читает пустоту
+                # как «cwd не годится» и отказывается возобновлять.
+                print(o["cwd"].rstrip("/") or "/")
                 break
 except OSError:
     pass' "$sess_file")
