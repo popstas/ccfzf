@@ -76,6 +76,37 @@ def test_only_superpowers_paths_count():
         assert CC["tail_facts"](p)[3] == {}
 
 
+def test_a_named_but_missing_file_is_not_a_document():
+    # Транскрипт называет пути, которых нет: предложенное имя, чужой репозиторий,
+    # сокращённый в письме путь. Пункт меню по такому ведёт в никуда — а узнать
+    # об этом человеку неоткуда, кроме как нажав. Живой пример 2026-08-18: у
+    # сессии 9120 спекой числился `docs/specs/...md`, у 9974 планом —
+    # `feature-plan.md` из чужого репозитория; ни того, ни другого на диске нет.
+    with tempfile.TemporaryDirectory() as d:
+        root = os.path.join(d, "repo")
+        os.makedirs(os.path.join(root, "docs", "specs"))
+        real = os.path.join(root, "docs", "specs", "2026-08-18-real-design.md")
+        open(real, "w").close()
+        p = write(d, "a.jsonl", [
+            msg("сперва docs/specs/2026-08-18-real-design.md"),
+            msg("потом docs/specs/2026-08-18-nikogda-ne-pisali.md"),
+        ])
+        # Позже упомянутого файла нет, и побеждает последний **существующий**,
+        # а не пустота: правило «свежее главнее» отбором не отменяется.
+        assert CC["tail_facts"](p, root)[3] == {
+            "spec": "docs/specs/2026-08-18-real-design.md",
+        }
+
+
+def test_without_a_directory_the_check_is_skipped():
+    # Каталог знают не все зовущие: интерактивный список зовёт tail_facts ради
+    # одного заголовка. Проверять там нечем, и требовать каталог значило бы
+    # ронять тех, кому бумаги не нужны вовсе.
+    with tempfile.TemporaryDirectory() as d:
+        p = write(d, "a.jsonl", [msg("docs/specs/2026-08-18-x-design.md")])
+        assert CC["tail_facts"](p)[3] == {"spec": "docs/specs/2026-08-18-x-design.md"}
+
+
 def test_a_known_document_survives_a_tail_that_no_longer_mentions_it():
     # Путь, названный однажды и уехавший за TAIL, иначе пропал бы — а сессия
     # над тем же планом и работает. Приём тот же, что у `gist`: найденное

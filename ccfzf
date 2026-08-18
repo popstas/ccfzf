@@ -198,6 +198,31 @@ TURN_TAIL = 4 * TAIL
 DOC_RE = re.compile(rb"docs/superpowers/(specs|plans)/[0-9A-Za-z._-]+\.md"
                     rb"|docs/(specs)/[0-9A-Za-z._-]+\.md")
 DOC_KINDS = {b"specs": "spec", b"plans": "plan"}
+
+
+def doc_exists(root, rel):
+    """Лежит ли названная бумага на диске.
+
+    Разговор называет и пути, которых нет: имя, только предложенное и не
+    написанное; файл чужого репозитория, о котором зашла речь; сокращённый в
+    письме путь вроде `docs/specs/...md` — узкий алфавит имени такую запись
+    пропускает, точка в нём разрешена. Пункт меню по любому из них ведёт в
+    никуда, и узнать об этом человеку неоткуда, кроме как нажав: у сессии 9120
+    спекой числился как раз `...md`, у 9974 планом — `feature-plan.md` из
+    соседнего проекта (2026-08-18).
+
+    Отбор стоит **в обратном проходе**, а не над готовым ответом: правило
+    «побеждает последнее упоминание» им не отменяется, а сужается до последнего
+    существующего — иначе выдуманное имя, названное позже настоящего, прятало
+    бы настоящее.
+
+    Пустой корень значит «проверять нечем»: каталог знают не все зовущие —
+    интерактивному списку tail_facts нужна одна строка заголовка. Там ответ
+    прежний, без отбора.
+    """
+    if not root:
+        return True
+    return os.path.isfile(os.path.join(root, rel))
 DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
@@ -253,7 +278,9 @@ HOOK_LIVE_TTL = 120
 # 7: спекой стал считаться и короткий `docs/specs/`. Поднято по той же
 # причине, что и 5: памятка ключуется по mtime, и у простаивающей сессии он
 # больше не сдвинется — без этого спеку нашли бы только те, кому ещё напишут.
-FACTS_VERSION = 7
+# 8: бумагой считается только существующий файл. Причина та же: выдуманные
+# пути уже лежат в памятках, и без версии остались бы там навсегда.
+FACTS_VERSION = 8
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -845,7 +872,7 @@ def stamp_of(o):
         return 0.0
 
 
-def tail_facts(path):
+def tail_facts(path, doc_root=None):
     """(title, latest activity, turn start) from the tail of the file.
 
     A manual title (custom-title) outranks the generated one (ai-title). Both
@@ -907,7 +934,10 @@ def tail_facts(path):
                 # Групп две, потому что дороги у спеки две: длинная с
                 # `superpowers/` и короткая без него. Совпала всегда ровно одна.
                 kind = DOC_KINDS[m.group(1) or m.group(2)]
-                docs.setdefault(kind, m.group(0).decode("utf-8", "replace"))
+                rel = m.group(0).decode("utf-8", "replace")
+                if kind in docs or not doc_exists(doc_root, rel):
+                    continue
+                docs[kind] = rel
             try:
                 o = json.loads(raw)
             except Exception:
@@ -2337,7 +2367,10 @@ elif mode == "dump":
             sid = sid_of(path)
             # head_gist здесь не зовётся: `gist` в дамп не уезжает, а стоил
             # он 165 мс из 320 на двухстах сессиях.
-            f = facts_for(path, mtime, cache, want_gist=False)
+            # Каталог сессии — тот корень, от которого считается путь бумаги:
+            # без него в ответ уехало бы любое имя, названное в разговоре.
+            f = facts_for(path, mtime, cache, want_gist=False,
+                          tail=lambda p, root=cwd: tail_facts(p, root))
             facts[path] = f
             agent = agents.get(sid) or {}
             sessions.append(dump_record({
@@ -2424,7 +2457,11 @@ elif mode == "state":
     sessions = []
     for path, mtime, cwd in picked:
         sid = sid_of(path)
-        f = facts_for(path, mtime, cache)
+        # Тот же корень и по той же причине, что и в ветке дампа выше.
+        # Значение по умолчанию, а не свободная переменная: лямбда переживает
+        # виток цикла, и `cwd` в ней иначе означал бы последнюю сессию.
+        f = facts_for(path, mtime, cache,
+                      tail=lambda p, root=cwd: tail_facts(p, root))
         facts[path] = f
         agent = agents.get(sid) or {}
         wins = windows.get(sid)
