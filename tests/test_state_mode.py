@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "ccfzf")
@@ -52,9 +53,10 @@ def _facts_env(tmp, dump_path):
     }
 
 
-def run_state(tmp, dump_path, *extra):
+def run_state(tmp, dump_path, *extra, env_extra=None):
     env = dict(os.environ)
     env.update(_facts_env(tmp, dump_path))
+    env.update(env_extra or {})
     r = subprocess.run(["bash", SRC, "--state", *extra],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, (r.returncode, r.stderr)
@@ -266,6 +268,29 @@ def test_truncation_guard_survives_a_dump_in_the_middle():
 
         out = run_state(tmp, dump_path)
         assert out["sessions"][0]["gist"] == "NEW", out["sessions"]
+
+
+def test_state_reports_every_window_and_names_the_first_one():
+    # Сессия открыта на двух машинах. Список отдаётся целиком, а `window`
+    # остаётся и равно первому: его читает пикер прошлой версии, и он обязан
+    # продолжать работать.
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = "aaaaaaaa-1111-2222-3333-444444444444"
+        build_home(tmp, [sid])
+        wdir = os.path.join(tmp, "windows")
+        os.makedirs(wdir)
+        now = int(time.time())
+        for name, host, focused in (("a.json", "windows-box", 0),
+                                    ("b.json", "mac-host", now - 30)):
+            with open(os.path.join(wdir, name), "w", encoding="utf-8") as fh:
+                json.dump({"generated": now, "host": host, "pid": 42, "windows": {
+                    sid: {"title": "ccfzf", "desktop": None,
+                          "lastSeen": now - 1, "focusedAt": focused}}}, fh)
+        out = run_state(tmp, os.path.join(tmp, "dump.json"),
+                        env_extra={"CCFZF_WINDOWS_DIR": wdir, "CCFZF_WINDOWS_FILE": ""})
+        row = [s for s in out["sessions"] if s["id"] == sid][0]
+        assert [w["host"] for w in row["windows"]] == ["mac-host", "windows-box"], row["windows"]
+        assert row["window"] == row["windows"][0], row["window"]
 
 
 if __name__ == "__main__":
