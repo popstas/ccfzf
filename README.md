@@ -29,7 +29,7 @@ Then the sessions of the one you picked, newest first:
 
 The obvious way to build this is to shell out to a session lister and format its output. That turned out to cost 2–3 seconds per launch, because listing sessions that way reads every `~/.claude/projects/**/*.jsonl` in full — 757 MB of history in my case.
 
-`ccfzf` reads only what it needs: `cwd` is on the first line of a session file, the title and the latest activity are in the last 256 KB, and the first prompt is found near the start under a size cap. Running sessions are detected through `/proc` rather than `lsof`.
+`ccfzf` reads only what it needs: `cwd` is on the first line of a session file, the title and the latest activity are in the last 256 KB, and the first prompt is found near the start under a size cap. Running sessions are detected through `/proc` on Linux and a single `ps` call on macOS, rather than through `lsof`.
 
 | | |
 |---|---|
@@ -265,7 +265,9 @@ The file is optional in every direction, field by field. Missing, unparseable, m
 Optional, degrades quietly when absent:
 
 - `~/.fzf-marks` — gives `★`, human names, and rolls up sessions started in a project's subdirectories. Without it, projects come from `~/.claude/projects` alone and are named after their directory.
-- `/proc` — the `●` running markers. Linux only; everything else works on macOS.
+- `lsof` — on macOS only, and only for the working directory of a session started without
+  arguments. Everything else about the `●` running markers comes from one `ps` call;
+  on Linux they come from `/proc` and need nothing extra.
 - `~/.claude/ccsessions-frozen.json` — a yellow `*` on sessions pinned with [`ccsessions`](https://github.com/ponytail-dev/ccsessions).
 - `CCFZF_WINDOWS_FILE` — the `window` field in `--state`, and the fifth `live` argument in `--state` and `--dump`. Nobody writes it by default.
 

@@ -1179,13 +1179,146 @@ NOT_A_SESSION = {"daemon", "bg-pty-host", "bg-spare", "agents", "mcp", "update",
                  "plugin", "sandbox"}
 
 
+# ---- процессы: /proc на Linux, ps на маке --------------------------------
+#
+# Весь разбор процессов ниже написан под /proc, которого на macOS нет вовсе:
+# `os.listdir("/proc")` там бросает OSError, и `running_sessions` возвращала
+# пустоту с первой же строки. То есть на маке ни одна сессия никогда не была
+# живой, а pid и tty приезжали нулями — и второй источник состояния у пикера
+# (`localSource`) работал наполовину: список видел, живость нет.
+#
+# Данные те же, дорога другая: один вызов `ps` на весь запуск вместо чтения
+# файлов по требованию. Команда одноразовая (ccfzf — не демон), поэтому
+# таблица помнится на весь процесс и стоит ровно один fork.
+
+DARWIN = sys.platform == "darwin"
+
+# Пять полей `lstart`: `Tue Aug 18 16:18:25 2026`. День месяца выравнивается
+# пробелом (`Aug  1`), поэтому строка режется split()-ом, а не по колонкам.
+LSTART_FMT = "%a %b %d %H:%M:%S %Y"
+
+
+def run_ps(args):
+    """`ps` с английской локалью: месяц в `lstart` разбирается по имени."""
+    try:
+        out = subprocess.run(["ps"] + args, capture_output=True, text=True,
+                             timeout=5, env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout
+
+
+def ps_rows(text):
+    """{pid: {ppid, tty, started, args}} из `ps -axwwo pid=,ppid=,tty=,lstart=,command=`.
+
+    Разбор отделён от вызова, потому что проверять его иначе нечем: маковского
+    `ps` на Linux не завести, а формат у него свой.
+
+    argv склеен пробелами, и разделить обратно нечем — другого вывода `ps` не
+    предлагает. Наивный split() врёт на аргументе с пробелом внутри, и цена
+    этого известна поимённо: `is_claude` смотрит на args[0] (путь к бинарю),
+    `arg_value` — на uuid следом за флагом, `NOT_A_SESSION` — на args[1].
+    Пробелов не бывает ни в одном из трёх.
+    """
+    out = {}
+    for line in text.splitlines():
+        parts = line.split()
+        # pid, ppid, tty, пять полей lstart и хотя бы одно слово команды.
+        if len(parts) < 9 or not parts[0].isdigit():
+            continue
+        try:
+            started = time.mktime(time.strptime(" ".join(parts[3:8]), LSTART_FMT))
+        except ValueError:
+            started = 0.0
+        out[parts[0]] = {"ppid": parts[1], "tty": parts[2],
+                         "started": started, "args": parts[8:]}
+    return out
+
+
+_PS_TABLE = None
+
+
+def ps_table():
+    """Таблица процессов, один вызов `ps` на весь запуск."""
+    global _PS_TABLE
+    if _PS_TABLE is None:
+        _PS_TABLE = ps_rows(run_ps(["-axwwo", "pid=,ppid=,tty=,lstart=,command="]))
+    return _PS_TABLE
+
+
+def ps_field(pid, name, default):
+    return ps_table().get(str(pid), {}).get(name, default)
+
+
+def lsof_cwd(text):
+    """Путь из вывода `lsof -Fn`: строки-поля, наш — последний с префиксом `n`."""
+    path = ""
+    for line in text.splitlines():
+        if line.startswith("n"):
+            path = line[1:]
+    return path
+
+
+_CWDS = {}
+
+
+def darwin_cwd(pid):
+    """Рабочий каталог процесса на маке — только через lsof.
+
+    /proc там нет, а `ps` такого поля не отдаёт вовсе. Зовётся это лишь для
+    процессов claude (единицы за запуск), и ответ помнится: в
+    `running_sessions` один и тот же pid спрашивают дважды.
+    """
+    key = str(pid)
+    if key not in _CWDS:
+        try:
+            out = subprocess.run(["lsof", "-a", "-d", "cwd", "-p", key, "-Fn"],
+                                 capture_output=True, text=True, timeout=5)
+            _CWDS[key] = lsof_cwd(out.stdout)
+        except (OSError, subprocess.SubprocessError):
+            _CWDS[key] = ""
+    return _CWDS[key]
+
+
+def all_pids():
+    """Номера всех процессов; пустой список — спросить не вышло."""
+    if DARWIN:
+        return list(ps_table())
+    try:
+        return [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return []
+
+
+def proc_env(pid):
+    """Строки окружения процесса, [] — не прочиталось.
+
+    На маке окружение приезжает хвостом к команде (`ps -E`), и отделить одно
+    от другого нечем — но и не нужно: оба читателя ищут свою переменную по
+    префиксу вместе со знаком `=`, а argv, начинающегося с `TMUX_PANE=` или
+    `ZELLIJ_SESSION_NAME=`, не бывает. Своя цена у этой дороги есть: `ps -E`
+    показывает окружение только своих процессов, чужие приедут без него.
+    """
+    if DARWIN:
+        return run_ps(["-Eww", "-p", str(pid), "-o", "command="]).split()
+    try:
+        with open("/proc/%s/environ" % pid, "rb") as fh:
+            return fh.read().decode("utf-8", "ignore").split("\0")
+    except OSError:
+        return []
+
+
 def proc_args(pid):
+    if DARWIN:
+        return list(ps_field(pid, "args", []))
     with open("/proc/%s/cmdline" % pid, "rb") as fh:
         return [a for a in fh.read().decode("utf-8", "ignore").split("\0") if a]
 
 
 def parent_pid(pid):
     """ppid out of /proc/<pid>/stat — field 4, after a comm that may hold spaces."""
+    if DARWIN:
+        return ps_field(pid, "ppid", "")
     try:
         with open("/proc/%s/stat" % pid) as fh:
             return fh.read().rsplit(")", 1)[1].split()[1]
@@ -1216,7 +1349,13 @@ def proc_tty(pid):
 
     tty_nr в stat — это номер устройства, который ещё надо разворачивать в
     путь; fd 0 у интерактивной сессии и так указывает прямо на /dev/pts/N.
+
+    На маке дорога короче: `ps` печатает имя устройства без каталога
+    (`ttys007`), а процесс без управляющего терминала помечает `??`.
     """
+    if DARWIN:
+        tty = ps_field(pid, "tty", "")
+        return "/dev/" + tty if tty and tty != "??" else ""
     try:
         target = os.readlink("/proc/%s/fd/0" % pid)
     except OSError:
@@ -1226,6 +1365,8 @@ def proc_tty(pid):
 
 def proc_cwd(pid):
     """Рабочий каталог процесса, пустая строка — не прочитался."""
+    if DARWIN:
+        return darwin_cwd(pid)
     try:
         return os.readlink("/proc/%s/cwd" % pid)
     except OSError:
@@ -1242,7 +1383,13 @@ def proc_started(pid):
     Второе поле /proc/*/stat — comm в скобках, и в нём бывают пробелы, поэтому
     строка режется по последней `") "`, а не по номеру поля. Дальше idx 19 —
     это 22-е поле, starttime.
+
+    На маке единицы другие — секунды эпохи вместо тиков от загрузки, — и это
+    ни на что не влияет: число сверяется только с тем, что записал рядом хук
+    этой же машины, а между машинами не ездит.
     """
+    if DARWIN:
+        return int(ps_field(pid, "started", 0))
     try:
         with open("/proc/%s/stat" % pid) as fh:
             rest = fh.read().rpartition(") ")[2]
@@ -1254,6 +1401,23 @@ def proc_started(pid):
         return 0
 
 
+def proc_created(pid):
+    """Момент запуска процесса в секундах эпохи, 0 — не прочиталось.
+
+    Не то же, что `proc_started`: тот отдаёт число, сверяемое с записью хука
+    (на Linux — тики от загрузки), а здесь нужно настоящее время, его
+    показывают человеку возрастом зелийной сессии. На Linux оно берётся у
+    mtime каталога процесса — сверено с mtime сокета сессии, совпадает
+    секунда в секунду.
+    """
+    if DARWIN:
+        return int(ps_field(pid, "started", 0))
+    try:
+        return int(os.path.getmtime("/proc/%s" % pid))
+    except OSError:
+        return 0
+
+
 def proc_tmux(pid):
     """`session:window.pane`, если процесс живёт внутри tmux, иначе None.
 
@@ -1261,11 +1425,7 @@ def proc_tmux(pid):
     можно присоединиться. Разворачивает его сам tmux; делается это здесь, а не
     у читателя, потому что читатель на другой машине и tmux ему недоступен.
     """
-    try:
-        with open("/proc/%s/environ" % pid, "rb") as fh:
-            env = fh.read().decode("utf-8", "ignore").split("\0")
-    except OSError:
-        return None
+    env = proc_env(pid)
     pane = ""
     for item in env:
         if item.startswith("TMUX_PANE="):
@@ -1331,12 +1491,7 @@ def proc_zellij(pid):
     готовое имя, разворачивать нечего, и на горячий путь `--state` не выходит
     ни одного нового процесса.
     """
-    try:
-        with open("/proc/%s/environ" % pid, "rb") as fh:
-            env = fh.read().decode("utf-8", "ignore").split("\0")
-    except OSError:
-        return None
-    return zellij_env_name(env) or None
+    return zellij_env_name(proc_env(pid)) or None
 
 
 def hook_stamps(path=STATUS_DIR):
@@ -1372,12 +1527,28 @@ def hook_stamps(path=STATUS_DIR):
 
 
 def boot_id():
-    """Идентификатор текущей загрузки, пустая строка — не прочиталось."""
+    """Идентификатор текущей загрузки, пустая строка — не прочиталось.
+
+    На маке в этой роли секунды загрузки из `kern.boottime`: смысл тот же —
+    метка, меняющаяся с каждой загрузкой, — а своего uuid у загрузки там нет.
+    """
+    if DARWIN:
+        m = re.search(r"sec\s*=\s*(\d+)", darwin_sysctl("kern.boottime"))
+        return m.group(1) if m else ""
     try:
         with open("/proc/sys/kernel/random/boot_id") as fh:
             return fh.read().strip()
     except OSError:
         return ""
+
+
+def darwin_sysctl(name):
+    try:
+        out = subprocess.run(["sysctl", "-n", name], capture_output=True,
+                             text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout
 
 
 # Прочитанные <id>.meta.json, по каталогу. Читателей у них два — pid_owners
@@ -1654,11 +1825,7 @@ def running_sessions():
     # произвольном порядке — /proc отдаёт pid'ы как попало, и счётчик обязан
     # пережить случай «агент найден раньше своего сервера».
     zellij, zellij_agents = {}, {}
-    try:
-        pids = [p for p in os.listdir("/proc") if p.isdigit()]
-    except OSError:
-        return live, agents, procs, []
-    for pid in pids:
+    for pid in all_pids():
         try:
             args = proc_args(pid)
         except OSError:
@@ -1668,10 +1835,7 @@ def running_sessions():
         # сокета сессии, совпадает секунда в секунду.
         server = zellij_server_name(args)
         if server:
-            try:
-                created = int(os.path.getmtime("/proc/%s" % pid))
-            except OSError:
-                created = 0
+            created = proc_created(pid)
             zellij[server] = {"name": server, "created": created,
                               "pid": int(pid), "agents": 0}
             continue
