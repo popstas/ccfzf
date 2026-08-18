@@ -158,6 +158,19 @@ TAIL = 256 * 1024         # tail budget for the title and the latest activity
 # Файл при этом только что писался и лежит в кеше страниц, так что цена — разбор
 # json, а не чтение диска.
 TURN_TAIL = 4 * TAIL
+# Спека и план сессии — те, что пишут и читают скиллы superpowers. Хука для
+# них нет: state.json пишет claude-wt, поля про бумаги там не заводили, а
+# завести нечем — репозиторий чужой. Зато путь называет сам разговор, и хвост
+# его транскрипта уже читается ради заголовка.
+#
+# Только `docs/superpowers/`, и это не придирка: `docs/plans/` — планы
+# ralphex, они живут по другому правилу и открываются иначе. Поймай их та же
+# регулярка, пункт меню обещал бы человеку не то, куда ведёт.
+#
+# Алфавит имени узкий намеренно: путь уезжает дальше в argv команды открытия,
+# а `[^/]+` пропустил бы туда пробел, кавычку и перевод строки.
+DOC_RE = re.compile(rb"docs/superpowers/(specs|plans)/[0-9A-Za-z._-]+\.md")
+DOC_KINDS = {b"specs": "spec", b"plans": "plan"}
 DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
@@ -206,7 +219,10 @@ HOOK_LIVE_TTL = 120
 # Поле то же и форма та же — изменилось значение, а ключ памятки это mtime
 # файла, и у простаивающей сессии он больше не сдвинется: без поднятой версии
 # неверный ход остался бы в ней навсегда.
-FACTS_VERSION = 4
+# 5: у записи появились `spec` и `plan`. Поднято ради разового пересчёта:
+# памятка ключуется по mtime, а у простаивающей сессии он не сдвинется больше
+# никогда — без этого бумаги нашлись бы только у тех, кому ещё напишут.
+FACTS_VERSION = 5
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -831,6 +847,7 @@ def tail_facts(path):
     def pick(data):
         custom = ai = doing = ""
         turn_at = 0.0
+        docs = {}
         lines = data.split(b"\n")
         for raw in lines:
             if b'-title"' not in raw:
@@ -843,7 +860,21 @@ def tail_facts(path):
                 custom = o.get("customTitle") or custom
             elif o.get("type") == "ai-title":
                 ai = o.get("aiTitle") or ai
+        # Бумаги ищутся по сырой строке, до разбора JSON: путь встречается и в
+        # тексте реплики, и в аргументах вызова инструмента, и во втором случае
+        # никакого `text` у записи нет вовсе.
+        #
+        # Проход обратный, и первым найденным побеждает последнее упоминание:
+        # сессия за день трогает и прошлый план, и новый, а спрошено «над чем
+        # она сейчас».
+        #
+        # Выход из цикла по-прежнему по `doing и turn_at`, и бумаги его не
+        # держат: у большинства сессий их нет вовсе (27 из 100 на живой
+        # машине), и ждать их значило бы дочитывать хвост до конца всегда.
         for raw in reversed(lines):
+            for m in DOC_RE.finditer(raw):
+                kind = DOC_KINDS[m.group(1)]
+                docs.setdefault(kind, m.group(0).decode("utf-8", "replace"))
             try:
                 o = json.loads(raw)
             except Exception:
@@ -856,22 +887,22 @@ def tail_facts(path):
                     doing = t[:200]
             if doing and turn_at:
                 break
-        return custom or ai, doing, turn_at
+        return custom or ai, doing, turn_at, docs
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing, turn_at = pick(fh.read())
+            title, doing, turn_at, docs = pick(fh.read())
             if not turn_at and size > TAIL:
                 fh.seek(max(0, size - TURN_TAIL))
                 turn_at = pick(fh.read())[2]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
-            return title, doing, turn_at
+            return title, doing, turn_at, docs
     except OSError:
-        return "", "", 0.0
+        return "", "", 0.0, {}
 
 
 def free_session_name(base, taken):
@@ -1869,8 +1900,9 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     if same_mtime:
         title, doing = old.get("title", ""), old.get("doing", "")
         turn_at = old.get("turnAt", 0)
+        docs = {}
     else:
-        title, doing, turn_at = tail(path)
+        title, doing, turn_at, docs = tail(path)
         title = clean(title)
 
     try:
@@ -1886,11 +1918,26 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     if size is not None:
         result["size"] = size
 
-    if not want_gist:
-        return result
-
     truncated = (size is not None and old.get("size") is not None
                  and size < old["size"])
+
+    # Спека и план живут в памятке по тому же правилу, что и `gist`: найденное
+    # переносится через изменения файла. Путь, названный однажды и уехавший за
+    # TAIL, иначе пропал бы — а сессия над тем же планом и работает.
+    #
+    # Подмену файла память не переживает, и это та же подпись, по которой
+    # сбрасывается `gist`: размер уменьшился — id отдали другой сессии, файл
+    # восстановили из бэкапа, историю сжали. Чужой план на новой сессии врал бы
+    # молча.
+    #
+    # Свежая находка старую замещает: сессия за день переходит с плана на план.
+    for kind in ("spec", "plan"):
+        found = docs.get(kind) or ("" if truncated else old.get(kind, ""))
+        if found:
+            result[kind] = found
+
+    if not want_gist:
+        return result
     gist = "" if (truncated or not gist_known) else (old.get("gist") or "")
     done = bool(gist) or (gist_known and not truncated
                            and bool(old.get("gistDone")))
@@ -2188,6 +2235,16 @@ elif mode == "state":
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
+            # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
+            # этой машине, а открывает его читатель у себя, переведя путь через
+            # свой pathMap. Абсолютный путь той стороне пришлось бы разбирать
+            # обратно.
+            #
+            # Ключей нет, когда бумаг нет, — а нет их у трёх сессий из четырёх.
+            # Пустая строка в ответе на каждую строку списка стоила бы места
+            # ради того же, что значит отсутствие ключа.
+            **({"spec": f["spec"]} if f.get("spec") else {}),
+            **({"plan": f["plan"]} if f.get("plan") else {}),
             "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
             "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
@@ -2308,22 +2365,33 @@ elif mode == "newname":
     print(free_session_name(base, taken))
 PYEOF
 
+# Блок уходит питону на stdin, а не аргументом `python3 -c`. Причина — жёсткий
+# потолок ядра: MAX_ARG_STRLEN, 32 страницы, то есть 128 КБ на ОДИН аргумент,
+# сколько бы места ни было под argv целиком. Блок дорос до него и перешагнул,
+# и отказ вышел непроходимый и без подсказки о причине: `Argument list too
+# long`, код 126, ни одного ответа --state. У stdin такого потолка нет вовсе.
+#
+# Не файл во временном каталоге: `$tmp` заводит только интерактивная ветка, а
+# `--state` намеренно обходится без `mktemp` — его зовут по ssh раз в секунду.
+# Своего stdin ни один режим не читает, так что занять его нечем.
+py() { printf '%s\n' "$PY" | python3 - "$@"; }
+
 # External callers (the picker) need the dumps rewritten without opening
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || exit 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR"
+  py dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR"
   exit 0
 fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  python3 -c "$PY" state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR"
+  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR"
   exit 0
 fi
 
 index="$tmp/index.json"
-rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+rows=$(py projects "$MARKS" "$index")
 [[ -n $rows ]] || { echo "ccfzf: no marks and no sessions found" >&2; exit 1; }
 
 # Border, height and layout are left to FZF_DEFAULT_OPTS.
@@ -2343,7 +2411,7 @@ done
 cmd_json+="]"
 
 build_srows() {
-  srows=$(python3 -c "$PY" sessions "$proj_path" "$tmp" "$MARKS" "$index" \
+  srows=$(py sessions "$proj_path" "$tmp" "$MARKS" "$index" \
     "$cmd_json" "$shell_key" 2>"$tmp/count")
   shown=$(cat "$tmp/count" 2>/dev/null || echo 0)
 }
@@ -2354,7 +2422,7 @@ build_srows() {
 # which the exit trap takes away the moment the user picks something.
 dump_state() {
   [[ -n $SESSIONS_FILE || -n $PROJECTS_FILE ]] || return 0
-  python3 -c "$PY" dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR" \
+  py dump "$MARKS" "$SESSIONS_FILE" "$PROJECTS_FILE" "$WINDOWS_FILE" "$limit" "$WINDOWS_DIR" \
     >/dev/null 2>&1 &
 }
 
@@ -2418,7 +2486,7 @@ except OSError:
   cmd=${cmd% }
   if ((kiosk)); then
     (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
-    rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+    rows=$(py projects "$MARKS" "$index")
     all_rows=$rows
     dump_state
     picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
@@ -2545,7 +2613,7 @@ while :; do
     # трекер путает между собой. Отказ python3 не должен отнимать новую
     # сессию — тогда имя остаётся прежним, как было до суффиксов.
     __new__)
-      new_name=$(python3 -c "$PY" newname "$index" "$(basename "$dir")" 2>/dev/null)
+      new_name=$(py newname "$index" "$(basename "$dir")" 2>/dev/null)
       [[ -n $new_name ]] || new_name=$(basename "$dir")
       cmd="$CLAUDE_CMD -n $(printf '%q' "$new_name")$claude_tail" ;;
     *)         cmd="$CLAUDE_CMD --resume $(printf '%q' "$sid")$claude_tail" ;;
@@ -2564,7 +2632,7 @@ while :; do
   else
     (cd "$dir" && exec "$SHELL") || true
   fi
-  rows=$(python3 -c "$PY" projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index")
   all_rows=$rows
   dump_state                                  # sessions changed under us
   picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")

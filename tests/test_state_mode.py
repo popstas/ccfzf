@@ -293,6 +293,23 @@ def test_state_reports_every_window_and_names_the_first_one():
         assert row["window"] == row["windows"][0], row["window"]
 
 
+def test_the_python_block_is_not_passed_as_an_argument():
+    """Потолок ядра, о который уже споткнулись: MAX_ARG_STRLEN — 32 страницы,
+    то есть 128 КБ на ОДИН аргумент, сколько бы места ни было под argv целиком.
+    Блок дорос до 131 880 байт, `python3 -c "$PY"` перестал запускаться вовсе,
+    и отказ был непроходимый и без подсказки: `Argument list too long`, код
+    126, ни одного ответа --state.
+
+    Сторож текстовый, и поведением его не заменить: на машине с другим ядром
+    или страницей потолок иной, а вернуть `-c` можно одной правкой — и она
+    сломала бы агрегатор ровно тогда, когда файл в следующий раз подрастёт.
+    """
+    with open(SRC, encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'python3 -c "$PY"' not in src, "блок снова уходит аргументом — потолок 128 КБ вернётся"
+    assert 'py() { printf ' in src, "исчезла обёртка py(), кормящая блок через stdin"
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]

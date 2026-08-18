@@ -68,7 +68,12 @@ def _tail(records):
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "s.jsonl")
         _write(path, records)
-        return CC["tail_facts"](path)
+        # Первые три из четырёх: этот файл — про начало хода, заголовок и
+        # doing. Четвёртое значение (пути к спеке и плану) живёт по своему
+        # правилу и проверяется в test_session_docs.py; распаковывай мы его
+        # здесь, каждый случай ниже пришлось бы править ради того, о чём он не
+        # спрашивает.
+        return CC["tail_facts"](path)[:3]
 
 
 # ── Что считается сообщением человека ──────────────────────────────────────
@@ -204,8 +209,10 @@ def test_the_title_and_doing_still_come_back():
     assert turn_at == HUMAN_AT, turn_at
 
 
-def test_a_missing_file_costs_three_empties():
-    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0)
+def test_a_missing_file_costs_four_empties():
+    # Четвёртое пустое — бумаги: словарь, а не None, чтобы вызывающему не
+    # приходилось различать «не нашлось» и «прочитать не смогли».
+    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0, {})
 
 
 # ── Памятка фактов ─────────────────────────────────────────────────────────
@@ -218,7 +225,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
     def tail(path):
         calls["n"] += 1
-        return "T", "D", HUMAN_AT
+        return "T", "D", HUMAN_AT, {}
 
     got = CC["facts_for"]("/d/a.jsonl", 100.0, {}, tail=tail,
                           head=lambda p: "G", size_of=lambda p: 10)
@@ -231,7 +238,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
 def test_a_changed_file_recomputes_the_turn():
     def tail_new(path):
-        return "T", "D", HUMAN_AT + 500
+        return "T", "D", HUMAN_AT + 500, {}
 
     old = {"/d/a.jsonl": {"mtime": 100.0, "title": "T", "doing": "D",
                           "turnAt": HUMAN_AT, "gist": "G", "gistDone": True}}
