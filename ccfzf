@@ -2508,7 +2508,12 @@ elif mode == "sessions":
 
     for path, mtime, cwd in files:
         sid = os.path.basename(path)[:-6]
-        name, doing = tail_facts(path)
+        # Срез, а не распаковка в два имени: начало хода и бумаги списку не
+        # нужны, а `tail_facts` со временем стала отдавать и то, и другое —
+        # и распаковка падала `ValueError` ровно здесь. Ошибка выходила
+        # молчащей: stderr этого вызова bash уводит в файл со счётчиком, а
+        # `set -e` роняет скрипт, и вместо списка сессий человек получал шелл.
+        name, doing = tail_facts(path)[:2]
         name = clean(name)
         gist = head_gist(path) or doing
         age = ago(mtime, now)

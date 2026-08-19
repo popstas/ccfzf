@@ -31,3 +31,31 @@ def load():
     finally:
         sys.argv = saved
     return ns
+
+
+def run(argv):
+    """Выполнить блок в режиме `argv[0]` и вернуть (stdout, stderr).
+
+    Ветки режимов живут на верхнем уровне блока, импортировать их нечем и
+    вызвать по имени тоже: `load()` намеренно запускает блок с пустым argv,
+    чтобы ни одна из них не сработала. Здесь наоборот — argv задаётся целиком,
+    а оба потока перехватываются, потому что ветка пишет прямо в них.
+    """
+    import contextlib
+    import io
+
+    text = SRC.read_text(encoding="utf-8")
+    head, marker, rest = text.partition(BEGIN)
+    if not marker or END not in rest:
+        raise AssertionError("python block markers not found in %s" % SRC)
+    body = rest.split("\n", 1)[1].split(END, 1)[0]
+    ns = {"__name__": "ccfzf_py"}
+    out, err = io.StringIO(), io.StringIO()
+    saved = sys.argv
+    sys.argv = ["ccfzf"] + list(argv)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exec(compile(body, str(SRC), "exec"), ns)
+    finally:
+        sys.argv = saved
+    return out.getvalue(), err.getvalue()
