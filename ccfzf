@@ -134,11 +134,14 @@ claude_tail=""
 ((${#claude_args[@]})) && claude_tail=" $(printf '%q ' "${claude_args[@]}")"
 claude_tail=${claude_tail% }
 
-if [[ -n $comment_id ]]; then
-  command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
-fi
-
-if ((dump_only || state_only)); then
+# Режимов без интерфейса три, и fzf не нужен ни одному: `--dump`, `--state` и
+# `--comment`. Требовать его у комментария значило отказ на машине, где ccfzf
+# стоит только ради пикера: на маке fzf нет, python3 есть, — `--state` там
+# работал, а `--comment` падал `ccfzf: fzf not found` с кодом 127, и человек
+# читал это как отсутствие самого ccfzf. Временный каталог заводит та же
+# интерактивная ветка, и это верно: комментарий выходит из скрипта раньше,
+# чем `$tmp` кому-то понадобится.
+if ((dump_only || state_only)) || [[ -n $comment_id ]]; then
   command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
 else
   for dep in fzf python3; do

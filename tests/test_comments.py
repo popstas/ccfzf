@@ -4,6 +4,8 @@
 """
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -11,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
 
 CC = harness.load()
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ccfzf")
 SID = "aaaaaaaa-1111-2222-3333-444444444444"
 OTHER = "bbbbbbbb-1111-2222-3333-444444444444"
 
@@ -87,6 +90,27 @@ def test_entries_that_are_not_shaped_right_are_dropped():
                        OTHER: "просто строка",
                        "не-id": {"text": "ок"}}, fh)
         assert list(CC["read_comments"](p)) == [SID]
+
+
+def test_a_comment_does_not_need_fzf():
+    # Интерфейса тут нет вовсе, и fzf режиму не нужен ничем — а проверка
+    # зависимостей требовала его заодно с интерактивной веткой. Ловилось это
+    # только на машине без fzf: на маке ccfzf распакован пикером ради `--state`
+    # (тому хватает python3), и комментарий к местной сессии падал
+    # `ccfzf: fzf not found` с кодом 127 — молча для пикера, потому что читает
+    # он только код возврата.
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "c.json")
+        # PATH без fzf, но с python3: имитируем ровно ту машину. Каталог самого
+        # python3 берётся из его настоящего расположения — жёсткий /usr/bin на
+        # маке с homebrew-питоном ничего бы не доказал.
+        keep = [os.path.dirname(shutil.which("python3")), "/usr/bin", "/bin"]
+        env = dict(os.environ, PATH=os.pathsep.join(keep), CCFZF_COMMENTS_FILE=p)
+        assert shutil.which("fzf", path=env["PATH"]) is None, env["PATH"]
+        r = subprocess.run(["bash", SRC, "--comment", SID, "mac"],
+                           input="без fzf", capture_output=True, text=True, env=env)
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert CC["read_comments"](p)[SID]["text"] == "без fzf", CC["read_comments"](p)
 
 
 if __name__ == "__main__":
