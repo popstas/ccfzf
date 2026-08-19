@@ -93,6 +93,33 @@ def test_junk_terminal_name_does_not_cost_the_window():
     assert windows[UUID_A]["title"] == "ccfzf", windows[UUID_A]
 
 
+def test_minimized_reaches_the_reader():
+    # Свёрнутость видит только трекер: у читателя окон нет вовсе, а гасить по
+    # ней строку и выкидывать её из раскладки — его работа.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1,
+                                       "lastSeen": NOW, "minimized": True}))
+    assert windows[UUID_A]["minimized"] is True, windows[UUID_A]
+
+
+def test_minimized_missing_is_false_not_absent():
+    # Трекер прежней версии поля не пишет. `false` читается как «окно
+    # обычное», а отсутствие ключа стоило бы читателю проверки на каждом
+    # использовании — то же правило, что у focusedAt и app.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": None, "lastSeen": 0}))
+    assert windows[UUID_A]["minimized"] is False, windows[UUID_A]
+
+
+def test_junk_minimized_reads_as_an_ordinary_window():
+    # Файл пишет чужая машина. Ошибиться можно в обе стороны, и стороны эти
+    # неравны: гашёная строка у открытого окна уводит человека от работающей
+    # сессии, а негашёная у свёрнутого стоит одного лишнего взгляда.
+    for junk in ("true", 1, {"да": "нет"}, [], None):
+        windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1,
+                                           "lastSeen": NOW, "minimized": junk}))
+        assert windows[UUID_A]["minimized"] is False, (junk, windows[UUID_A])
+        assert windows[UUID_A]["title"] == "ccfzf", (junk, windows[UUID_A])
+
+
 def test_stale_file_is_dropped_whole():
     # Срок годности проверяется до полей: демон, который умер, не должен
     # оставлять после себя ни пометок об окнах, ни отметок о просмотре.
