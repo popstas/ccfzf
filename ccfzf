@@ -925,7 +925,7 @@ def tail_facts(path, doc_root=None):
     просят, — и ответ выходил бы то глубоким, то нет, без видимой причины.
     """
     def pick(data):
-        custom = ai = doing = ""
+        custom = ai = doing = entry = ""
         turn_at = 0.0
         docs = {}
         lines = data.split(b"\n")
@@ -964,6 +964,15 @@ def tail_facts(path, doc_root=None):
                 o = json.loads(raw)
             except Exception:
                 continue
+            # Клиент — из первой же записи обратного прохода, где поле есть:
+            # спрошено «где сессия сейчас», а не «где её завели». Условие
+            # выхода из цикла он не расширяет намеренно: поле стоит в тех же
+            # записях `user`/`assistant`, которых цикл и так дожидается ради
+            # `doing`, — а расширь мы условие, хвост без единой такой записи
+            # дочитывался бы до конца всегда.
+            if not entry:
+                got = o.get("entrypoint")
+                entry = got if isinstance(got, str) else ""
             if not turn_at and is_human_message(o):
                 turn_at = stamp_of(o)
             if not doing and o.get("type") in ("user", "assistant"):
@@ -972,22 +981,22 @@ def tail_facts(path, doc_root=None):
                     doing = t[:200]
             if doing and turn_at:
                 break
-        return custom or ai, doing, turn_at, docs
+        return custom or ai, doing, turn_at, docs, entry
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing, turn_at, docs = pick(fh.read())
+            title, doing, turn_at, docs, entry = pick(fh.read())
             if not turn_at and size > TAIL:
                 fh.seek(max(0, size - TURN_TAIL))
                 turn_at = pick(fh.read())[2]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
-            return title, doing, turn_at, docs
+            return title, doing, turn_at, docs, entry
     except OSError:
-        return "", "", 0.0, {}
+        return "", "", 0.0, {}, ""
 
 
 def free_session_name(base, taken):
@@ -1342,10 +1351,24 @@ def parent_pid(pid):
 
 
 def arg_value(args, flag):
-    try:
-        return args[args.index(flag) + 1]
-    except (ValueError, IndexError):
-        return ""
+    """Значение флага в argv — обе формы, `--flag value` и `--flag=value`.
+
+    Пробельную пишет терминальный клиент, форму с равенством — Claude Desktop:
+    он зовёт агента `--resume=<id>` одним токеном. Понимать надо обе, потому
+    что id сессии в argv — единственный точный ответ на вопрос «чей это
+    процесс»; без него остаётся догадка по каталогу (`fresh_ids`), и в
+    каталоге с двумя сессиями она достаётся не той.
+
+    Знак равенства обязателен в сравнении: `startswith(flag)` вычитывал бы
+    `--session-id` из `--session-id-foo=…`.
+    """
+    prefix = flag + "="
+    for i, arg in enumerate(args):
+        if arg == flag:
+            return args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith(prefix):
+            return arg[len(prefix):]
+    return ""
 
 
 def is_claude(args):
@@ -1354,9 +1377,37 @@ def is_claude(args):
     Filtering on comm == "claude" used to be enough. It no longer is: a session
     started through the launcher runs as comm "2.1.220", so every background
     agent — and every session on a recent build — looked dead.
+
+    Третий вид — агент Claude Desktop: он живёт в
+    `~/Library/Application Support/Claude/claude-code/<версия>/claude.app/…`,
+    и в этом пути есть пробел. На маке argv приезжает из `ps` одной строкой и
+    делится по пробелам (`ps_rows`), то есть путь разваливается, а `args[0]`
+    оказывается `/Users/…/Library/Application`. Поэтому склеиваем обратно:
+    токены до первого флага, пока склейка не окажется путём, кончающимся на
+    `/claude`.
+
+    Склейка идёт только от абсолютного `args[0]` и только по токенам, которые
+    сами путём не начинаются: `/usr/bin/python3 /opt/tools/claude` — это
+    программа и её аргумент, а не один путь с пробелом. Отличить их больше
+    нечем, и это честная мерка: сегмент пути не может начинаться со слэша,
+    слэш в пути — разделитель.
+
+    На Linux ветка не нужна вовсе: там argv читается из /proc, разделённый
+    нулями, и делить его заново не приходится.
     """
     exe = args[0] if args else ""
-    return os.path.basename(exe) == "claude" or "/.local/share/claude/versions/" in exe
+    if os.path.basename(exe) == "claude" or "/.local/share/claude/versions/" in exe:
+        return True
+    if not exe.startswith("/"):
+        return False
+    joined = exe
+    for tok in args[1:]:
+        if tok.startswith("-") or tok.startswith("/"):
+            break
+        joined += " " + tok
+        if joined.endswith("/claude"):
+            return True
+    return False
 
 
 def proc_tty(pid):
@@ -2324,16 +2375,23 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     old = cache.get(path) or {}
     same_mtime = old.get("mtime") == mtime
     gist_known = "gist" in old and "gistDone" in old
+    # Знание о клиенте — такое же условие попадания, как `gist_known`, и по
+    # той же причине: у закончившейся сессии mtime больше не сдвинется
+    # никогда, и запись, положенная версией без этого поля, читалась бы как
+    # полная — строка вечно оставалась бы без признака клиента. Промах здесь
+    # разовый: пересчитанная запись поле уже несёт.
+    entry_known = "entrypoint" in old
 
-    if same_mtime and (not want_gist or gist_known):
+    if same_mtime and entry_known and (not want_gist or gist_known):
         return old
 
-    if same_mtime:
+    if same_mtime and entry_known:
         title, doing = old.get("title", ""), old.get("doing", "")
         turn_at = old.get("turnAt", 0)
         docs = {}
+        entry = old.get("entrypoint", "")
     else:
-        title, doing, turn_at, docs = tail(path)
+        title, doing, turn_at, docs, entry = tail(path)
         title = clean(title)
 
     try:
@@ -2345,7 +2403,8 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     # из того же хвоста и меняется только вместе с файлом, так что ключ mtime
     # для него верен. Отдельным чтением на каждый опрос он стоил бы двухсот
     # хвостов там, где сейчас читаются единицы.
-    result = {"mtime": mtime, "title": title, "doing": doing, "turnAt": turn_at}
+    result = {"mtime": mtime, "title": title, "doing": doing, "turnAt": turn_at,
+              "entrypoint": entry}
     if size is not None:
         result["size"] = size
 
@@ -2721,6 +2780,15 @@ elif mode == "state":
             "activityAt": int(stamps.get(sid, 0)),
             "kind": agent.get("kind", "interactive"),
             "parent": agent.get("parent", ""),
+            # Клиент, которым сессию открывали в последний раз: `cli` у
+            # терминального, `claude-desktop` у приложения. Другого признака
+            # нет вовсе — файл, каталог и формат у обоих одинаковые, — а
+            # читателю он нужен, чтобы вернуть человека туда, откуда он ушёл.
+            #
+            # Ключа нет, когда поля нет в транскрипте: у прежних версий
+            # агента его не было, и «не сказано» обязано читаться как
+            # прежнее поведение, а не как выдуманный `cli`.
+            **({"entrypoint": f["entrypoint"]} if f.get("entrypoint") else {}),
             "pid": (procs.get(sid) or {}).get("pid", 0),
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),

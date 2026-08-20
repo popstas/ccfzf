@@ -17,13 +17,13 @@ def counting(title="T", doing="D", gist="G", turn_at=0.0):
 
     def tail(path):
         calls["tail"] += 1
-        # Четыре значения, как у настоящей tail_facts: начало хода и пути к
+        # Пять значений, как у настоящей tail_facts: начало хода, пути к
         # спеке с планом считаются из того же хвоста, что title и doing, и
         # живут в памятке по тому же правилу — ключ mtime, промах
         # пересчитывает. Бумаг у подставной сессии нет: их своё правило
         # (перенос найденного через изменения файла) проверяется отдельно, в
         # test_session_docs.py.
-        return title, doing, turn_at, {}
+        return title, doing, turn_at, {}, "cli"
 
     def head(path):
         calls["head"] += 1
@@ -35,7 +35,7 @@ def counting(title="T", doing="D", gist="G", turn_at=0.0):
 def test_a_hit_recomputes_nothing():
     calls, tail, head = counting()
     cache = {P: {"mtime": 100.0, "title": "T", "doing": "D",
-                 "gist": "G", "gistDone": True}}
+                 "entrypoint": "cli", "gist": "G", "gistDone": True}}
     got = CC["facts_for"](P, 100.0, cache, tail=tail, head=head)
     assert got == cache[P], got
     assert calls == {"tail": 0, "head": 0}, calls
@@ -146,7 +146,7 @@ def test_want_gist_false_hit_passes_the_known_gist_through_unmodified():
     # dump ничего не пересчитывает и просто возвращает всю старую запись.
     calls, tail, head = counting()
     cache = {P: {"mtime": 100.0, "title": "T", "doing": "D",
-                 "gist": "G", "gistDone": True, "size": 5}}
+                 "entrypoint": "cli", "gist": "G", "gistDone": True, "size": 5}}
     got = CC["facts_for"](P, 100.0, cache, tail=tail, head=head,
                           want_gist=False)
     assert got == cache[P], got
@@ -160,7 +160,8 @@ def test_a_gist_unknown_record_is_a_half_miss_even_at_the_same_mtime():
     # считаться попаданием: пересчитывать title/doing незачем (они не
     # изменились бы при том же mtime), а gist искать обязаны.
     calls, tail, head = counting(gist="первый промпт")
-    cache = {P: {"mtime": 100.0, "title": "T", "doing": "D", "size": 5}}
+    cache = {P: {"mtime": 100.0, "title": "T", "doing": "D",
+                 "entrypoint": "cli", "size": 5}}
     got = CC["facts_for"](P, 100.0, cache, tail=tail, head=head)
     assert calls["tail"] == 0, calls
     assert calls["head"] == 1, calls

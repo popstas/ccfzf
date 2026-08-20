@@ -17,13 +17,15 @@ import harness
 CC = harness.load()
 
 # Снято с живого мака: `ps -axwwo pid=,ppid=,tty=,lstart=,command=`.
-# Здесь четыре строки нарочно разные: сессия без аргументов и с терминалом,
-# запуск через версионный лаунчер, процесс без управляющего терминала (`??`)
-# и день месяца, выровненный пробелом (`Aug  1`).
+# Здесь пять строк нарочно разные: сессия без аргументов и с терминалом,
+# запуск через версионный лаунчер, процесс без управляющего терминала (`??`),
+# день месяца, выровненный пробелом (`Aug  1`), и агент Claude Desktop —
+# у него в пути к бинарю пробел, а id сессии стоит через знак равенства.
 PS = """\
 99228     1 ttys007 Tue Aug 18 16:18:25 2026 claude
 71308 71300 ttys003 Sat Aug  1 04:30:17 2026 /Users/u/.local/share/claude/versions/2.1.233/claude --resume 2f03f490-c090-4c97-99e2-eecedbf009fa
 84235     1 ??      Mon Aug 17 00:29:35 2026 /Applications/Claude.app/Contents/MacOS/Claude
+77533 77514 ??      Fri Aug 21 00:21:02 2026 /Users/u/Library/Application Support/Claude/claude-code/2.1.229/claude.app/Contents/MacOS/claude --output-format stream-json --resume=8b84d15e-fce9-4847-b3d0-39b37a3c48c1 --permission-mode auto
 """
 
 
@@ -44,7 +46,7 @@ class table:
 
 def test_ps_rows_reads_pid_ppid_and_tty():
     rows = CC["ps_rows"](PS)
-    assert sorted(rows) == ["71308", "84235", "99228"], sorted(rows)
+    assert sorted(rows) == ["71308", "77533", "84235", "99228"], sorted(rows)
     assert rows["71308"]["ppid"] == "71300", rows["71308"]
     assert rows["99228"]["tty"] == "ttys007", rows["99228"]
     assert rows["84235"]["tty"] == "??", rows["84235"]
@@ -59,6 +61,30 @@ def test_ps_rows_splits_the_command_back_into_argv():
     args = rows["71308"]["args"]
     assert CC["is_claude"](args), args
     assert CC["arg_value"](args, "--resume") == "2f03f490-c090-4c97-99e2-eecedbf009fa", args
+
+
+def test_a_desktop_agent_survives_the_space_in_its_path():
+    """`ps` отдаёт argv одной строкой, а путь агента Claude Desktop лежит в
+    `Library/Application Support` — то есть разваливается по пробелу.
+
+    Без этого `is_claude` смотрел на `/Users/u/Library/Application` и отвечал
+    «не наш»: процесс приложения был невидим для всего разбора, а сессия
+    получала живость догадкой по каталогу — в каталоге с двумя сессиями не
+    той. На Linux этого нет: там argv читается из /proc, разделённый нулями.
+    """
+    args = CC["ps_rows"](PS)["77533"]["args"]
+    assert CC["is_claude"](args), args
+    assert CC["arg_value"](args, "--resume") == "8b84d15e-fce9-4847-b3d0-39b37a3c48c1", args
+
+
+def test_a_program_named_after_claude_is_not_the_agent():
+    """Склейка идёт только по продолжению самого пути, и только абсолютного.
+
+    Иначе `node /opt/claude` читался бы агентом: путь там во втором токене, а
+    первый — вовсе не программа агента.
+    """
+    assert not CC["is_claude"](["node", "/opt/claude"])
+    assert not CC["is_claude"](["/usr/bin/python3", "/opt/tools/claude"])
 
 
 def test_ps_rows_reads_lstart_whatever_the_timezone():
@@ -110,7 +136,7 @@ def test_process_fields_come_from_the_table():
         assert CC["parent_pid"]("404") == ""
         assert CC["proc_started"]("99228") == int(CC["ps_table"]()["99228"]["started"])
         assert CC["proc_created"]("99228") == CC["proc_started"]("99228")
-        assert sorted(CC["all_pids"]()) == ["71308", "84235", "99228"]
+        assert sorted(CC["all_pids"]()) == ["71308", "77533", "84235", "99228"]
 
 
 def test_the_linux_road_is_untouched():

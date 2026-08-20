@@ -209,10 +209,12 @@ def test_the_title_and_doing_still_come_back():
     assert turn_at == HUMAN_AT, turn_at
 
 
-def test_a_missing_file_costs_four_empties():
+def test_a_missing_file_costs_five_empties():
     # Четвёртое пустое — бумаги: словарь, а не None, чтобы вызывающему не
-    # приходилось различать «не нашлось» и «прочитать не смогли».
-    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0, {})
+    # приходилось различать «не нашлось» и «прочитать не смогли». Пятое —
+    # клиент, которым сессию открывали; своё правило у него в
+    # test_entrypoint.py.
+    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0, {}, "")
 
 
 # ── Памятка фактов ─────────────────────────────────────────────────────────
@@ -225,7 +227,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
     def tail(path):
         calls["n"] += 1
-        return "T", "D", HUMAN_AT, {}
+        return "T", "D", HUMAN_AT, {}, "cli"
 
     got = CC["facts_for"]("/d/a.jsonl", 100.0, {}, tail=tail,
                           head=lambda p: "G", size_of=lambda p: 10)
@@ -238,7 +240,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
 def test_a_changed_file_recomputes_the_turn():
     def tail_new(path):
-        return "T", "D", HUMAN_AT + 500, {}
+        return "T", "D", HUMAN_AT + 500, {}, "cli"
 
     old = {"/d/a.jsonl": {"mtime": 100.0, "title": "T", "doing": "D",
                           "turnAt": HUMAN_AT, "gist": "G", "gistDone": True}}
