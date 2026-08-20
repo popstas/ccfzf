@@ -1337,6 +1337,65 @@ def registry_records(path=SESSIONS_DIR):
     return out
 
 
+def process_start(pid):
+    """Время создания процесса как FILETIME строкой; `""` — процесса нет.
+
+    Через `ctypes`, а не через подпроцесс: спрашиваются только те несколько
+    pid, которые назвал реестр, и делать ради них `powershell` на каждый опрос
+    было бы дороже всего остального разбора вместе взятого.
+
+    `GetProcessTimes` отдаёт ровно ту величину, которую реестр хранит строкой
+    в `procStart`: сотни наносекунд от 1601 года, — так что сравниваются они
+    без перевода.
+    """
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ""
+    try:
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        ok = kernel32.GetProcessTimes(handle, ctypes.byref(created),
+                                      ctypes.byref(exited), ctypes.byref(kernel),
+                                      ctypes.byref(user))
+        if not ok:
+            return ""
+        return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def windows_sessions(records=None, started_of=None):
+    """(живые id, {id: запись процесса}) по реестру.
+
+    Запись жива, когда pid существует **и** его время создания совпало с
+    `procStart`. Обе половины обязательны — см. `process_start`.
+
+    Спрашивающий вынесен аргументом по той же причине, по какой у маковской
+    ветки вынесена таблица `ps`: настоящего Windows в тестах не завести, а
+    правило проверить надо.
+
+    `tty`, `tmux` и `zellij` пустые: на Windows их нет вовсе, а форма записи
+    процесса общая на все три системы — читатель у неё один.
+    """
+    records = registry_records() if records is None else records
+    started_of = process_start if started_of is None else started_of
+    live, procs = set(), {}
+    for rec in records:
+        if started_of(rec["pid"]) != rec["procStart"]:
+            continue
+        live.add(rec["sid"])
+        procs[rec["sid"]] = {"pid": rec["pid"], "tty": "", "tmux": None,
+                             "zellij": None, "cwd": rec["cwd"]}
+    return live, procs
+
+
 def lsof_cwd(text):
     """Путь из вывода `lsof -Fn`: строки-поля, наш — последний с префиксом `n`."""
     path = ""
@@ -1948,6 +2007,14 @@ def running_sessions():
       so K processes in one cwd claim the K newest files there. Newest by
       content, not by mtime — see fresh_ids.
     """
+    # На Windows разбора процессов нет вовсе: связку «процесс ↔ сессия ↔
+    # каталог» отдаёт реестр, и гадать по каталогу (`fresh_ids`) не о чем — id
+    # там назван прямо. Хуков на той машине тоже нет (`~/.claude/claude-wt` не
+    # существует), поэтому и второй проход по отметкам ничего бы не добавил:
+    # выходим сразу.
+    if WINDOWS:
+        live, procs = windows_sessions()
+        return live, {}, procs, []
     live, fresh, agents, procs = set(), [], {}, {}
     # Держатели зелийных сессий и счётчик агентов по именам. Считается двумя
     # словарями, а не одним: сервер и живущий в нём claude встречаются в

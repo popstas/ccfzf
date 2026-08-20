@@ -77,6 +77,36 @@ def test_a_background_kind_is_not_a_session_here():
     assert CC["registry_records"](d) == []
 
 
+# ── Живость ────────────────────────────────────────────────────────────────
+
+
+def _records():
+    return [
+        {"sid": UUID_A, "pid": 10, "cwd": "<drive>:\\a", "procStart": "111"},
+        {"sid": UUID_B, "pid": 20, "cwd": "<drive>:\\b", "procStart": "222"},
+    ]
+
+
+def test_a_live_record_brings_its_pid_and_directory():
+    live, procs = CC["windows_sessions"](_records(), lambda pid: "111")
+    assert live == {UUID_A}, live
+    assert procs[UUID_A] == {"pid": 10, "tty": "", "tmux": None,
+                             "zellij": None, "cwd": "<drive>:\\a"}, procs
+
+
+def test_a_dead_pid_is_not_alive():
+    live, procs = CC["windows_sessions"](_records(), lambda pid: "")
+    assert live == set(), live
+    assert procs == {}, procs
+
+
+def test_a_reused_pid_does_not_revive_yesterdays_session():
+    """Проверка двойная не для красоты: pid переиспользуются, и без сверки
+    времени старта чужой процесс оживил бы вчерашнюю сессию."""
+    live, _ = CC["windows_sessions"](_records(), lambda pid: "999")
+    assert live == set(), live
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
