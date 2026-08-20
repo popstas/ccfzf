@@ -214,6 +214,38 @@ DOC_RE = re.compile(rb"docs/superpowers/(specs|plans)/[0-9A-Za-z._-]+\.md"
                     rb"|docs/(specs)/[0-9A-Za-z._-]+\.md")
 DOC_KINDS = {b"specs": "spec", b"plans": "plan"}
 
+# Инструменты, незакрытый вызов которых значит «агент ждёт человека», а не
+# «агент работает». Список короткий и закрытый: спрашивать человека умеют
+# ровно двое, и оба спрашивают текстом, лежащим в `input` вызова.
+#
+# Различать состояния приходится по имени инструмента, потому что `stop_reason`
+# на этот вопрос не отвечает: у работающей сессии он `tool_use`, и у стоящей на
+# вопросе — тот же `tool_use`. Снято живьём 2026-08-21 на сессии 44e3e1b8:
+# 21:55 — `tool_use` `Bash du -sh` (работает), 22:04 — `tool_use`
+# `AskUserQuestion` (ждёт), `stop_reason` в обеих один.
+QUESTION_TOOLS = ("AskUserQuestion", "ExitPlanMode")
+
+
+def question_text(inp):
+    """Текст вопроса из `input` вызова AskUserQuestion, или пустая строка.
+
+    Вопросов в одном вызове бывает несколько — склеиваются тем же разделителем,
+    что и две величины в правой колонке пикера: это независимые вопросы, а не
+    одна фраза из частей, и пробела для такого мало.
+
+    Разбор терпимый, как у файла окон: чужой файл, и любое поле в нём бывает не
+    того типа. Порченый `input` стоит текста вопроса, а не состояния — то, что
+    сессия ждёт человека, известно и без него, по имени инструмента.
+    """
+    if not isinstance(inp, dict):
+        return ""
+    qs = inp.get("questions")
+    if not isinstance(qs, list):
+        return ""
+    parts = [q.get("question") for q in qs
+             if isinstance(q, dict) and isinstance(q.get("question"), str)]
+    return clean(" · ".join(p for p in parts if p))[:200]
+
 
 def doc_exists(root, rel):
     """Лежит ли названная бумага на диске.
@@ -481,7 +513,53 @@ def usage_of(sid):
     return int(num(o.get("contextPct"))), int(num(o.get("costUsd")))
 
 
-def agent_of(sid, transcript="", turn_at=0):
+def from_tail(tail, turn_at=0, mtime=0):
+    """Запись агента, собранная из хвоста транскрипта, или None.
+
+    Дорога для машины без хуков. Состояние и текст вопроса считает `tail_facts`
+    тем же обратным проходом, каким берёт заголовок и `entrypoint`, — второго
+    чтения файла здесь нет.
+
+    `updated` — mtime транскрипта, и это не приблизительность за неимением
+    лучшего: на нём держится гашение кружка (`seenSinceUpdate` у читателя), и
+    ноль значил бы «человек этого не видел» навсегда — жёлтый вопрос не гас бы
+    и после захода в сессию. Ту же подстановку читатель уже делает сам для
+    `lastActivity`, так что число выходит то же самое.
+
+    Денег и доли контекста здесь нет **ключами**, а не нулями: считает их
+    перехват статуслайна, а на машине без хуков его нет. Показанный ноль был бы
+    единственным числом строки, которое врёт, — то же правило и та же причина,
+    что у сессии приложения.
+
+    Пустое состояние — не «простаивает», а «сказать нечего»: у пустого
+    транскрипта, у нечитаемого файла и у хвоста без единой записи агента. Такой
+    сессии записи не полагается вовсе, и `None` здесь честнее выдуманного
+    `idle`.
+    """
+    state = (tail or {}).get("state", "")
+    if not state:
+        return None
+    return {
+        "state": state,
+        "event": "",
+        "message": "",
+        "summary": "",
+        "lastSummary": "",
+        "prompt": "",
+        "question": (tail or {}).get("question", ""),
+        "branch": "",
+        "pr_url": "",
+        "updated": int(num(mtime)),
+        "turnAt": num(turn_at),
+        "started": 0,
+        # Происхождение записи. Читателю оно нужно затем же, зачем нужно было
+        # прежнее «записи нет»: по нему он решает, есть ли что отматывать
+        # отметками «просмотрено» и стоит ли верить нулю в деньгах и контексте.
+        "source": "transcript",
+    }
+
+
+def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
     """Склеенные <id>.state.json, <id>.status.json и <id>.meta.json, или None.
 
     Склейка живёт здесь, а не у читателя: файлы локальные, а читатель —
@@ -499,8 +577,15 @@ def agent_of(sid, transcript="", turn_at=0):
 
     meta берётся после проверки на пустоту, и это не про экономию — читает её
     всё равно общий проход meta_all. Это про смысл: одна отметка старта записи
-    агента не создаёт. «Запись есть» значит «хук хоть раз сработал», и по
-    наличию записи читатель решает, есть ли о сессии что сказать.
+    агента не создаёт.
+
+    `tail` и `mtime` — запасной ход на машину без хуков: их нет ни на Windows,
+    ни у сессии приложения, ни на маке (каталога `~/.claude/claude-wt/` там не
+    существует вовсе). Прежде такая сессия получала `None`, и строка вечно
+    показывала серый кружок — «простаивает» вместо «спросить не у кого».
+    Собирает запись `from_tail`; отличить её от хуковой читатель обязан по полю
+    `source`, потому что прежнее правило «запись есть — значит хук хоть раз
+    сработал» с этого места неверно.
     """
     def load(suffix):
         try:
@@ -513,7 +598,7 @@ def agent_of(sid, transcript="", turn_at=0):
     state = load(".state.json")
     status = load(".status.json")
     if not state and not status:
-        return None
+        return from_tail(tail, turn_at, mtime)
     meta = meta_all(STATUS_DIR).get(sid) or {}
 
     out = {
@@ -940,6 +1025,19 @@ def tail_facts(path, doc_root=None):
         custom = ai = doing = entry = ""
         turn_at = 0.0
         docs = {}
+        # Состояние агента собирается тем же проходом. `closed` копит id тех
+        # вызовов, чей `tool_result` уже встретился, — проход обратный, и
+        # результат в файле стоит ниже своего вызова, то есть встречается
+        # первым. Незакрытым считается вызов, id которого в `closed` не попал.
+        closed = set()
+        pending = ""
+        pending_input = None
+        stop = ""
+        # Прошли реплику человека — текущий ход кончился, и всё, что ниже,
+        # относится к прошлому. Без этой границы сессия, у которой человек
+        # ответил на вопрос не кнопкой, а новым промптом, вечно числилась бы
+        # ждущей: незакрытый `AskUserQuestion` так и остался бы незакрытым.
+        turn_over = False
         lines = data.split(b"\n")
         for raw in lines:
             if b'-title"' not in raw:
@@ -985,30 +1083,65 @@ def tail_facts(path, doc_root=None):
             if not entry:
                 got = o.get("entrypoint")
                 entry = got if isinstance(got, str) else ""
-            if not turn_at and is_human_message(o):
-                turn_at = stamp_of(o)
+            if not turn_over:
+                blocks = content_of(o)
+                if isinstance(blocks, list):
+                    for b in blocks:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "tool_result":
+                            closed.add(b.get("tool_use_id"))
+                        elif b.get("type") == "tool_use" and not pending:
+                            if b.get("id") not in closed:
+                                pending = b.get("name") or ""
+                                pending_input = b.get("input")
+                if not stop and o.get("type") == "assistant":
+                    m = o.get("message")
+                    stop = (m.get("stop_reason") or "") if isinstance(m, dict) else ""
+            if is_human_message(o):
+                if not turn_at:
+                    turn_at = stamp_of(o)
+                turn_over = True
             if not doing and o.get("type") in ("user", "assistant"):
                 t = clean(text_of(content_of(o)))
                 if t and not noisy(t):
                     doing = t[:200]
             if doing and turn_at:
                 break
-        return custom or ai, doing, turn_at, docs, entry
+        # Незакрытый вызов главнее `stop_reason`: он и есть то, чем сессия
+        # занята прямо сейчас. `end_turn` — ход кончился, ответа никто не
+        # смотрел; всё остальное — работа.
+        #
+        # Пустой `stop` при найденной реплике человека значит, что новее её в
+        # ходе ничего нет: человек только что написал, и агент над этим
+        # работает. Пустой при ненайденной — сказать нечего вовсе, и это не
+        # «простаивает»: читатель обязан отличать одно от другого.
+        if pending:
+            state = "question" if pending in QUESTION_TOOLS else "active"
+        elif stop == "end_turn":
+            state = "review"
+        elif stop or turn_at:
+            state = "active"
+        else:
+            state = ""
+        question = question_text(pending_input) if state == "question" else ""
+        return (custom or ai, doing, turn_at, docs, entry,
+                {"state": state, "question": question})
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing, turn_at, docs, entry = pick(fh.read())
+            title, doing, turn_at, docs, entry, agent = pick(fh.read())
             if not turn_at and size > TAIL:
                 fh.seek(max(0, size - TURN_TAIL))
                 turn_at = pick(fh.read())[2]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
-            return title, doing, turn_at, docs, entry
+            return title, doing, turn_at, docs, entry, agent
     except OSError:
-        return "", "", 0.0, {}, ""
+        return "", "", 0.0, {}, "", {"state": "", "question": ""}
 
 
 def free_session_name(base, taken):
@@ -2523,17 +2656,24 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     # полная — строка вечно оставалась бы без признака клиента. Промах здесь
     # разовый: пересчитанная запись поле уже несёт.
     entry_known = "entrypoint" in old
+    # Состояние из хвоста — такое же условие попадания, и по той же причине,
+    # что `entry_known`. Записи прошлой версии этого ключа не носят вовсе, и
+    # без гейта строка, чей mtime больше не сдвинется, вечно оставалась бы без
+    # состояния — то есть ровно у тех сессий, ради которых оно и заводилось.
+    state_known = "agentState" in old
 
-    if same_mtime and entry_known and (not want_gist or gist_known):
+    if same_mtime and entry_known and state_known and (not want_gist or gist_known):
         return old
 
-    if same_mtime and entry_known:
+    if same_mtime and entry_known and state_known:
         title, doing = old.get("title", ""), old.get("doing", "")
         turn_at = old.get("turnAt", 0)
         docs = {}
         entry = old.get("entrypoint", "")
+        agent = {"state": old.get("agentState", ""),
+                 "question": old.get("agentQuestion", "")}
     else:
-        title, doing, turn_at, docs, entry = tail(path)
+        title, doing, turn_at, docs, entry, agent = tail(path)
         title = clean(title)
 
     try:
@@ -2546,7 +2686,11 @@ def facts_for(path, mtime, cache, tail=None, head=None,
     # для него верен. Отдельным чтением на каждый опрос он стоил бы двухсот
     # хвостов там, где сейчас читаются единицы.
     result = {"mtime": mtime, "title": title, "doing": doing, "turnAt": turn_at,
-              "entrypoint": entry}
+              "entrypoint": entry,
+              # Состояние живёт в памятке по тому же правилу, что и `turnAt`:
+              # считается из того же хвоста и меняется только вместе с файлом.
+              "agentState": agent.get("state", ""),
+              "agentQuestion": agent.get("question", "")}
     if size is not None:
         result["size"] = size
 
@@ -2970,7 +3114,13 @@ elif mode == "state":
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
             "zellij": (procs.get(sid) or {}).get("zellij"),
-            "agent": agent_of(sid, path, f.get("turnAt", 0)),
+            # Хвост транскрипта передаётся готовым и здесь: на машине без
+            # хуков он единственный источник состояния, а читать файл второй
+            # раз незачем — памятка фактов его уже прочла.
+            "agent": agent_of(sid, path, f.get("turnAt", 0),
+                              {"state": f.get("agentState", ""),
+                               "question": f.get("agentQuestion", "")},
+                              mtime),
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
             # некому — она не видна ни в одной строке списка.

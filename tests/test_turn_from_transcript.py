@@ -20,6 +20,11 @@ import harness
 
 CC = harness.load()
 
+# Шестое значение tail_facts — состояние агента из хвоста. Подставным хвостам
+# этих тестов оно безразлично: своё правило у него своё, в test_agent_state.py.
+NO_STATE = {"state": "", "question": ""}
+
+
 HUMAN_AT = 1785958000
 TOOL_AT = 1785958900
 
@@ -214,7 +219,7 @@ def test_a_missing_file_costs_five_empties():
     # приходилось различать «не нашлось» и «прочитать не смогли». Пятое —
     # клиент, которым сессию открывали; своё правило у него в
     # test_entrypoint.py.
-    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0, {}, "")
+    assert CC["tail_facts"]("/nonexistent-transcript-for-tests.jsonl") == ("", "", 0.0, {}, "", NO_STATE)
 
 
 # ── Памятка фактов ─────────────────────────────────────────────────────────
@@ -227,7 +232,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
     def tail(path):
         calls["n"] += 1
-        return "T", "D", HUMAN_AT, {}, "cli"
+        return "T", "D", HUMAN_AT, {}, "cli", NO_STATE
 
     got = CC["facts_for"]("/d/a.jsonl", 100.0, {}, tail=tail,
                           head=lambda p: "G", size_of=lambda p: 10)
@@ -240,7 +245,7 @@ def test_the_turn_is_remembered_by_mtime_like_the_title():
 
 def test_a_changed_file_recomputes_the_turn():
     def tail_new(path):
-        return "T", "D", HUMAN_AT + 500, {}, "cli"
+        return "T", "D", HUMAN_AT + 500, {}, "cli", NO_STATE
 
     old = {"/d/a.jsonl": {"mtime": 100.0, "title": "T", "doing": "D",
                           "turnAt": HUMAN_AT, "gist": "G", "gistDone": True}}
