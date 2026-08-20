@@ -17,6 +17,20 @@ BEGIN = "<<'PYEOF'"
 END = "\nPYEOF"
 
 
+def block():
+    """Текст python-программы, вырезанный из скрипта.
+
+    Тем же приёмом, что и `load()`, но без исполнения: пикер на Windows кладёт
+    эту программу отдельным файлом и зовёт `python`, и проверять её надо ровно
+    в этом виде.
+    """
+    text = SRC.read_text(encoding="utf-8")
+    head, marker, rest = text.partition(BEGIN)
+    if not marker or END not in rest:
+        raise AssertionError("python block markers not found in %s" % SRC)
+    return rest.split("\n", 1)[1].split(END, 1)[0]
+
+
 def load():
     text = SRC.read_text(encoding="utf-8")
     head, marker, rest = text.partition(BEGIN)

@@ -161,6 +161,18 @@ first prompt is looked up from the start of the file under a size cap.
 import datetime, glob, json, os, re, subprocess, sys, time
 from collections import Counter
 
+# Ответ — UTF-8, какой бы ни была кодовая страница у того, кто нас позвал.
+# На Windows у python при перенаправленном stdout кодировка берётся от системы
+# (cp1251 на этой машине), и первый же знак вне неё роняет вывод целиком:
+# `UnicodeEncodeError` на стрелке в заголовке сессии, JSON обрывается посередине,
+# а читателю достаётся мусор. Ни к одной из веток разбора это отношения не
+# имеет — это свойство нашего ответа, а не звонящего, поэтому стоит здесь и без
+# оглядки на систему: на Linux и маке кодировка та же самая, и правка ничего не
+# меняет. `hasattr` — ради подставного stdout в тестах.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 # Деньги и контекст сессии. Ни того, ни другого в транскрипте нет: размер окна
@@ -1274,6 +1286,128 @@ def ps_field(pid, name, default):
     return ps_table().get(str(pid), {}).get(name, default)
 
 
+# ---- Windows: реестр сессий вместо разбора процессов ----------------------
+#
+# На Windows перебирать процессы бесполезно: рабочего каталога `Win32_Process`
+# не отдаёт вовсе, а именно на cwd держится `fresh_ids` — единственная дорога
+# для сессии, запущенной как голый `claude`, без id в argv. Зато Claude Code
+# сам ведёт реестр: файл на процесс, и в нём уже есть и id, и каталог.
+WINDOWS = sys.platform == "win32"
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+
+
+def registry_records(path=SESSIONS_DIR):
+    """[{sid, pid, cwd, procStart}] из `~/.claude/sessions/<pid>.json`.
+
+    Разбор белым списком, как у файла окон (`read_windows`): незнакомый ключ
+    теряется, кривая запись пропускается, отсутствующий каталог читается
+    пустотой, а не отказом — на машине без единой местной сессии его и нет.
+
+    Файл мы не пишем и не чистим: мёртвые записи там обычное дело, живость
+    спрашивается отдельно (`windows_sessions`).
+
+    Запись без `procStart` выбрасывается здесь же: живость проверяется
+    сравнением с этим значением, а мёртвый процесс отвечает той же пустотой —
+    то есть запись без него сошлась бы с любым покойником.
+
+    `kind`, отличный от `interactive`, тоже выбрасывается: фоновый форк, взятый
+    за обычную сессию, отобрал бы у родителя его же окно, а признака
+    `bg-pty-host`, по которому форк узнают на Linux, здесь нет.
+
+    `entrypoint` в реестре есть, но не читается намеренно: его источник —
+    транскрипт, и второго у одного факта быть не должно.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(path, name), encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        sid, pid, cwd = rec.get("sessionId"), rec.get("pid"), rec.get("cwd")
+        started = rec.get("procStart")
+        if not isinstance(sid, str) or not UUID_RE.match(sid):
+            continue
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        if not isinstance(cwd, str) or not cwd:
+            continue
+        if not isinstance(started, (str, int)) or not str(started):
+            continue
+        if rec.get("kind", "interactive") != "interactive":
+            continue
+        out.append({"sid": sid, "pid": pid, "cwd": cwd, "procStart": str(started)})
+    return out
+
+
+def process_start(pid):
+    """Время создания процесса как FILETIME строкой; `""` — процесса нет.
+
+    Через `ctypes`, а не через подпроцесс: спрашиваются только те несколько
+    pid, которые назвал реестр, и делать ради них `powershell` на каждый опрос
+    было бы дороже всего остального разбора вместе взятого.
+
+    `GetProcessTimes` отдаёт ровно ту величину, которую реестр хранит строкой
+    в `procStart`: сотни наносекунд от 1601 года, — так что сравниваются они
+    без перевода.
+    """
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ""
+    try:
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        ok = kernel32.GetProcessTimes(handle, ctypes.byref(created),
+                                      ctypes.byref(exited), ctypes.byref(kernel),
+                                      ctypes.byref(user))
+        if not ok:
+            return ""
+        return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def windows_sessions(records=None, started_of=None):
+    """(живые id, {id: запись процесса}) по реестру.
+
+    Запись жива, когда pid существует **и** его время создания совпало с
+    `procStart`. Обе половины обязательны — см. `process_start`.
+
+    Спрашивающий вынесен аргументом по той же причине, по какой у маковской
+    ветки вынесена таблица `ps`: настоящего Windows в тестах не завести, а
+    правило проверить надо.
+
+    `tty`, `tmux` и `zellij` пустые: на Windows их нет вовсе, а форма записи
+    процесса общая на все три системы — читатель у неё один.
+    """
+    records = registry_records() if records is None else records
+    started_of = process_start if started_of is None else started_of
+    live, procs = set(), {}
+    for rec in records:
+        if started_of(rec["pid"]) != rec["procStart"]:
+            continue
+        live.add(rec["sid"])
+        procs[rec["sid"]] = {"pid": rec["pid"], "tty": "", "tmux": None,
+                             "zellij": None, "cwd": rec["cwd"]}
+    return live, procs
+
+
 def lsof_cwd(text):
     """Путь из вывода `lsof -Fn`: строки-поля, наш — последний с префиксом `n`."""
     path = ""
@@ -1885,6 +2019,14 @@ def running_sessions():
       so K processes in one cwd claim the K newest files there. Newest by
       content, not by mtime — see fresh_ids.
     """
+    # На Windows разбора процессов нет вовсе: связку «процесс ↔ сессия ↔
+    # каталог» отдаёт реестр, и гадать по каталогу (`fresh_ids`) не о чем — id
+    # там назван прямо. Хуков на той машине тоже нет (`~/.claude/claude-wt` не
+    # существует), поэтому и второй проход по отметкам ничего бы не добавил:
+    # выходим сразу.
+    if WINDOWS:
+        live, procs = windows_sessions()
+        return live, {}, procs, []
     live, fresh, agents, procs = set(), [], {}, {}
     # Держатели зелийных сессий и счётчик агентов по именам. Считается двумя
     # словарями, а не одним: сервер и живущий в нём claude встречаются в
@@ -2501,6 +2643,41 @@ def stale_dump(path, now, max_age):
 
 # Пустой режим — не ошибка: так блок выполняют тесты, которым нужны только
 # определения. Ни одна ветка ниже на пустую строку не отвечает.
+def state_defaults(limit=""):
+    """Шесть позиционных аргументов режима `state`, посчитанных здесь же.
+
+    Ровно те умолчания, что стоят в шапке скрипта, и с той же разницей форм:
+    у меток — `:-` (пустое значение тоже заменяется), у остальных — `-`
+    (заменяется только неназванное).
+
+    Нужны они затем, что на Windows bash-обёртки нет: пикер зовёт этот блок
+    напрямую. Второй экземпляр тех же умолчаний в Rust разошёлся бы с этим
+    молча — а расхождение это выглядело бы пустым списком сессий.
+    """
+    home = os.path.expanduser("~")
+
+    def unset_only(name, default):
+        value = os.environ.get(name)
+        return default if value is None else value
+
+    return [
+        os.environ.get("FZF_MARKS_FILE") or os.path.join(home, ".fzf-marks"),
+        unset_only("CCFZF_WINDOWS_FILE",
+                   os.path.join(home, ".ccfzf.sessions.claude-wt.json")),
+        unset_only("CCFZF_SESSIONS_FILE", os.path.join(home, ".ccfzf.sessions.json")),
+        limit,
+        unset_only("CCFZF_WINDOWS_DIR", os.path.join(home, ".ccfzf", "windows")),
+        unset_only("CCFZF_COMMENTS_FILE", os.path.join(home, ".ccfzf.comments.json")),
+    ]
+
+
+# `--state` — тот же режим `state`, но без путей в argv. Пустой предел значит
+# «умолчание самого блока» (DUMP_SESSIONS), и оно совпадает со значением,
+# которое подставляет обёртка.
+if len(sys.argv) > 1 and sys.argv[1] == "--state":
+    _limit = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--limit" else ""
+    sys.argv = [sys.argv[0], "state"] + state_defaults(_limit)
+
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 
 if mode == "projects":
