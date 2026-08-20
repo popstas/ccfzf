@@ -13,6 +13,39 @@ UUID_A = "aaaaaaaa-1111-2222-3333-444444444444"
 UUID_B = "bbbbbbbb-1111-2222-3333-444444444444"
 
 
+def test_arg_value_reads_the_equals_form():
+    """Claude Desktop зовёт агента `--resume=<id>` — одним токеном.
+
+    Пробельную форму пишет терминальный клиент, форму с равенством —
+    приложение. Не понимай её агрегатор, id сессии из argv не доставался бы
+    вовсе: строка оставалась бы без pid, а живость ей доставалась бы обходным
+    путём — по каталогу живого процесса, то есть в каталоге с двумя сессиями
+    доставалась бы не той.
+    """
+    args = ["/x/claude", "--resume=" + UUID_A, "--effort", "high"]
+    assert CC["arg_value"](args, "--resume") == UUID_A, args
+
+
+def test_arg_value_still_reads_the_spaced_form():
+    args = ["/x/claude", "--resume", UUID_A]
+    assert CC["arg_value"](args, "--resume") == UUID_A, args
+
+
+def test_arg_value_does_not_take_a_longer_flag_for_its_prefix():
+    """`--session-id` не должен вычитываться из `--session-id-foo=…`.
+
+    Форма с равенством — это поиск по началу строки, и без явного `=` он
+    поймал бы любой флаг, начинающийся тем же словом.
+    """
+    args = ["/x/claude", "--session-id-foo=" + UUID_A]
+    assert CC["arg_value"](args, "--session-id") == "", args
+
+
+def test_arg_value_reads_an_empty_equals_form_as_nothing():
+    args = ["/x/claude", "--resume="]
+    assert CC["arg_value"](args, "--resume") == "", args
+
+
 def test_hook_stamps_reads_mtime_of_state_files():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, UUID_A + ".state.json")

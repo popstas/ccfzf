@@ -115,7 +115,7 @@ def test_a_known_document_survives_a_tail_that_no_longer_mentions_it():
                             "gist": "g", "gistDone": True, "size": 10,
                             "plan": "docs/superpowers/plans/2026-08-18-x.md"}}
     got = CC["facts_for"]("/p/a.jsonl", 2.0, cache,
-                          tail=lambda p: ("t", "d", 0, {}),
+                          tail=lambda p: ("t", "d", 0, {}, "cli"),
                           head=lambda p: "g", size_of=lambda p: 20)
     assert got["plan"] == "docs/superpowers/plans/2026-08-18-x.md", got
 
@@ -125,7 +125,7 @@ def test_a_freshly_named_document_replaces_the_remembered_one():
                             "gist": "g", "gistDone": True, "size": 10,
                             "plan": "docs/superpowers/plans/old.md"}}
     got = CC["facts_for"]("/p/a.jsonl", 2.0, cache,
-                          tail=lambda p: ("t", "d", 0, {"plan": "docs/superpowers/plans/new.md"}),
+                          tail=lambda p: ("t", "d", 0, {"plan": "docs/superpowers/plans/new.md"}, "cli"),
                           head=lambda p: "g", size_of=lambda p: 20)
     assert got["plan"] == "docs/superpowers/plans/new.md", got
 
@@ -139,7 +139,7 @@ def test_a_truncated_file_forgets_its_documents():
                             "gist": "g", "gistDone": True, "size": 100,
                             "plan": "docs/superpowers/plans/old.md"}}
     got = CC["facts_for"]("/p/a.jsonl", 2.0, cache,
-                          tail=lambda p: ("t", "d", 0, {}),
+                          tail=lambda p: ("t", "d", 0, {}, "cli"),
                           head=lambda p: "g", size_of=lambda p: 10)
     assert "plan" not in got, got
 

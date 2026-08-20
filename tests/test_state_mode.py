@@ -21,11 +21,15 @@ A = "aaaaaaaa-1111-2222-3333-444444444444"
 B = "bbbbbbbb-1111-2222-3333-444444444444"
 
 
-def build_home(tmp, sids):
+def build_home(tmp, sids, entrypoint=None):
     """~/.claude/projects/<mangled>/<sid>.jsonl, по строке на сессию.
 
     cwd берётся из первых строк файла (dir_cwd), заголовок — из хвоста
     (tail_facts), поэтому обе записи кладутся сразу.
+
+    `entrypoint` — клиент, которым сессию открывали: поле есть у каждой
+    записи настоящего транскрипта, но у старых версий агента его нет вовсе,
+    поэтому по умолчанию его тут нет тоже.
     """
     cwd = os.path.join(tmp, "proj")
     os.makedirs(cwd, exist_ok=True)
@@ -33,9 +37,12 @@ def build_home(tmp, sids):
     os.makedirs(d, exist_ok=True)
     for i, sid in enumerate(sids):
         path = os.path.join(d, sid + ".jsonl")
+        first = {"cwd": cwd, "type": "user",
+                 "message": {"role": "user", "content": "hello %d" % i}}
+        if entrypoint is not None:
+            first["entrypoint"] = entrypoint
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"cwd": cwd, "type": "user",
-                                 "message": {"role": "user", "content": "hello %d" % i}}) + "\n")
+            fh.write(json.dumps(first) + "\n")
             fh.write(json.dumps({"type": "custom-title", "customTitle": "t%d" % i}) + "\n")
         os.utime(path, (2000 + i, 2000 + i))
     return cwd
@@ -100,6 +107,31 @@ def test_state_lists_the_fixture_sessions():
         build_home(tmp, [A, B])
         out = run_state(tmp, os.path.join(tmp, "dump.json"))
         assert sorted(s["id"] for s in out["sessions"]) == sorted([A, B]), out["sessions"]
+
+
+def test_state_names_the_client_that_opened_the_session():
+    """Строка несёт `entrypoint`, и по нему читатель отличает Claude Desktop.
+
+    Файл, каталог и формат у сессии приложения и сессии терминала одинаковые
+    — другого признака нет вовсе.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A], entrypoint="claude-desktop")
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        row = out["sessions"][0]
+        assert row["entrypoint"] == "claude-desktop", row
+
+
+def test_a_session_without_the_field_gets_no_key():
+    """Ключа нет, а не пустая строка: так же живут spec, plan и comment.
+
+    Отсутствие значит «не сказано», и читатель обязан вести себя как прежде —
+    строка без клиента открывается тем же способом, каким открывалась всегда.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        assert "entrypoint" not in out["sessions"][0], out["sessions"][0]
 
 
 def test_limit_cuts_the_list():
