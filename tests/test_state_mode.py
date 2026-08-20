@@ -384,3 +384,27 @@ def test_the_state_alias_needs_no_paths():
         got = json.loads(r.stdout)
         assert ([s["id"] for s in got["sessions"]]
                 == [s["id"] for s in by_wrapper["sessions"]]), r.stdout
+
+
+def test_the_answer_is_utf8_whatever_the_console_wants():
+    """Ответ — UTF-8, какой бы ни была кодовая страница звонящего.
+
+    На Windows у python при перенаправленном stdout кодировка берётся от
+    системы, и первый же знак вне неё роняет вывод целиком: `UnicodeEncodeError`
+    на стрелке в заголовке, JSON обрывается посередине. Здесь то же самое
+    воспроизводится переменной окружения — настоящей cp1251 на Linux не завести.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        build_reply_session(tmp, A, "план → готово", "ответ")
+        dump = os.path.join(tmp, "dump.json")
+        py = os.path.join(tmp, "ccfzf.py")
+        with open(py, "w", encoding="utf-8") as fh:
+            fh.write(harness.block())
+        env = dict(os.environ)
+        env.update(_facts_env(tmp, dump))
+        env["PYTHONIOENCODING"] = "cp1251"
+        r = subprocess.run([sys.executable, py, "--state"],
+                           capture_output=True, env=env)
+        assert r.returncode == 0, (r.returncode, r.stderr[-400:])
+        got = json.loads(r.stdout.decode("utf-8"))
+        assert "→" in json.dumps(got, ensure_ascii=False), r.stdout[:200]

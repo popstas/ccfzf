@@ -161,6 +161,18 @@ first prompt is looked up from the start of the file under a size cap.
 import datetime, glob, json, os, re, subprocess, sys, time
 from collections import Counter
 
+# Ответ — UTF-8, какой бы ни была кодовая страница у того, кто нас позвал.
+# На Windows у python при перенаправленном stdout кодировка берётся от системы
+# (cp1251 на этой машине), и первый же знак вне неё роняет вывод целиком:
+# `UnicodeEncodeError` на стрелке в заголовке сессии, JSON обрывается посередине,
+# а читателю достаётся мусор. Ни к одной из веток разбора это отношения не
+# имеет — это свойство нашего ответа, а не звонящего, поэтому стоит здесь и без
+# оглядки на систему: на Linux и маке кодировка та же самая, и правка ничего не
+# меняет. `hasattr` — ради подставного stdout в тестах.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 FROZEN = os.path.expanduser("~/.claude/ccsessions-frozen.json")
 # Деньги и контекст сессии. Ни того, ни другого в транскрипте нет: размер окна
