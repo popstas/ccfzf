@@ -17,6 +17,11 @@ import harness
 
 CC = harness.load()
 
+# Шестое значение tail_facts — состояние агента из хвоста. Подставным хвостам
+# этих тестов оно безразлично: своё правило у него своё, в test_agent_state.py.
+NO_STATE = {"state": "", "question": ""}
+
+
 DESKTOP = "claude-desktop"
 
 
@@ -75,7 +80,7 @@ P = "/d/a.jsonl"
 
 
 def _tail(entrypoint):
-    return lambda path: ("T", "D", 0, {}, entrypoint)
+    return lambda path: ("T", "D", 0, {}, entrypoint, NO_STATE)
 
 
 def test_the_note_keeps_the_client():
@@ -96,7 +101,7 @@ def test_a_note_that_never_knew_the_client_is_a_miss():
 
     def tail(path):
         calls.append(path)
-        return ("T", "D", 0, {}, DESKTOP)
+        return ("T", "D", 0, {}, DESKTOP, NO_STATE)
 
     old = {P: {"mtime": 100.0, "title": "T", "doing": "D",
                "gist": "G", "gistDone": True}}
@@ -111,9 +116,10 @@ def test_a_note_that_knows_the_client_stays_a_hit():
 
     def tail(path):
         calls.append(path)
-        return ("T", "D", 0, {}, DESKTOP)
+        return ("T", "D", 0, {}, DESKTOP, NO_STATE)
 
     old = {P: {"mtime": 100.0, "title": "T", "doing": "D", "entrypoint": "cli",
+               "agentState": "", "agentQuestion": "",
                "gist": "G", "gistDone": True}}
     got = CC["facts_for"](P, 100.0, old, tail=tail, head=lambda p: "g",
                           size_of=lambda p: 10)

@@ -9,6 +9,11 @@ import harness
 
 CC = harness.load()
 
+# Шестое значение tail_facts — состояние агента из хвоста. Подставным хвостам
+# этих тестов оно безразлично: своё правило у него своё, в test_agent_state.py.
+NO_STATE = {"state": "", "question": ""}
+
+
 
 def human(text):
     return {"type": "user", "timestamp": "2026-08-18T10:00:00Z",
@@ -89,7 +94,7 @@ def test_the_memo_recounts_a_truncated_file_from_scratch():
                      "gist": "g", "gistDone": True, "size": 10 ** 6,
                      "prompts": 42, "countedTo": 10 ** 6}}
         got = CC["facts_for"](p, 2.0, cache,
-                              tail=lambda q: ("t", "d", 0, {}, "cli"), head=lambda q: "g")
+                              tail=lambda q: ("t", "d", 0, {}, "cli", NO_STATE), head=lambda q: "g")
         assert got["prompts"] == 1, got
         assert got["countedTo"] == os.path.getsize(p), got
 
@@ -102,7 +107,7 @@ def test_the_memo_keeps_the_count_when_the_file_did_not_change():
                      "gist": "g", "gistDone": True, "size": os.path.getsize(p),
                      "prompts": 5, "countedTo": os.path.getsize(p)}}
         got = CC["facts_for"](p, 2.0, cache,
-                              tail=lambda q: ("t", "d", 0, {}, "cli"), head=lambda q: "g")
+                              tail=lambda q: ("t", "d", 0, {}, "cli", NO_STATE), head=lambda q: "g")
         assert got["prompts"] == 5, got
 
 
@@ -113,7 +118,7 @@ def test_dump_counts_too_so_the_memo_stays_whole():
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "a.jsonl")
         write(p, [human("раз"), human("два")])
-        got = CC["facts_for"](p, 2.0, {}, tail=lambda q: ("t", "d", 0, {}, "cli"),
+        got = CC["facts_for"](p, 2.0, {}, tail=lambda q: ("t", "d", 0, {}, "cli", NO_STATE),
                               head=lambda q: "g", want_gist=False)
         assert got["prompts"] == 2, got
 
