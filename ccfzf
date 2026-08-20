@@ -1274,6 +1274,69 @@ def ps_field(pid, name, default):
     return ps_table().get(str(pid), {}).get(name, default)
 
 
+# ---- Windows: реестр сессий вместо разбора процессов ----------------------
+#
+# На Windows перебирать процессы бесполезно: рабочего каталога `Win32_Process`
+# не отдаёт вовсе, а именно на cwd держится `fresh_ids` — единственная дорога
+# для сессии, запущенной как голый `claude`, без id в argv. Зато Claude Code
+# сам ведёт реестр: файл на процесс, и в нём уже есть и id, и каталог.
+WINDOWS = sys.platform == "win32"
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+
+
+def registry_records(path=SESSIONS_DIR):
+    """[{sid, pid, cwd, procStart}] из `~/.claude/sessions/<pid>.json`.
+
+    Разбор белым списком, как у файла окон (`read_windows`): незнакомый ключ
+    теряется, кривая запись пропускается, отсутствующий каталог читается
+    пустотой, а не отказом — на машине без единой местной сессии его и нет.
+
+    Файл мы не пишем и не чистим: мёртвые записи там обычное дело, живость
+    спрашивается отдельно (`windows_sessions`).
+
+    Запись без `procStart` выбрасывается здесь же: живость проверяется
+    сравнением с этим значением, а мёртвый процесс отвечает той же пустотой —
+    то есть запись без него сошлась бы с любым покойником.
+
+    `kind`, отличный от `interactive`, тоже выбрасывается: фоновый форк, взятый
+    за обычную сессию, отобрал бы у родителя его же окно, а признака
+    `bg-pty-host`, по которому форк узнают на Linux, здесь нет.
+
+    `entrypoint` в реестре есть, но не читается намеренно: его источник —
+    транскрипт, и второго у одного факта быть не должно.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(path, name), encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        sid, pid, cwd = rec.get("sessionId"), rec.get("pid"), rec.get("cwd")
+        started = rec.get("procStart")
+        if not isinstance(sid, str) or not UUID_RE.match(sid):
+            continue
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        if not isinstance(cwd, str) or not cwd:
+            continue
+        if not isinstance(started, (str, int)) or not str(started):
+            continue
+        if rec.get("kind", "interactive") != "interactive":
+            continue
+        out.append({"sid": sid, "pid": pid, "cwd": cwd, "procStart": str(started)})
+    return out
+
+
 def lsof_cwd(text):
     """Путь из вывода `lsof -Fn`: строки-поля, наш — последний с префиксом `n`."""
     path = ""
