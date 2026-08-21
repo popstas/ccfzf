@@ -29,7 +29,7 @@ Then the sessions of the one you picked, newest first:
 
 The obvious way to build this is to shell out to a session lister and format its output. That turned out to cost 2–3 seconds per launch, because listing sessions that way reads every `~/.claude/projects/**/*.jsonl` in full — 757 MB of history in my case.
 
-`ccfzf` reads only what it needs: `cwd` is on the first line of a session file, the title and the latest activity are in the last 256 KB, and the first prompt is found near the start under a size cap. Running sessions are detected through `/proc` on Linux and a single `ps` call on macOS, rather than through `lsof`.
+`ccfzf` reads only what it needs: `cwd` is on the first line of a session file, the title and the latest activity are in the last 256 KB, and the first prompt is found near the start under a size cap. Running sessions are detected through `/proc` on Linux and a single `ps` call on macOS, rather than through `lsof`; which session a process is writing comes from the agent's own registry at `~/.claude/sessions/<pid>.json`. That registry is also how a session that has just started shows up at all: the transcript file is created by the first turn, not by the session, so before the first prompt there is no file to list.
 
 | | |
 |---|---|
