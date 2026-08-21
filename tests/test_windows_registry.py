@@ -40,7 +40,7 @@ def test_a_record_is_read_whole():
     d = _dir([("10980.json", _record(10980, UUID_A))])
     assert CC["registry_records"](d) == [
         {"sid": UUID_A, "pid": 10980, "cwd": "<drive>:\\projects\\some-project",
-         "procStart": "134317286687059374"},
+         "procStart": "134317286687059374", "name": ""},
     ]
 
 

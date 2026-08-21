@@ -345,20 +345,6 @@ def test_the_python_block_is_not_passed_as_an_argument():
     assert 'py() { printf ' in src, "исчезла обёртка py(), кормящая блок через stdin"
 
 
-if __name__ == "__main__":
-    fails = 0
-    names = [n for n in globals() if n.startswith("test_")]
-    for name in sorted(names):
-        try:
-            globals()[name]()
-            print("ok   " + name)
-        except AssertionError as e:
-            fails += 1
-            print("FAIL " + name + ": " + str(e))
-    print("%d/%d passed" % (len(names) - fails, len(names)))
-    sys.exit(1 if fails else 0)
-
-
 def test_the_state_alias_needs_no_paths():
     """Пикер на Windows зовёт python-блок напрямую: bash-обёртку там нечем
     исполнить. Значит режим обязан посчитать те же шесть путей сам, и ответ
@@ -408,3 +394,129 @@ def test_the_answer_is_utf8_whatever_the_console_wants():
         assert r.returncode == 0, (r.returncode, r.stderr[-400:])
         got = json.loads(r.stdout.decode("utf-8"))
         assert "→" in json.dumps(got, ensure_ascii=False), r.stdout[:200]
+
+
+# ── Живая сессия, у которой транскрипта ещё нет ────────────────────────────
+
+C = "cccccccc-1111-2222-3333-444444444444"
+
+
+class fresh_session:
+    """Живой `claude` без id в argv плюс запись о нём в реестре.
+
+    Ровно то, что оставляет после себя `claude -n <имя>` до первого промпта:
+    процесс работает, реестр про него всё знает, а `<id>.jsonl` ещё не заведён.
+    Подделать это можно только настоящим процессом — обход идёт по /proc.
+    Имя ему даёт симлинк, а не `exec -a`: последнего нет у dash, а `/bin/sh`
+    на многих системах именно он. `is_claude` смотрит на basename argv[0].
+    """
+
+    def __init__(self, tmp, sid=C, name="fresh", cwd=None):
+        self.tmp, self.sid, self.name = tmp, sid, name
+        self.cwd = cwd or os.path.join(tmp, "proj")
+
+    def __enter__(self):
+        os.makedirs(self.cwd, exist_ok=True)
+        link = os.path.join(self.tmp, "claude")
+        if not os.path.lexists(link):
+            os.symlink("/bin/sleep", link)
+        self.proc = subprocess.Popen(
+            [link, "60"], cwd=self.cwd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        d = os.path.join(self.tmp, ".claude", "sessions")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "%d.json" % self.proc.pid), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"pid": self.proc.pid, "sessionId": self.sid,
+                       "cwd": self.cwd, "procStart": "1", "kind": "interactive",
+                       "name": self.name}, fh)
+        return self
+
+    def __exit__(self, *a):
+        self.proc.kill()
+        self.proc.wait()
+
+
+def test_a_live_session_without_a_transcript_is_listed():
+    """Файл заводит первая запись в ход, а не старт сессии, — и до неё такой
+    сессии не было в списке ничем: ни строкой, ни живостью."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        with fresh_session(tmp):
+            out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        row = next((s for s in out["sessions"] if s["id"] == C), None)
+        assert row, [s["id"] for s in out["sessions"]]
+        assert row["live"] is True, row
+
+
+def test_the_fresh_row_is_named_by_the_registry():
+    """Заголовка у неё взять больше неоткуда, а `name` в реестре — то же
+    самое, что придёт из транскрипта первой же записью `custom-title`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        with fresh_session(tmp, name="tray-build-time"):
+            out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        row = next(s for s in out["sessions"] if s["id"] == C)
+        assert row["title"] == "tray-build-time", row
+
+
+def test_the_fresh_row_carries_the_pid_of_its_process():
+    """pid достаётся строке только через `procs`, а туда сессия без id в argv
+    попадает только по реестру: прежняя догадка по каталогу (`fresh_ids`)
+    пополняла одну лишь живость и оставляла `pid: 0`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        with fresh_session(tmp) as fs:
+            out = run_state(tmp, os.path.join(tmp, "dump.json"))
+            row = next(s for s in out["sessions"] if s["id"] == C)
+            assert row["pid"] == fs.proc.pid, row
+
+
+def test_the_fresh_row_counts_no_prompts():
+    """Ноль здесь честен: человек в этой сессии ещё ничего не написал."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        with fresh_session(tmp):
+            out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        row = next(s for s in out["sessions"] if s["id"] == C)
+        assert row["prompts"] == 0, row
+
+
+def test_the_fresh_row_reaches_the_dump():
+    """Дамп читает трекер окон и привязывает окна по заголовку. Новая сессия —
+    ровно тот случай, когда окно уже открыто, а сессии в дампе ещё нет."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        dump = os.path.join(tmp, "dump.json")
+        with fresh_session(tmp):
+            run_state(tmp, dump)
+        with open(dump, encoding="utf-8") as fh:
+            got = json.load(fh)
+        assert C in [s["id"] for s in got["sessions"]], got["sessions"]
+
+
+def test_the_fresh_row_survives_a_standalone_dump():
+    """Дамп пишут оба режима, и без этой строки ручной `ccfzf --dump` стирал
+    бы свежую сессию из файла, который только что положил `--state`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        dump = os.path.join(tmp, "dump.json")
+        with fresh_session(tmp):
+            run_dump(tmp, dump)
+        with open(dump, encoding="utf-8") as fh:
+            got = json.load(fh)
+        assert C in [s["id"] for s in got["sessions"]], got["sessions"]
+
+
+if __name__ == "__main__":
+    fails = 0
+    names = [n for n in globals() if n.startswith("test_")]
+    for name in sorted(names):
+        try:
+            globals()[name]()
+            print("ok   " + name)
+        except AssertionError as e:
+            fails += 1
+            print("FAIL " + name + ": " + str(e))
+    print("%d/%d passed" % (len(names) - fails, len(names)))
+    sys.exit(1 if fails else 0)
