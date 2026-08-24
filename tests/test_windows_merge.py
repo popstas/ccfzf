@@ -19,7 +19,7 @@ def _write(path, obj):
 
 
 def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None,
-          open_session=None, mqtt_base=None):
+          open_session=None, mqtt_base=None, http=None):
     out = {"generated": NOW - 1, "host": host, "pid": pid, "windows": windows}
     if focus is not None:
         out["focus"] = focus
@@ -31,6 +31,8 @@ def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None,
         out["openSession"] = open_session
     if mqtt_base is not None:
         out["mqttBase"] = mqtt_base
+    if http is not None:
+        out["http"] = http
     return out
 
 
@@ -136,10 +138,39 @@ def test_hosts_list_names_every_live_tracker():
     )
     assert hosts == [
         {"host": "windows-box", "pid": 42, "canFocus": True,
-         "openSession": True, "mqttBase": ""},
+         "openSession": True, "mqttBase": "", "http": None},
         {"host": "mac-host", "pid": 7, "canFocus": False,
-         "openSession": True, "mqttBase": ""},
+         "openSession": True, "mqttBase": "", "http": None},
     ], hosts
+
+
+def test_http_endpoint_reaches_the_host_record():
+    # Ради этого поля вся правка: по нему читатель решает, идти ли напрямую.
+    # Живёт оно в записи машины, а не окна: адрес — свойство машины, и у строки
+    # проекта окна нет вовсе, а спросить «куда просить» надо и про неё.
+    _, _, _, _, _, hosts = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")}, http={"port": 9722}),
+    )
+    assert hosts[0]["http"] == {"port": 9722}, hosts
+
+
+def test_missing_http_reads_as_no_endpoint():
+    # Трекер прежней версии его не пишет вовсе, и это обязано читаться как
+    # «адреса не знаю» — читатель тогда откатывается на MQTT, как раньше.
+    _, _, _, _, _, hosts = _merge(
+        legacy=_file("windows-box", {UUID_A: _win("ccfzf")}),
+    )
+    assert hosts[0]["http"] is None, hosts
+
+
+def test_junk_http_reads_as_no_endpoint():
+    # Недоверие к файлу такое же, как к остальным полям: третьей ветки
+    # поведения мусор не заводит.
+    for junk in ["9722", {"port": "9722"}, {"port": 0}, {}, 17, None]:
+        _, _, _, _, _, hosts = _merge(
+            legacy=_file("windows-box", {UUID_A: _win("ccfzf")}, http=junk),
+        )
+        assert hosts[0]["http"] is None, (junk, hosts)
 
 
 def test_top_level_fields_follow_the_tracker_that_has_hotkeys():
@@ -205,9 +236,9 @@ def test_tracker_list_carries_address_and_open_ability():
     )
     assert hosts == [
         {"host": "windows-box", "pid": 42, "canFocus": True,
-         "openSession": True, "mqttBase": ""},
+         "openSession": True, "mqttBase": "", "http": None},
         {"host": "mac-host", "pid": 7, "canFocus": True,
-         "openSession": False, "mqttBase": "home/room/mac/windows"},
+         "openSession": False, "mqttBase": "home/room/mac/windows", "http": None},
     ], hosts
 
 
