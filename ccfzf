@@ -33,6 +33,9 @@
 #                                    its window was last looked at, and both
 #                                    --state and --dump count such a session live
 #                                    (default ~/.ccfzf.sessions.claude-wt.json)
+#   CCFZF_STATE_DUMP_MAX_AGE         seconds; --state rewrites the sessions
+#                                    dump when it is older than this
+#                                    (default 30; 0 — rewrite every time)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
 # the tail carries the title and the latest activity. ccsessions is unfit here —
@@ -2915,6 +2918,20 @@ def write_json(path, obj, indent=1):
             pass
 
 
+def env_int(name, default):
+    """Целое из окружения, с откатом на умолчание.
+
+    Порченое значение — не отказ: переменную ставит машина (пикер зовёт
+    `--state` со своим `CCFZF_STATE_DUMP_MAX_AGE=0` во всплеске после открытия
+    сессии), и опечатка в ней не должна ронять весь ответ, ради которого
+    запуск и затевался.
+    """
+    try:
+        return int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
 def stale_dump(path, now, max_age):
     """Пора ли переписать дамп: нет файла, не читается stat, или он старше.
 
@@ -2926,9 +2943,17 @@ def stale_dump(path, now, max_age):
 
     Не удалось узнать возраст — переписываем: лишняя запись стоит меньше, чем
     молча протухший дамп.
+
+    Ноль (и любое отрицательное) значит «переписывать всегда», и проверяется
+    он отдельной строкой, а не общим сравнением: mtime дробный, и у файла,
+    написанного в ту же секунду, `now - mtime > 0` — подбрасывание монетки.
+    Просит этот ноль всплеск опроса в пикере, и от него зависит, увидит ли
+    трекер только что заведённую сессию.
     """
     if not path:
         return False
+    if max_age <= 0:
+        return True
     try:
         return now - os.path.getmtime(os.path.expanduser(path)) > max_age
     except OSError:
@@ -3324,7 +3349,7 @@ elif mode == "state":
     # Лишние поля (pid, tty, tmux, agent, window) читателю дампа не нужны:
     # процессы он видит свои, а окна сам сюда и кладёт. Список полей и
     # обоснование — у DUMP_KEEP.
-    if stale_dump(sessions_path, now, STATE_DUMP_MAX_AGE):
+    if stale_dump(sessions_path, now, env_int("CCFZF_STATE_DUMP_MAX_AGE", STATE_DUMP_MAX_AGE)):
         write_json(sessions_path, {
             "generated": now, "total": len(files) + len(extra), "shown": len(sessions),
             "sessions": [dump_record(s) for s in sessions],
