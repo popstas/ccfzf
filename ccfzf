@@ -673,7 +673,7 @@ def read_windows(path, now):
     себя, порченое поле — только поля. То же правило действует и с хоткеями
     проектов.
     """
-    empty = ({}, "", 0, [], [], True, True, "")
+    empty = ({}, "", 0, [], [], True, True, "", None)
     if not path:
         return empty
     try:
@@ -800,7 +800,19 @@ def read_windows(path, now):
     if not isinstance(mqtt_base, str):
         mqtt_base = ""
 
-    return out, host, pid, snaps, projects, focus, open_session, mqtt_base
+    # Адрес, по которому менеджер этой машины принимает просьбы напрямую, без
+    # брокера. Отсутствие поля — «адреса не знаю»: трекер прежней версии его не
+    # пишет, и читатель тогда идёт прежней дорогой, через MQTT. Мусор читается
+    # так же, как отсутствие, — то же правило, что у `focus` и `openSession`:
+    # недоверие к файлу не заводит третьей ветки поведения.
+    http = o.get("http")
+    if isinstance(http, dict):
+        port = http.get("port")
+        http = {"port": port} if isinstance(port, int) and not isinstance(port, bool) and port > 0 else None
+    else:
+        http = None
+
+    return out, host, pid, snaps, projects, focus, open_session, mqtt_base, http
 
 
 def window_sources(file_path, dir_path):
@@ -874,17 +886,22 @@ def read_window_sources(file_path, dir_path, now):
     там же, где снимали, а список у читателя один на все источники: без
     владельца он не отличил бы свой снимок от чужого, и промах был бы молчащим —
     у публикации нет ответа.
+
+    Адрес прямой просьбы (`http`) живёт только в записи машины, как и
+    `openSession`: по нему выбирается транспорт, а транспорт — свойство машины.
+    `None` значит «адреса не знаю», и читатель тогда идёт через MQTT.
     """
     windows = {}
     hosts = []
     snaps = []
     lead = None
     for path in window_sources(file_path, dir_path):
-        w, host, pid, sn, pr, focus, open_session, mqtt_base = read_windows(path, now)
+        w, host, pid, sn, pr, focus, open_session, mqtt_base, http = read_windows(path, now)
         if not host:
             continue
         hosts.append({"host": host, "pid": pid, "canFocus": focus,
-                      "openSession": open_session, "mqttBase": mqtt_base})
+                      "openSession": open_session, "mqttBase": mqtt_base,
+                      "http": http})
         # Машина-владелец приписывается снимку здесь и только здесь: сам трекер
         # её не пишет — он не знает, что снимков бывает несколько источников.
         snaps += [dict(s, host=host, mqttBase=mqtt_base) for s in sn]
