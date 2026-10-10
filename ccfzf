@@ -273,6 +273,98 @@ def doc_exists(root, rel):
     if not root:
         return True
     return os.path.isfile(os.path.join(root, rel))
+
+
+# Инструменты, запись которых делает чужую бумагу своей для сессии.
+DOC_WRITERS = ("Write", "Edit", "MultiEdit")
+# Абсолютный путь уезжает в argv открытия целиком, поэтому узкий алфавит
+# обязан покрыть его весь, а не одно имя файла, как у DOC_RE.
+ABS_DOC_RE = re.compile(r"/[0-9A-Za-z._/-]+")
+
+
+def written_doc(o, rel):
+    """Абсолютный путь бумаги из чужого каталога, если сессия её писала.
+
+    Бумага, которой нет под `cwd`, doc_exists отбрасывает намеренно: о чужой
+    спеке разговор заходит и тогда, когда сессия к ней непричастна. Но бывает
+    и иначе — живой случай 2026-10-10: сессия в claude-otel написала спеку в
+    соседний репозиторий grafana, `Write` с абсолютным путём, и пункта
+    `Open spec` у неё не было. Своей чужую бумагу делает запись в неё — вызов
+    `Write`/`Edit` с этим путём, — а не упоминание.
+
+    Путь отдаётся абсолютным, а не относительным: относительный читатель
+    приклеил бы к `cwd` сессии, то есть ровно туда, где файла нет.
+    """
+    for b in content_of(o) or []:
+        if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                and b.get("name") in DOC_WRITERS):
+            continue
+        inp = b.get("input")
+        path = inp.get("file_path") if isinstance(inp, dict) else None
+        if (isinstance(path, str) and path.endswith("/" + rel)
+                and ABS_DOC_RE.fullmatch(path) and os.path.isfile(path)):
+            return path
+    return ""
+
+
+def session_docs(facts, cwd, docs_at):
+    """Спека и план строки сессии: свои находки, а нет их — свежие проекта.
+
+    Своя находка главнее: она отвечает «над чем работает эта сессия», а бумага
+    проекта — лишь «что в этом каталоге пишется сейчас». Подставляется каждая
+    бумага порознь: сессия с одним планом получает спеку проекта, если та
+    свежа. Каталог листается только тогда, когда своей бумаги не хватает.
+    """
+    out = {k: facts[k] for k in ("spec", "plan") if facts.get(k)}
+    if len(out) < 2:
+        for k, rel in docs_at(cwd).items():
+            out.setdefault(k, rel)
+    return out
+
+
+# Сколько живёт бумага проекта, чтобы её получила сессия, не назвавшая своей.
+# Половина суток — «пишется сейчас»: спека, написанная утром, днём ещё в работе,
+# а архив спек старого проекта под срок не попадает и к каждой его сессии не
+# липнет.
+PROJECT_DOC_FRESH = 12 * 3600
+# Каталоги бумаг проекта — те же, что ловит DOC_RE, и в том же порядке:
+# `docs/plans/` ralphex-а сюда не входит по той же причине, что и туда.
+PROJECT_DOC_DIRS = (("spec", "docs/superpowers/specs"), ("spec", "docs/specs"),
+                    ("plan", "docs/superpowers/plans"))
+DOC_NAME_RE = re.compile(r"[0-9A-Za-z._-]+\.md")
+
+
+def project_docs(cwd, now=None):
+    """Свежайшие спека и план каталога, моложе PROJECT_DOC_FRESH.
+
+    Нужны сессии, которая бумаг не называла: живой случай 2026-10-10 — новая
+    сессия в grafana, спеку туда час назад написала соседняя сессия, а у новой
+    пункта меню нет, потому что её транскрипт о спеке молчит (его ещё нет
+    вовсе). Своя находка сессии этим не перебивается — см. место вызова.
+
+    Пути относительные, как у находок tail_facts: читатель клеит их к `cwd`.
+    """
+    if not cwd:
+        return {}
+    now = time.time() if now is None else now
+    best = {}
+    for kind, rel_dir in PROJECT_DOC_DIRS:
+        try:
+            names = os.listdir(os.path.join(cwd, rel_dir))
+        except OSError:
+            continue
+        for name in names:
+            if not DOC_NAME_RE.fullmatch(name):
+                continue
+            try:
+                st = os.stat(os.path.join(cwd, rel_dir, name))
+            except OSError:
+                continue
+            if now - st.st_mtime > PROJECT_DOC_FRESH:
+                continue
+            if kind not in best or st.st_mtime > best[kind][0]:
+                best[kind] = (st.st_mtime, rel_dir + "/" + name)
+    return {kind: rel for kind, (_, rel) in best.items()}
 DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
@@ -330,7 +422,11 @@ HOOK_LIVE_TTL = 120
 # больше не сдвинется — без этого спеку нашли бы только те, кому ещё напишут.
 # 8: бумагой считается только существующий файл. Причина та же: выдуманные
 # пути уже лежат в памятках, и без версии остались бы там навсегда.
-FACTS_VERSION = 8
+# 9: бумагой считается и записанная в чужой каталог (written_doc) — с
+# абсолютным путём. Причина та же, что у 5 и 7: у простаивающей сессии
+# mtime не сдвинется, и без версии такую спеку нашли бы только те, кому ещё
+# напишут.
+FACTS_VERSION = 9
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -1082,18 +1178,26 @@ def tail_facts(path, doc_root=None):
         # держат: у большинства сессий их нет вовсе (27 из 100 на живой
         # машине), и ждать их значило бы дочитывать хвост до конца всегда.
         for raw in reversed(lines):
+            missed = []
             for m in DOC_RE.finditer(raw):
                 # Групп две, потому что дороги у спеки две: длинная с
                 # `superpowers/` и короткая без него. Совпала всегда ровно одна.
                 kind = DOC_KINDS[m.group(1) or m.group(2)]
                 rel = m.group(0).decode("utf-8", "replace")
-                if kind in docs or not doc_exists(doc_root, rel):
+                if kind in docs:
                     continue
-                docs[kind] = rel
+                if doc_exists(doc_root, rel):
+                    docs[kind] = rel
+                else:
+                    missed.append((kind, rel))
             try:
                 o = json.loads(raw)
             except Exception:
                 continue
+            for kind, rel in missed:
+                path = written_doc(o, rel)
+                if path and kind not in docs:
+                    docs[kind] = path
             # Клиент — из первой же записи обратного прохода, где поле есть:
             # спрошено «где сессия сейчас», а не «где её завели». Условие
             # выхода из цикла он не расширяет намеренно: поле стоит в тех же
@@ -3194,6 +3298,9 @@ elif mode == "state":
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
+    # Бумаги проекта — та же память по каталогу: у полусотни сессий одного
+    # каталога листинг его docs/ нужен один.
+    docs_at = todo_memo(project_docs)
     now = time.time()
 
     dirs = scan_dirs()
@@ -3276,13 +3383,14 @@ elif mode == "state":
             # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
             # этой машине, а открывает его читатель у себя, переведя путь через
             # свой pathMap. Абсолютный путь той стороне пришлось бы разбирать
-            # обратно.
+            # обратно. Исключение одно — бумага, которую сессия писала в чужой
+            # каталог (written_doc): к `cwd` её не приклеить, и читатель
+            # отличает её по ведущему `/`.
             #
             # Ключей нет, когда бумаг нет, — а нет их у трёх сессий из четырёх.
             # Пустая строка в ответе на каждую строку списка стоила бы места
             # ради того же, что значит отсутствие ключа.
-            **({"spec": f["spec"]} if f.get("spec") else {}),
-            **({"plan": f["plan"]} if f.get("plan") else {}),
+            **session_docs(f, cwd, docs_at),
             # Размер сессии — число реплик человека. Отвечает на то, на что не
             # отвечает `contextPct`: тот говорит, сколько осталось до сжатия, и
             # после /compact падает. Ключ ставится всегда, даже нулём: ноль

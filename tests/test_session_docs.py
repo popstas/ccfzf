@@ -150,6 +150,125 @@ def test_a_truncated_file_forgets_its_documents():
     assert "plan" not in got, got
 
 
+def write_tool(path):
+    return {"type": "assistant", "timestamp": "2026-10-10T10:00:00Z",
+            "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Write",
+                                     "input": {"file_path": path, "content": "x"}}]}}
+
+
+def test_a_spec_written_into_another_repo_is_kept_by_absolute_path():
+    # Живой случай 2026-10-10: сессия в каталоге claude-otel написала спеку в
+    # соседний репозиторий grafana, `Write` с абсолютным путём. Регулярка
+    # ловила хвост пути, клеила его к **своему** cwd, файла там не находила — и
+    # пункта `Open spec` у сессии, только что спеку написавшей, не было.
+    with tempfile.TemporaryDirectory() as d:
+        here = os.path.join(d, "otel")
+        far = os.path.join(d, "grafana", "docs", "superpowers", "specs")
+        os.makedirs(here)
+        os.makedirs(far)
+        spec = os.path.join(far, "2026-10-10-grafana-home-design.md")
+        open(spec, "w").close()
+        p = write(d, "a.jsonl", [write_tool(spec)])
+        assert CC["tail_facts"](p, here)[3] == {"spec": spec}
+
+
+def test_another_repo_spec_only_mentioned_in_text_does_not_count():
+    # Чужая спека, о которой лишь зашла речь, сессии не принадлежит: правило
+    # doc_exists про «файл чужого репозитория» остаётся в силе. Своей чужую
+    # делает только запись в неё.
+    with tempfile.TemporaryDirectory() as d:
+        here = os.path.join(d, "otel")
+        far = os.path.join(d, "grafana", "docs", "superpowers", "specs")
+        os.makedirs(here)
+        os.makedirs(far)
+        spec = os.path.join(far, "2026-10-10-grafana-home-design.md")
+        open(spec, "w").close()
+        p = write(d, "a.jsonl", [msg("см. " + spec)])
+        assert CC["tail_facts"](p, here)[3] == {}
+
+
+def test_a_written_spec_with_an_unsafe_path_is_skipped():
+    # Абсолютный путь уезжает в argv открытия целиком, а не только имя файла, —
+    # и узкий алфавит обязан покрыть его весь, а не один хвост.
+    with tempfile.TemporaryDirectory() as d:
+        here = os.path.join(d, "otel")
+        far = os.path.join(d, "my repo", "docs", "superpowers", "specs")
+        os.makedirs(here)
+        os.makedirs(far)
+        spec = os.path.join(far, "2026-10-10-x-design.md")
+        open(spec, "w").close()
+        p = write(d, "a.jsonl", [write_tool(spec)])
+        assert CC["tail_facts"](p, here)[3] == {}
+
+
+def touch(path, age):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").close()
+    t = 1_000_000.0 - age
+    os.utime(path, (t, t))
+
+
+def test_project_docs_offer_the_newest_fresh_spec_and_plan():
+    # Сессия, не назвавшая бумаг сама, получает свежайшие из своего каталога:
+    # живой случай 2026-10-10 — новая сессия в grafana, спека написана час
+    # назад из соседней сессии, а пункта меню нет.
+    with tempfile.TemporaryDirectory() as d:
+        touch(os.path.join(d, "docs/superpowers/specs/old-design.md"), 3600 * 5)
+        touch(os.path.join(d, "docs/specs/new-design.md"), 3600)
+        touch(os.path.join(d, "docs/superpowers/plans/p.md"), 60)
+        assert CC["project_docs"](d, now=1_000_000.0) == {
+            "spec": "docs/specs/new-design.md",
+            "plan": "docs/superpowers/plans/p.md",
+        }
+
+
+def test_project_docs_ignore_stale_files():
+    # Архив спек есть у каждого старого проекта, и без срока каждая его сессия
+    # показывала бы давно закрытую спеку как свою.
+    with tempfile.TemporaryDirectory() as d:
+        touch(os.path.join(d, "docs/superpowers/specs/old-design.md"), 13 * 3600)
+        assert CC["project_docs"](d, now=1_000_000.0) == {}
+
+
+def test_project_docs_skip_ralphex_plans_and_unsafe_names():
+    # `docs/plans/` — ralphex, та же граница, что у DOC_RE. Имя с пробелом
+    # уехало бы в argv открытия — тот же узкий алфавит.
+    with tempfile.TemporaryDirectory() as d:
+        touch(os.path.join(d, "docs/plans/r.md"), 60)
+        touch(os.path.join(d, "docs/specs/with space.md"), 60)
+        touch(os.path.join(d, "docs/specs/notes.txt"), 60)
+        assert CC["project_docs"](d, now=1_000_000.0) == {}
+
+
+def test_project_docs_without_a_directory_are_empty():
+    assert CC["project_docs"]("/nonexistent/ccfzf-test", now=1_000_000.0) == {}
+    assert CC["project_docs"]("", now=1_000_000.0) == {}
+
+
+def test_session_own_documents_win_over_the_project_ones():
+    # Своя находка отвечает «над чем работает эта сессия», бумага проекта —
+    # лишь «что пишется в каталоге». Каталог при полном наборе своих не
+    # листается вовсе.
+    calls = []
+
+    def docs_at(cwd):
+        calls.append(cwd)
+        return {"spec": "docs/specs/project.md", "plan": "docs/superpowers/plans/project.md"}
+
+    own = {"spec": "docs/specs/own.md", "plan": "docs/superpowers/plans/own.md"}
+    assert CC["session_docs"](own, "/p", docs_at) == own
+    assert calls == []
+
+
+def test_session_without_documents_gets_the_project_ones():
+    docs_at = lambda cwd: {"spec": "docs/specs/project.md"}
+    assert CC["session_docs"]({}, "/p", docs_at) == {"spec": "docs/specs/project.md"}
+    # Каждая бумага порознь: свой план не прячет свежую спеку проекта.
+    got = CC["session_docs"]({"plan": "docs/superpowers/plans/own.md"}, "/p", docs_at)
+    assert got == {"spec": "docs/specs/project.md",
+                   "plan": "docs/superpowers/plans/own.md"}, got
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
