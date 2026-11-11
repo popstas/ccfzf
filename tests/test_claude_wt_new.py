@@ -19,7 +19,8 @@ HEAD_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 FAKE = """#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_OUT"], "w", encoding="utf-8") as fh:
-    json.dump({"argv": sys.argv[1:], "cwd": os.getcwd()}, fh)
+    json.dump({"argv": sys.argv[1:], "cwd": os.getcwd(),
+               "env": sorted(k for k in os.environ if "CLAUDE" in k)}, fh)
 """
 
 
@@ -40,8 +41,12 @@ class Env:
         # Пустой rc: `bash -i` иначе прочёл бы ~/.bashrc машины.
         (root / "rc").write_text("", encoding="utf-8")
 
-    def run(self, *args):
-        env = dict(os.environ,
+    def run(self, *args, extra_env=None):
+        # Без переменных той сессии, что гоняет тест: иначе ответ зависел бы
+        # от того, кто его запустил.
+        env = {k: v for k, v in os.environ.items() if "CLAUDE" not in k}
+        env.update(extra_env or {})
+        env.update(
                    CCFZF_CLAUDE_COMMAND=str(self.fake),
                    CCFZF_CHILDREN_DIR=str(self.children),
                    FAKE_OUT=str(self.out),
@@ -107,6 +112,21 @@ def test_no_prompt():
         r = e.run(e.proj, "t", SID, arg, "-", "-", "-")
         assert r.returncode == 0, r.stderr
         assert e.called()["argv"] == ["-n", "t", "--session-id", SID], make
+
+
+def test_the_parent_session_does_not_leak_in():
+    """Запуск из шелла другой сессии Claude Code передал бы ей своё окружение,
+    и новая сессия не зарегистрировалась бы вовсе: нет её ни в
+    ~/.claude/sessions, ни в ListAgents."""
+    e = Env()
+    leaked = {"CLAUDE_CODE_SESSION_ID": SID, "CLAUDE_CODE_CHILD_SESSION": "1",
+              "CLAUDE_CODE_MESSAGING_SOCKET": "/run/x.sock", "CLAUDECODE": "1",
+              "CLAUDE_PID": "123", "CLAUDE_EFFORT": "high",
+              "CLAUDE_PLUGIN_DATA": "/x", "CLAUDE_PROJECT_DIR": "/y",
+              "MY_CLAUDE_NOTE": "keep"}
+    r = e.run(e.proj, "t", SID, e.prompt, "-", "-", "-", extra_env=leaked)
+    assert r.returncode == 0, r.stderr
+    assert e.called()["env"] == ["CCFZF_CLAUDE_COMMAND", "MY_CLAUDE_NOTE"], e.called()
 
 
 def test_bad_arguments_start_nothing():

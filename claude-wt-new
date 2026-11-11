@@ -15,7 +15,8 @@
 # `head`/`headId` are left out when not given; createdAt is unix seconds.
 # `ccfzf --state` reads it back and puts `head`/`headId` on that session's row.
 #
-# claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
+# Variables of a parent Claude Code session (CLAUDE_CODE_* and a few more) are
+# unset first. claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
@@ -74,6 +75,15 @@ args=(-n "$name" --session-id "$sid")
 [[ $mode == - ]] || args+=(--permission-mode "$mode")
 # `--` keeps a prompt that starts with a dash from being read as an option.
 [[ -n $prompt ]] && args+=(-- "$prompt")
+
+# Started from a shell inside another Claude Code session, claude would inherit
+# that session's markers (CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION,
+# the messaging socket…) and come up as its child: missing from
+# ~/.claude/sessions and so from ListAgents. Whatever the rc file sets is set
+# again by the interactive shell below.
+while IFS= read -r var; do
+  unset "$var"
+done < <(compgen -e | grep -E '^(CLAUDE_CODE_.*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_PLUGIN_DATA|CLAUDE_PLUGIN_ROOT|CLAUDE_PROJECT_DIR|CLAUDE_ENV_FILE)$' || true)
 
 # A shell string, like ccfzf's own launches: CCFZF_CLAUDE_COMMAND may carry
 # arguments, and an alias or function from the rc file has to keep working.

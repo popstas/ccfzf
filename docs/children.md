@@ -57,7 +57,20 @@ in the answer are opened. `CCFZF_CHILDREN_DIR=""` turns the reading off.
 
 ## The name that sticks
 
-`-n` sets the name that `ListAgents` and `SendMessage` use (the `name` in
-Claude Code's own `~/.claude/sessions/<pid>.json`). The title in the transcript,
-which ccfzf shows as `title`, is a separate record: a `/rename`, or a hook that
-answers with `sessionTitle`, changes that one, and the two can differ.
+`-n` sets the name that `ListAgents` and `SendMessage` use: the `name` in
+Claude Code's own `~/.claude/sessions/<pid>.json`, with `nameSource: user`. The
+title ccfzf shows as `title` comes from the transcript instead, and the two can
+part: a hook that answers with `sessionTitle` once wrote its own
+`custom-title` into such a session while `ListAgents` went on showing the `-n`
+name. A head that wants to be sure of the address can look it up by the id it
+chose, in `claude agents --json` or that registry.
+
+## The parent session's environment
+
+Run from a shell inside another Claude Code session, claude inherits that
+session's markers (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, the
+messaging socket) and does not register as a session of its own. The wrapper
+unsets every `CLAUDE_CODE_*` plus `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`,
+`CLAUDE_PLUGIN_DATA`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR` and
+`CLAUDE_ENV_FILE` before starting it; whatever the rc file sets comes back,
+since the shell that runs claude reads it.
