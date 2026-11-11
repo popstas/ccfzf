@@ -33,6 +33,9 @@
 #                                    its window was last looked at, and both
 #                                    --state and --dump count such a session live
 #                                    (default ~/.ccfzf.sessions.claude-wt.json)
+#   CCFZF_CHILDREN_DIR               records written by claude-wt-new; --state
+#                                    puts head/headId on those sessions' rows
+#                                    (default ~/.ccfzf/children, empty — off)
 #   CCFZF_STATE_DUMP_MAX_AGE         seconds; --state rewrites the sessions
 #                                    dump when it is older than this
 #                                    (default 30; 0 — rewrite every time)
@@ -69,6 +72,10 @@ WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 # сразу: общим список выходит сам, без второго транспорта и без брокера.
 # Пустая строка выключает и чтение, и запись.
 COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
+
+# Записи claude-wt-new о дочерних сессиях, по файлу на сессию: из них --state
+# ставит строке `head`/`headId` — кто её открыл. Пустая строка выключает чтение.
+CHILDREN_DIR="${CCFZF_CHILDREN_DIR-$HOME/.ccfzf/children}"
 
 # Up to three custom commands run in the project directory: each adds a list
 # entry and a hotkey. An empty value drops both the entry and the key.
@@ -1323,6 +1330,53 @@ def read_comments(path):
         out[sid] = {"text": text[:COMMENT_LIMIT],
                     "at": num(rec.get("at")),
                     "host": rec.get("host") if isinstance(rec.get("host"), str) else ""}
+    return out
+
+
+def read_children(path, sids):
+    """Голова дочерних сессий: id → {head, headId}, только то, что задано.
+
+    Записи кладёт `claude-wt-new`, по файлу на сессию: `<sessionId>.json` с
+    `{sessionId, name, head, headId, cwd, createdAt}`. Отсюда берутся только
+    `head` (имя сессии-руководителя — адрес для SendMessage) и `headId` (её
+    id). Под `parent` их класть нельзя: он занят фоновыми форками, у которых
+    это id родителя, и пикер на нём строит своё.
+
+    Каталог перечисляется один раз, а открываются только файлы спрошенных
+    сессий — их единицы, и бюджет опроса раз в секунду их выдержит. Файлы
+    прочих, давно закрытых детей лежат нетронутыми: чистки нет, и читать их
+    незачем.
+
+    Белый список, как у комментариев: чужое значение теряется молча, а не
+    роняет ответ. Запись, назвавшая внутри другой id, тоже теряется — имя
+    файла и содержимое обязаны сходиться.
+    """
+    if not path:
+        return {}
+    try:
+        names = os.listdir(os.path.expanduser(path))
+    except OSError:
+        return {}
+    out = {}
+    for name in names:
+        sid = name[:-5] if name.endswith(".json") else ""
+        if sid not in sids or not UUID_RE.match(sid):
+            continue
+        try:
+            with open(os.path.join(os.path.expanduser(path), name), encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict) or rec.get("sessionId") != sid:
+            continue
+        got = {}
+        head, head_id = rec.get("head"), rec.get("headId")
+        if isinstance(head, str) and head.strip() and "\n" not in head:
+            got["head"] = head
+        if isinstance(head_id, str) and UUID_RE.match(head_id):
+            got["headId"] = head_id
+        if got:
+            out[sid] = got
     return out
 
 
@@ -3067,7 +3121,7 @@ def stale_dump(path, now, max_age):
 # Пустой режим — не ошибка: так блок выполняют тесты, которым нужны только
 # определения. Ни одна ветка ниже на пустую строку не отвечает.
 def state_defaults(limit=""):
-    """Шесть позиционных аргументов режима `state`, посчитанных здесь же.
+    """Семь позиционных аргументов режима `state`, посчитанных здесь же.
 
     Ровно те умолчания, что стоят в шапке скрипта, и с той же разницей форм:
     у меток — `:-` (пустое значение тоже заменяется), у остальных — `-`
@@ -3091,6 +3145,7 @@ def state_defaults(limit=""):
         limit,
         unset_only("CCFZF_WINDOWS_DIR", os.path.join(home, ".ccfzf", "windows")),
         unset_only("CCFZF_COMMENTS_FILE", os.path.join(home, ".ccfzf.comments.json")),
+        unset_only("CCFZF_CHILDREN_DIR", os.path.join(home, ".ccfzf", "children")),
     ]
 
 
@@ -3300,6 +3355,7 @@ elif mode == "state":
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
+    children_dir = sys.argv[8] if len(sys.argv) > 8 else ""
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
@@ -3361,6 +3417,8 @@ elif mode == "state":
     # `None` отличает «не спрашивали» от безымянной записи реестра.
     extra = fileless_sessions(registry_by_pid(), procs,
                               {sid_of(f) for f, _, _ in files})
+    heads = read_children(children_dir,
+                          {sid_of(p) for p, _, _ in picked} | {sid_of(r[0]) for r in extra})
 
     cache = load_facts(FACTS_FILE)
     facts = {}
@@ -3409,6 +3467,10 @@ elif mode == "state":
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
+            # Кто открыл эту сессию через claude-wt-new: `head` — имя
+            # сессии-руководителя, `headId` — её id. Ключей нет у обычной
+            # сессии. Не `parent`: тот у фоновых форков, см. read_children.
+            **heads.get(sid, {}),
             "title": f["title"], "gist": (f["gist"] or f["doing"])[:200],
             "doing": f["doing"],
             "mtime": mtime, "age": ago(mtime, now),
@@ -3602,7 +3664,8 @@ fi
 
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
-  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE"
+  py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE" \
+    "$CHILDREN_DIR"
   exit 0
 fi
 

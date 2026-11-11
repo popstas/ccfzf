@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# claude-wt-new — start a new named Claude Code session with a fixed id and
+# remember which session asked for it.
+#
+#   claude-wt-new <cwd> <name> <sessionId> <promptFile> <permissionMode|-> <head|-> <headId>
+#
+# `-` means "not given". promptFile may be `-` too: the session then starts
+# without a first prompt. headId is required: only a live head session opens
+# children (see below), and `head` defaults to the name in its mark. The prompt
+# is read from a file rather than taken as an argument because the caller is a
+# terminal template sent over ssh, where a free-form text would have to survive
+# two rounds of shell quoting.
+#
+# Before claude starts, a record is written to
+# $CCFZF_CHILDREN_DIR/<sessionId>.json (default ~/.ccfzf/children):
+#   {sessionId, name, head, headId, cwd, createdAt}
+# createdAt is unix seconds. `ccfzf --state` reads it back and puts
+# `head`/`headId` on that session's row.
+#
+# Who may open a child. Before anything is written or started:
+#   - $CCFZF_HEADS_DIR/<headId>.json (default ~/.ccfzf/heads) exists and its
+#     sessionId is headId — the head session writes that mark when it starts;
+#   - headId is a running session according to `claude agents --json`;
+#   - headId has no record of its own in the children directory: a child of a
+#     head cannot become one.
+# The check sits here and not only in the caller because a request can reach
+# the window manager without going through the head-session skill at all.
+#
+# Variables of a parent Claude Code session (CLAUDE_CODE_* and a few more) are
+# unset first. claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
+# [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
+# its chpwd hooks — the same way ccfzf starts its commands.
+#
+# Exit code 2 when an argument is wrong (bypassPermissions counts as one), 3
+# when the head check refuses; either way nothing is written or started.
+# Otherwise the code is claude's, except that a session closed by HUP, INT or
+# TERM (129/130/143) ends with 0. In a terminal a failure waits for Enter (up to
+# ten minutes): the window would otherwise close before anyone read it, and the
+# caller has long had its answer.
+#   CCFZF_CLAUDE_COMMAND  the claude binary itself (default: claude)
+#   CCFZF_CHILDREN_DIR    where records go (default: ~/.ccfzf/children)
+#   CCFZF_HEADS_DIR       head marks (default: ~/.ccfzf/heads)
+set -euo pipefail
+
+me=claude-wt-new
+fail() {
+  local code=$1
+  shift
+  echo "$me: $*" >&2
+  if [[ -t 0 && -t 2 ]]; then
+    echo "(press Enter to close)" >&2
+    read -r -t 600 _ || true
+  fi
+  exit "$code"
+}
+die() { fail 2 "$@"; }
+refuse() { fail 3 "$@"; }
+
+uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+# A name is a title and an address for other sessions: one line, and not
+# something claude would read as the next option.
+plain_line() { [[ -n $1 && $1 != -* && $1 != *$'\n'* && $1 != *$'\r'* ]]; }
+
+(($# == 7)) || die "usage: $me <cwd> <name> <sessionId> <promptFile> <permissionMode|-> <head|-> <headId>"
+cwd=$1 name=$2 sid=$3 prompt_file=$4 mode=$5 head=$6 head_id=$7
+
+[[ -d $cwd ]] || die "no such directory: $cwd"
+cwd=$(cd -- "$cwd" && pwd -P)
+plain_line "$name" || die "bad session name: '$name'"
+[[ $sid =~ $uuid_re ]] || die "session id must be a uuid: '$sid'"
+[[ $mode == - || $mode =~ ^[A-Za-z]+$ ]] || die "bad permission mode: '$mode'"
+# A child does what it is told without asking anyone; skipping the permission
+# checks altogether is not a mode a head may hand out.
+[[ ${mode,,} != bypasspermissions ]] || die "permission mode bypassPermissions is not allowed for a child session"
+[[ $head == - ]] || plain_line "$head" || die "bad head name: '$head'"
+[[ $head_id == - || $head_id =~ $uuid_re ]] || die "head id must be a uuid: '$head_id'"
+
+prompt=""
+if [[ $prompt_file != - ]]; then
+  [[ -f $prompt_file && -r $prompt_file ]] || die "cannot read prompt file: $prompt_file"
+  prompt=$(cat -- "$prompt_file")
+fi
+
+# Started from a shell inside another Claude Code session, claude would inherit
+# that session's markers (CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION,
+# the messaging socket…) and come up as its child: missing from
+# ~/.claude/sessions and so from ListAgents. Whatever the rc file sets is set
+# again by the interactive shell below. Done before the head check too, so that
+# `claude agents` answers about this machine and not about that session.
+while IFS= read -r var; do
+  unset "$var"
+done < <(compgen -e | grep -E '^(CLAUDE_CODE_.*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_PLUGIN_DATA|CLAUDE_PLUGIN_ROOT|CLAUDE_PROJECT_DIR|CLAUDE_ENV_FILE)$' || true)
+
+# --- the head check -----------------------------------------------------------
+[[ $head_id != - ]] || refuse "a head session id is required: only a running head session opens children"
+children=${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}
+heads=${CCFZF_HEADS_DIR:-$HOME/.ccfzf/heads}
+agents=$(eval "${CCFZF_CLAUDE_COMMAND:-claude} agents --json" 2>/dev/null </dev/null) ||
+  refuse "cannot ask claude which sessions are running"
+
+# On success prints the name from the mark, on refusal the reason.
+read -r -d '' head_check <<'PY' || true
+import json, os, sys
+mark, child, head_id = sys.argv[1:]
+def no(msg):
+    print(msg)
+    sys.exit(1)
+try:
+    with open(mark, encoding="utf-8") as fh:
+        rec = json.load(fh)
+except FileNotFoundError:
+    no("%s is not a head session: no mark %s" % (head_id, mark))
+except (OSError, ValueError) as e:
+    no("cannot read head mark %s: %s" % (mark, e))
+if not isinstance(rec, dict) or rec.get("sessionId") != head_id:
+    no("head mark %s belongs to another session" % mark)
+if os.path.exists(child):
+    no("%s is itself a child session (%s) and cannot open children" % (head_id, child))
+try:
+    agents = json.load(sys.stdin)
+except ValueError:
+    agents = None
+if not isinstance(agents, list):
+    no("cannot read the answer of claude agents --json")
+if not any(isinstance(a, dict) and a.get("sessionId") == head_id for a in agents):
+    no("head session %s is not running" % head_id)
+name = rec.get("name")
+print(name if isinstance(name, str) and "\n" not in name else "")
+PY
+verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$children/$head_id.json" "$head_id" \
+  <<<"$agents") || refuse "${verdict:-head check failed for $head_id}"
+[[ $head != - || -z $verdict ]] || head=$verdict
+
+# --- the record and the launch --------------------------------------------------
+mkdir -p -- "$children"
+# Through a temporary file: a reader polling --state every second must never
+# see half a record.
+tmp=$(mktemp "$children/.$sid.XXXXXX")
+python3 - "$tmp" "$sid" "$name" "$head" "$head_id" "$cwd" <<'PY'
+import json, sys, time
+path, sid, name, head, head_id, cwd = sys.argv[1:]
+rec = {"sessionId": sid, "name": name}
+if head != "-":
+    rec["head"] = head
+rec["headId"] = head_id
+rec["cwd"] = cwd
+rec["createdAt"] = int(time.time())
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(rec, fh, ensure_ascii=False)
+    fh.write("\n")
+PY
+mv -f -- "$tmp" "$children/$sid.json"
+
+args=(-n "$name" --session-id "$sid")
+[[ $mode == - ]] || args+=(--permission-mode "$mode")
+# `--` keeps a prompt that starts with a dash from being read as an option.
+[[ -n $prompt ]] && args+=(-- "$prompt")
+
+# A shell string, like ccfzf's own launches: CCFZF_CLAUDE_COMMAND may carry
+# arguments, and an alias or function from the rc file has to keep working.
+cmd="${CCFZF_CLAUDE_COMMAND:-claude} $(printf '%q ' "${args[@]}")"
+#
+# Not `exec`: the exit code is read first. A session closed by a signal — the
+# head killing it (TERM), the window or the ssh link going away (HUP), Ctrl+C
+# (INT) — is a normal end, and a terminal that keeps the window open on a
+# non-zero code (Windows Terminal's closeOnExit "graceful") must close it.
+# Any other code is passed on as it is: a crash should stay on screen.
+#
+# The wrapper traps the same signals rather than ignoring them: a trapped
+# signal is reset to default in the child, an ignored one would be inherited,
+# and claude has to die of them as before. When the whole window goes, the
+# group signal reaches the wrapper too, and the trap keeps it alive long enough
+# to say 0 once claude is gone.
+trap ':' HUP INT TERM
+set +e
+"${SHELL:-/bin/sh}" -ic "cd -- $(printf '%q' "$cwd") && ${cmd% }"
+code=$?
+set -e
+case $code in
+  129 | 130 | 143) exit 0 ;;
+esac
+exit "$code"

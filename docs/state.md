@@ -6,7 +6,9 @@ and `snapshots`.
 
 The sessions are the same set as in [the dump](dumps.md), plus `file`,
 `projects`, `gist`, `doing`, `age`, `frozen`, `pid`, `tty`, `tmux`, `agent` and
-`window`. The dump is not a subset by accident — the two have different readers.
+`window`, and the optional `head`/`headId` of a session started by
+[`claude-wt-new`](children.md). The dump is not a subset by accident — the two
+have different readers.
 
 `projects` is close to what the `projects` mode shows, minus the colouring —
 `{path, name, mark, sessions, live, mtime}`, no `age`, because a reader that
