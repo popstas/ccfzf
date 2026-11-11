@@ -24,6 +24,7 @@ postprocessors = [
     { pattern = "<!-- [0-9] -->", replace = "" },
     # upper_first would otherwise capitalise the tool's own name
     { pattern = "Ccfzf", replace = "ccfzf" },
+    { pattern = "Claude-wt-new", replace = "claude-wt-new" },
 ]
 
 [git]
