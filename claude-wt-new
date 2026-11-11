@@ -31,7 +31,7 @@
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
-# Exit code 2 when an argument is wrong, 3 when the head check refuses; either
+# Exit code 2 when an argument is wrong (bypassPermissions counts as one), 3 when the head check refuses; either
 # way nothing is written or started. Otherwise the code is claude's, except that
 # a session closed by HUP, INT or TERM (129/130/143) ends with 0. In a terminal the message waits for Enter
 # (up to ten minutes): the window would otherwise close before anyone read it,
@@ -68,6 +68,9 @@ cwd=$(cd -- "$cwd" && pwd -P)
 plain_line "$name" || die "bad session name: '$name'"
 [[ $sid =~ $uuid_re ]] || die "session id must be a uuid: '$sid'"
 [[ $mode == - || $mode =~ ^[A-Za-z]+$ ]] || die "bad permission mode: '$mode'"
+# A child does what it is told without asking anyone; skipping the permission
+# checks altogether is not a mode a head may hand out.
+[[ ${mode,,} != bypasspermissions ]] || die "permission mode bypassPermissions is not allowed for a child session"
 [[ $head == - ]] || plain_line "$head" || die "bad head name: '$head'"
 [[ $head_id == - || $head_id =~ $uuid_re ]] || die "head id must be a uuid: '$head_id'"
 

@@ -188,6 +188,8 @@ def test_bad_arguments_start_nothing():
         "bad sid": e.good(sid="123"),
         "no prompt file": e.good(prompt=e.root / "nope.txt"),
         "bad mode": e.good(mode="plan; rm -rf"),
+        "bypass mode": e.good(mode="bypassPermissions"),
+        "bypass mode, other case": e.good(mode="BYPASSPERMISSIONS"),
         "bad head id": e.good(head_id="xyz"),
     }
     for label, args in cases.items():

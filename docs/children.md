@@ -20,7 +20,8 @@ text would have to survive two rounds of shell quoting.
 The checks: `cwd` is a directory; `name` and `head` are one line, not empty and
 not starting with `-` (claude would read it as an option); `sessionId` and
 `headId` are UUIDs; the permission mode is letters only, and claude itself
-checks the value. A wrong argument means exit 2, a message on stderr, and
+checks the value — except `bypassPermissions` (in any case), which a child never
+gets: it counts as a wrong argument. A wrong argument means exit 2, a message on stderr, and
 nothing written or started.
 
 ## Who may open a child
@@ -97,6 +98,8 @@ part: a hook that answers with `sessionTitle` once wrote its own
 `custom-title` into such a session while `ListAgents` went on showing the `-n`
 name. A head that wants to be sure of the address can look it up by the id it
 chose, in `claude agents --json` or that registry.
+The `session-name-from-branch` hook leaves a session alone once it has a
+record in the children directory, so a child keeps its `-n` name on a feature branch.
 
 ## The parent session's environment
 
