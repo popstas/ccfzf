@@ -31,11 +31,12 @@
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
-# Exit code 2 when an argument is wrong (bypassPermissions counts as one), 3 when the head check refuses; either
-# way nothing is written or started. Otherwise the code is claude's, except that
-# a session closed by HUP, INT or TERM (129/130/143) ends with 0. In a terminal the message waits for Enter
-# (up to ten minutes): the window would otherwise close before anyone read it,
-# and the caller has long had its answer.
+# Exit code 2 when an argument is wrong (bypassPermissions counts as one), 3
+# when the head check refuses; either way nothing is written or started.
+# Otherwise the code is claude's, except that a session closed by HUP, INT or
+# TERM (129/130/143) ends with 0. In a terminal a failure waits for Enter (up to
+# ten minutes): the window would otherwise close before anyone read it, and the
+# caller has long had its answer.
 #   CCFZF_CLAUDE_COMMAND  the claude binary itself (default: claude)
 #   CCFZF_CHILDREN_DIR    where records go (default: ~/.ccfzf/children)
 #   CCFZF_HEADS_DIR       head marks (default: ~/.ccfzf/heads)
