@@ -120,6 +120,7 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
 | `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
 | `CCFZF_CHILDREN_DIR` | `~/.ccfzf/children` | records of sessions started by `claude-wt-new`, read by `--state`; empty turns it off |
+| `CCFZF_HEADS_DIR` | `~/.ccfzf/heads` | head marks: `claude-wt-new` opens a child only for a running session marked here |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
