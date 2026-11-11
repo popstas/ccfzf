@@ -61,6 +61,13 @@ In this order:
    starts its own commands, so the rc file is read and `chpwd` hooks fire. The
    `--` keeps a prompt that starts with a dash from being read as an option;
    trailing newlines are dropped from the prompt.
+3. The wrapper waits for claude and ends with its exit code — except that a
+   session closed by a signal (HUP, INT or TERM: 129, 130, 143) ends with 0.
+   Killing a child, closing its window or losing the ssh link is a normal end,
+   and a terminal that keeps the window open on a non-zero code (Windows
+   Terminal's `closeOnExit: graceful`) has to close it; a crash still shows. The
+   wrapper traps those signals itself, so when the whole window goes it lives
+   long enough to report 0.
 
 `CCFZF_CLAUDE_COMMAND` replaces the claude binary here too, for the launch and
 for `claude agents` (the tests put a fake there).

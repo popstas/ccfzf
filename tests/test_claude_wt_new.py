@@ -22,7 +22,7 @@ HEAD_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 OTHER = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
 FAKE = """#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 if sys.argv[1:] == ["agents", "--json"]:
     path = os.environ.get("FAKE_AGENTS", "")
     if not path:
@@ -32,6 +32,13 @@ if sys.argv[1:] == ["agents", "--json"]:
 with open(os.environ["FAKE_OUT"], "w", encoding="utf-8") as fh:
     json.dump({"argv": sys.argv[1:], "cwd": os.getcwd(),
                "env": sorted(k for k in os.environ if "CLAUDE" in k)}, fh)
+if os.environ.get("FAKE_SLEEP"):
+    time.sleep(float(os.environ["FAKE_SLEEP"]))
+if os.environ.get("FAKE_SIGNAL"):
+    import signal
+    os.kill(os.getpid(), getattr(signal, os.environ["FAKE_SIGNAL"]))
+    time.sleep(5)
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 """
 
 
@@ -228,6 +235,39 @@ def test_only_a_live_marked_head_that_is_no_child_may_open_one():
         assert r.returncode == 3, (case.__name__, r.returncode, r.stderr)
         assert "claude-wt-new:" in r.stderr, (case.__name__, r.stderr)
         e.nothing_happened(case.__name__)
+
+
+def test_closing_claude_is_not_an_error():
+    """Окно терминала (closeOnExit graceful) остаётся открытым на ненулевом
+    коде. Сессию, закрытую сигналом, оно должно закрыть, а настоящую ошибку
+    claude — показать."""
+    cases = [({"FAKE_SIGNAL": "SIGTERM"}, 0), ({"FAKE_SIGNAL": "SIGHUP"}, 0),
+             ({"FAKE_SIGNAL": "SIGINT"}, 0), ({"FAKE_EXIT": "143"}, 0),
+             ({"FAKE_EXIT": "129"}, 0), ({"FAKE_EXIT": "130"}, 0),
+             ({"FAKE_EXIT": "0"}, 0), ({"FAKE_EXIT": "1"}, 1),
+             ({"FAKE_EXIT": "2"}, 2), ({"FAKE_EXIT": "137"}, 137)]
+    for extra, want in cases:
+        e = Env()
+        r = e.run(*e.good(), extra_env=extra)
+        assert r.returncode == want, (extra, r.returncode, r.stderr)
+        assert e.called() is not None, extra
+
+
+def test_a_hangup_of_the_whole_window_is_a_clean_exit():
+    """Закрытое окно или оборванный ssh бьют сигналом всю группу процессов —
+    и обёртку тоже, а не только claude."""
+    import signal
+    e = Env()
+    p = subprocess.Popen([str(WRAPPER), *map(str, e.good())],
+                         env=e.env({"FAKE_SLEEP": "20"}), start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    deadline = time.time() + 10
+    while e.called() is None and time.time() < deadline:
+        time.sleep(0.1)
+    assert e.called() is not None
+    os.killpg(p.pid, signal.SIGTERM)
+    assert p.wait(timeout=10) == 0
 
 
 def test_a_refusal_stays_on_screen_in_a_terminal():

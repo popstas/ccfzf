@@ -32,7 +32,8 @@
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
 # Exit code 2 when an argument is wrong, 3 when the head check refuses; either
-# way nothing is written or started. In a terminal the message waits for Enter
+# way nothing is written or started. Otherwise the code is claude's, except that
+# a session closed by HUP, INT or TERM (129/130/143) ends with 0. In a terminal the message waits for Enter
 # (up to ten minutes): the window would otherwise close before anyone read it,
 # and the caller has long had its answer.
 #   CCFZF_CLAUDE_COMMAND  the claude binary itself (default: claude)
@@ -154,4 +155,24 @@ args=(-n "$name" --session-id "$sid")
 # A shell string, like ccfzf's own launches: CCFZF_CLAUDE_COMMAND may carry
 # arguments, and an alias or function from the rc file has to keep working.
 cmd="${CCFZF_CLAUDE_COMMAND:-claude} $(printf '%q ' "${args[@]}")"
-exec "${SHELL:-/bin/sh}" -ic "cd -- $(printf '%q' "$cwd") && ${cmd% }"
+#
+# Not `exec`: the exit code is read first. A session closed by a signal — the
+# head killing it (TERM), the window or the ssh link going away (HUP), Ctrl+C
+# (INT) — is a normal end, and a terminal that keeps the window open on a
+# non-zero code (Windows Terminal's closeOnExit "graceful") must close it.
+# Any other code is passed on as it is: a crash should stay on screen.
+#
+# The wrapper traps the same signals rather than ignoring them: a trapped
+# signal is reset to default in the child, an ignored one would be inherited,
+# and claude has to die of them as before. When the whole window goes, the
+# group signal reaches the wrapper too, and the trap keeps it alive long enough
+# to say 0 once claude is gone.
+trap ':' HUP INT TERM
+set +e
+"${SHELL:-/bin/sh}" -ic "cd -- $(printf '%q' "$cwd") && ${cmd% }"
+code=$?
+set -e
+case $code in
+  129 | 130 | 143) exit 0 ;;
+esac
+exit "$code"
