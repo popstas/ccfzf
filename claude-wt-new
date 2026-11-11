@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# claude-wt-new — start a new named Claude Code session with a fixed id and
+# remember which session asked for it.
+#
+#   claude-wt-new <cwd> <name> <sessionId> <promptFile> <permissionMode|-> <head|-> <headId|->
+#
+# `-` means "not given". promptFile may be `-` too: the session then starts
+# without a first prompt. The prompt is read from a file rather than taken as an
+# argument because the caller is a terminal template sent over ssh, where a
+# free-form text would have to survive two rounds of shell quoting.
+#
+# Before claude starts, a record is written to
+# $CCFZF_CHILDREN_DIR/<sessionId>.json (default ~/.ccfzf/children):
+#   {sessionId, name, head, headId, cwd, createdAt}
+# `head`/`headId` are left out when not given; createdAt is unix seconds.
+# `ccfzf --state` reads it back and puts `head`/`headId` on that session's row.
+#
+# claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
+# [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
+# its chpwd hooks — the same way ccfzf starts its commands.
+#
+# Exit code 2 and nothing started when an argument is wrong.
+#   CCFZF_CLAUDE_COMMAND  the claude binary itself (default: claude)
+#   CCFZF_CHILDREN_DIR    where records go (default: ~/.ccfzf/children)
+set -euo pipefail
+
+me=claude-wt-new
+die() { echo "$me: $*" >&2; exit 2; }
+
+uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+# A name is a title and an address for other sessions: one line, and not
+# something claude would read as the next option.
+plain_line() { [[ -n $1 && $1 != -* && $1 != *$'\n'* && $1 != *$'\r'* ]]; }
+
+(($# == 7)) || die "usage: $me <cwd> <name> <sessionId> <promptFile> <permissionMode|-> <head|-> <headId|->"
+cwd=$1 name=$2 sid=$3 prompt_file=$4 mode=$5 head=$6 head_id=$7
+
+[[ -d $cwd ]] || die "no such directory: $cwd"
+cwd=$(cd -- "$cwd" && pwd -P)
+plain_line "$name" || die "bad session name: '$name'"
+[[ $sid =~ $uuid_re ]] || die "session id must be a uuid: '$sid'"
+[[ $mode == - || $mode =~ ^[A-Za-z]+$ ]] || die "bad permission mode: '$mode'"
+[[ $head == - ]] || plain_line "$head" || die "bad head name: '$head'"
+[[ $head_id == - || $head_id =~ $uuid_re ]] || die "head id must be a uuid: '$head_id'"
+
+prompt=""
+if [[ $prompt_file != - ]]; then
+  [[ -f $prompt_file && -r $prompt_file ]] || die "cannot read prompt file: $prompt_file"
+  prompt=$(cat -- "$prompt_file")
+fi
+
+children=${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}
+mkdir -p -- "$children"
+# Through a temporary file: a reader polling --state every second must never
+# see half a record.
+tmp=$(mktemp "$children/.$sid.XXXXXX")
+python3 - "$tmp" "$sid" "$name" "$head" "$head_id" "$cwd" <<'PY'
+import json, sys, time
+path, sid, name, head, head_id, cwd = sys.argv[1:]
+rec = {"sessionId": sid, "name": name}
+if head != "-":
+    rec["head"] = head
+if head_id != "-":
+    rec["headId"] = head_id
+rec["cwd"] = cwd
+rec["createdAt"] = int(time.time())
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(rec, fh, ensure_ascii=False)
+    fh.write("\n")
+PY
+mv -f -- "$tmp" "$children/$sid.json"
+
+args=(-n "$name" --session-id "$sid")
+[[ $mode == - ]] || args+=(--permission-mode "$mode")
+# `--` keeps a prompt that starts with a dash from being read as an option.
+[[ -n $prompt ]] && args+=(-- "$prompt")
+
+# A shell string, like ccfzf's own launches: CCFZF_CLAUDE_COMMAND may carry
+# arguments, and an alias or function from the rc file has to keep working.
+cmd="${CCFZF_CLAUDE_COMMAND:-claude} $(printf '%q ' "${args[@]}")"
+exec "${SHELL:-/bin/sh}" -ic "cd -- $(printf '%q' "$cwd") && ${cmd% }"
