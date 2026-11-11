@@ -119,6 +119,7 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 | `CCFZF_FACTS_FILE` | `$XDG_CACHE_HOME/ccfzf/facts.json` | memo of per-transcript facts, so a fresh `--state` process does not recompute them; empty turns it off |
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
 | `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
+| `CCFZF_CHILDREN_DIR` | `~/.ccfzf/children` | records of sessions started by `claude-wt-new`, read by `--state`; empty turns it off |
 | `FZF_MARKS_FILE` | `~/.fzf-marks` | where the marks live |
 
 An empty command drops both its list entry and its hotkey. A command may carry arguments (`CCFZF_PROJECT_COMMAND2="codex --yolo"`). Every command value is a shell fragment, so quoting works as usual (`CCFZF_CLAUDE_COMMAND='"/opt/my tools/claude"'`).
@@ -134,6 +135,8 @@ Every run also writes down what it saw, so whatever else you script around Claud
 → File formats, fields and the facts memo: [docs/dumps.md](docs/dumps.md).
 
 → The `--state` answer and the windows file it reads: [docs/state.md](docs/state.md).
+
+`claude-wt-new` sits next to `ccfzf`: it starts a new session with a fixed id and name for a session that opens others and writes to them, and `--state` then names that head on the new session's row. → [docs/children.md](docs/children.md).
 
 ## Why
 
@@ -176,6 +179,7 @@ A session belongs to its own `cwd`. It additionally shows up under the nearest a
 - [docs/dumps.md](docs/dumps.md) — the sessions and projects dumps, and the facts memo
 - [docs/state.md](docs/state.md) — the `--state` answer and the windows file it reads
 - [docs/live-detection.md](docs/live-detection.md) — how a running session is recognised
+- [docs/children.md](docs/children.md) — `claude-wt-new`: a session started with a fixed id and name, and the `head` it reports in `--state`
 - [CHANGELOG.md](CHANGELOG.md) — what changed between versions
 
 ## Related
