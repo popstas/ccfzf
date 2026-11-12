@@ -22,7 +22,9 @@
 #     sessionId is headId — the head session writes that mark when it starts;
 #   - headId is a running session according to `claude agents --json`;
 #   - sessionId is not a running session: a record must never overwrite a live
-#     session's own, and the hierarchy must not loop.
+#     session's own;
+#   - sessionId is not an ancestor of the head in the children records, dead or
+#     alive: its record would close the chain of headId into a loop.
 # A child may itself be a head and open children; depth is not limited.
 # The check sits here and not only in the caller because a request can reach
 # the window manager without going through the head-session skill at all.
@@ -63,12 +65,23 @@ uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 # A name is a title and an address for other sessions: one line, and not
 # something claude would read as the next option.
 plain_line() { [[ -n $1 && $1 != -* && $1 != *$'\n'* && $1 != *$'\r'* ]]; }
+# The physical path of a directory, or failure when it cannot be entered (-d
+# lets a directory without the x bit through, and a bare `cd` inside $(...)
+# would end the script with set -e's 1 instead of a refusal). bash keeps a
+# leading `//` as it is; on Linux that is `/`, and a root or cwd spelled so
+# would otherwise match nothing.
+phys() {
+  local p
+  p=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  while [[ $p == //* ]]; do p=${p#/}; done
+  printf '%s' "$p"
+}
 
 (($# == 7)) || die "usage: $me <cwd> <name> <sessionId> <promptFile> <permissionMode|-> <head|-> <headId>"
 cwd=$1 name=$2 sid=$3 prompt_file=$4 mode=$5 head=$6 head_id=$7
 
 [[ -d $cwd ]] || die "no such directory: $cwd"
-cwd=$(cd -- "$cwd" && pwd -P)
+cwd=$(phys "$cwd") || die "cannot enter directory: $cwd"
 plain_line "$name" || die "bad session name: '$name'"
 [[ $sid =~ $uuid_re ]] || die "session id must be a uuid: '$sid'"
 [[ $mode == - || $mode =~ ^[A-Za-z]+$ ]] || die "bad permission mode: '$mode'"
@@ -108,7 +121,7 @@ root=${CCFZF_CHILD_CWD_ROOT:-}
 unset CCFZF_CHILD_CWD_ROOT
 if [[ -n $root ]]; then
   [[ $root == /* && -d $root ]] || die "child cwd root must be an absolute directory: '$root'"
-  root=$(cd -- "$root" && pwd -P)
+  root=$(phys "$root") || die "cannot enter child cwd root: '$root'"
   # Quoted, so that `*`, `?` and `[` in the root stay literal; `?*` because the
   # root itself is no place for a child.
   prefix=${root%/}/
@@ -125,7 +138,7 @@ agents=$(eval "${CCFZF_CLAUDE_COMMAND:-claude} agents --json" 2>/dev/null </dev/
 # On success prints the name from the mark, on refusal the reason.
 read -r -d '' head_check <<'PY' || true
 import json, os, sys
-mark, head_id, sid = sys.argv[1:]
+mark, children, head_id, sid = sys.argv[1:]
 def no(msg):
     print(msg)
     sys.exit(1)
@@ -146,15 +159,32 @@ if not isinstance(agents, list):
     no("cannot read the answer of claude agents --json")
 if not any(isinstance(a, dict) and a.get("sessionId") == head_id for a in agents):
     no("head session %s is not running" % head_id)
-# The head itself or one of its ancestors: their own records would be
+# The head itself or a live ancestor: their own records would be
 # overwritten, and the chain of heads would loop.
 if any(isinstance(a, dict) and str(a.get("sessionId", "")).lower() == sid.lower()
        for a in agents):
     no("session %s is already running" % sid)
+# A dead ancestor passes the check above, and a record with its id would close
+# the chain of headId. Walk up from the head; a loop already in the records
+# (they get edited by hand) stops the walk instead of hanging it.
+cur, seen = head_id.lower(), set()
+while cur not in seen:
+    seen.add(cur)
+    try:
+        with open(os.path.join(children, cur + ".json"), encoding="utf-8") as fh:
+            up = json.load(fh).get("headId")
+    except (OSError, ValueError, AttributeError):
+        break
+    if not isinstance(up, str):
+        break
+    cur = up.lower()
+    if cur == sid.lower():
+        no("session %s is an ancestor of head %s: its record would make the chain of heads loop"
+           % (sid, head_id))
 name = rec.get("name")
 print(name if isinstance(name, str) and "\n" not in name else "")
 PY
-verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$head_id" "$sid" \
+verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$children" "$head_id" "$sid" \
   <<<"$agents") || refuse "${verdict:-head check failed for $head_id}"
 [[ $head != - || -z $verdict ]] || head=$verdict
 

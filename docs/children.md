@@ -35,9 +35,15 @@ started:
    `{sessionId, name, cwd, createdAt}` — when it takes the lead.
 2. That session is running: `claude agents --json` lists it. A mark outlives
    its session, so the mark alone proves nothing.
-3. `sessionId` is not a running session. The new record would otherwise
-   overwrite the record of a live session — the head itself or one of its
-   ancestors — and the chain of heads would loop.
+3. `sessionId` is not a running session: the new record would otherwise
+   overwrite the record of a live session, such as the head itself.
+4. `sessionId` is not an ancestor of the head, dead or alive: walking up
+   `headId` from the head through the children directory never meets it. A
+   record with that id would close the chain of heads into a loop. A loop
+   already in the records (they can be edited by hand) ends the walk; it does
+   not hang it.
+
+Session ids are compared without regard to case.
 
 The caller checks the same before it asks for a window; the wrapper checks
 again because a request can reach the window manager without going through the
@@ -60,7 +66,12 @@ strictly under the root, also taken after `pwd -P`. The root itself is no
 place for a child.
 
 - Outside the root: exit 3, as any refusal.
-- A root that is not an absolute path to a directory: exit 2, a wrong argument.
+- A root that is not an absolute path to a directory, or one the wrapper
+  cannot enter: exit 2, a wrong argument. The same goes for a `cwd` it cannot
+  enter.
+
+A leading `//` counts as `/` in both: bash keeps it in `pwd -P`, and on Linux
+it names the same directory.
 - Unset or empty: no check, as before.
 
 The manager's launch command sets it —
