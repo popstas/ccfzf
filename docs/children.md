@@ -43,10 +43,32 @@ The caller checks the same before it asks for a window; the wrapper checks
 again because a request can reach the window manager without going through the
 caller at all.
 
-A refusal is exit 3 with the reason on stderr; nothing is written or started.
+A refusal — the head check or the cwd root below — is exit 3 with the reason
+on stderr; nothing is written or started.
 In a terminal, any failure (2 or 3) waits for Enter, up to ten minutes: the
 window was opened by a request that has long had its answer, and it would
 otherwise close before anyone could read why.
+
+## Where a child may run
+
+The window manager may let a head open a child in any directory under one root
+(its `claudeWt.childCwdRoot`), not only in the projects of its own list. It runs
+on Windows and compares strings, so a symlink under the root that leads out of
+it would pass there. The wrapper checks again on this machine:
+`CCFZF_CHILD_CWD_ROOT` set and not empty means `cwd`, after `pwd -P`, has to lie
+strictly under the root, also taken after `pwd -P`. The root itself is no
+place for a child.
+
+- Outside the root: exit 3, as any refusal.
+- A root that is not an absolute path to a directory: exit 2, a wrong argument.
+- Unset or empty: no check, as before.
+
+The manager's launch command sets it —
+`exec env CCFZF_CHILD_CWD_ROOT='{childCwdRoot}' ~/bin/claude-wt-new …` — and
+leaves it empty when the directory is in its projects list: a child admitted by
+exact match is not held to the root. A variable and not an eighth argument, so
+that an older wrapper with a newer command, and the other way round, still
+work.
 
 ## What happens next
 

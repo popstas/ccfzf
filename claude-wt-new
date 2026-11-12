@@ -32,8 +32,9 @@
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
-# Exit code 2 when an argument is wrong (bypassPermissions counts as one), 3
-# when the head check refuses; either way nothing is written or started.
+# Exit code 2 when an argument is wrong (bypassPermissions and a bad
+# CCFZF_CHILD_CWD_ROOT count as one), 3 when a check refuses (the head, the cwd
+# root); either way nothing is written or started.
 # Otherwise the code is claude's, except that a session closed by HUP, INT or
 # TERM (129/130/143) ends with 0. In a terminal a failure waits for Enter (up to
 # ten minutes): the window would otherwise close before anyone read it, and the
@@ -41,6 +42,7 @@
 #   CCFZF_CLAUDE_COMMAND  the claude binary itself (default: claude)
 #   CCFZF_CHILDREN_DIR    where records go (default: ~/.ccfzf/children)
 #   CCFZF_HEADS_DIR       head marks (default: ~/.ccfzf/heads)
+#   CCFZF_CHILD_CWD_ROOT  children start only under it (default: no check)
 set -euo pipefail
 
 me=claude-wt-new
@@ -91,6 +93,24 @@ fi
 while IFS= read -r var; do
   unset "$var"
 done < <(compgen -e | grep -E '^(CLAUDE_CODE_.*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_PLUGIN_DATA|CLAUDE_PLUGIN_ROOT|CLAUDE_PROJECT_DIR|CLAUDE_ENV_FILE)$' || true)
+
+# --- where the child may run ----------------------------------------------------
+# The window manager lets a head open a child anywhere under one root, but it
+# runs on Windows and compares strings: a symlink under the root that leads out
+# of it passes there. So the root is checked again here, against the physical
+# path. It comes as a variable put into the launch command, not as an eighth
+# argument: an older wrapper insists on seven, and a manager and a wrapper of
+# different ages must keep working together. Empty means no check — the manager
+# sends it only for a child admitted by the root rule.
+root=${CCFZF_CHILD_CWD_ROOT:-}
+if [[ -n $root ]]; then
+  [[ $root == /* && -d $root ]] || die "child cwd root must be an absolute directory: '$root'"
+  root=$(cd -- "$root" && pwd -P)
+  # Quoted, so that `*`, `?` and `[` in the root stay literal; `?*` because the
+  # root itself is no place for a child.
+  prefix=${root%/}/
+  [[ $cwd == "$prefix"?* ]] || refuse "$cwd is not inside the child cwd root $root"
+fi
 
 # --- the head check -----------------------------------------------------------
 [[ $head_id != - ]] || refuse "a head session id is required: only a running head session opens children"

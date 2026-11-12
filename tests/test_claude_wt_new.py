@@ -255,6 +255,47 @@ def test_a_child_that_is_a_head_opens_a_grandchild():
     assert e.record(HEAD_ID) == own, e.record(HEAD_ID)
 
 
+def test_child_cwd_root():
+    """Менеджер на Windows сравнивает строки и симлинков не видит, поэтому
+    корень, если он передан, проверяется здесь по разрешённому пути."""
+    def mk(e, *parts):
+        d = e.root.joinpath(*parts)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def link(e, name, target):
+        (e.root / name).symlink_to(target)
+        return e.root / name
+
+    cases = [
+        # (метка, корень, cwd, код)
+        ("empty", lambda e: "", lambda e: e.proj, 0),
+        ("inside", lambda e: e.root, lambda e: e.proj, 0),
+        ("trailing slash", lambda e: str(e.root) + "/", lambda e: e.proj, 0),
+        ("root is a symlink", lambda e: link(e, "link", e.root), lambda e: e.proj, 0),
+        ("root is /", lambda e: "/", lambda e: e.proj, 0),
+        ("the root itself", lambda e: e.root, lambda e: e.root, 3),
+        ("sibling prefix", lambda e: mk(e, "my"), lambda e: e.proj, 3),
+        ("glob in root", lambda e: mk(e, "r*"), lambda e: mk(e, "rz", "a"), 3),
+        ("symlink out", lambda e: mk(e, "in"),
+         lambda e: (mk(e, "outside"), mk(e, "in"),
+                    (e.root / "in" / "out").symlink_to(e.root / "outside"),
+                    e.root / "in" / "out")[-1], 3),
+        ("outside", lambda e: mk(e, "in"), lambda e: e.proj, 3),
+        ("relative root", lambda e: "in", lambda e: e.proj, 2),
+        ("no such root", lambda e: e.root / "nope", lambda e: e.proj, 2),
+    ]
+    for label, root, cwd, code in cases:
+        e = Env()
+        r = e.run(*e.good(cwd=cwd(e)), extra_env={"CCFZF_CHILD_CWD_ROOT": str(root(e))})
+        assert r.returncode == code, (label, r.returncode, r.stderr)
+        if code:
+            assert "claude-wt-new:" in r.stderr, (label, r.stderr)
+            e.nothing_happened(label)
+        elif label == "inside":
+            assert e.record()["cwd"] == str(e.proj.resolve()), e.record()
+
+
 def test_closing_claude_is_not_an_error():
     """Окно терминала (closeOnExit graceful) остаётся открытым на ненулевом
     коде. Сессию, закрытую сигналом, оно должно закрыть, а настоящую ошибку
