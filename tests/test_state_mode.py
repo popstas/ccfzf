@@ -508,6 +508,44 @@ def test_the_fresh_row_survives_a_standalone_dump():
         assert C in [s["id"] for s in got["sessions"]], got["sessions"]
 
 
+def _cached_session(tmp, sid, answered_at):
+    """Транскрипт закончившегося хода: человек спросил, агент ответил с кешем."""
+    cwd = os.path.join(tmp, "proj")
+    os.makedirs(cwd, exist_ok=True)
+    d = os.path.join(tmp, ".claude", "projects", re.sub(r"[^a-zA-Z0-9]", "-", cwd))
+    os.makedirs(d, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(answered_at))
+    path = os.path.join(d, sid + ".jsonl")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"cwd": cwd, "type": "user", "timestamp": stamp,
+                             "message": {"role": "user", "content": "hello"}}) + "\n")
+        fh.write(json.dumps({"type": "assistant", "timestamp": stamp,
+                             "message": {"role": "assistant", "stop_reason": "end_turn",
+                                         "content": [{"type": "text", "text": "done"}],
+                                         "usage": {"cache_read_input_tokens": 100,
+                                                   "cache_creation_input_tokens": 0}}})
+                 + "\n")
+    os.utime(path, (2000, 2000))
+
+
+def test_the_cache_stamp_reaches_the_row_and_survives_the_memo():
+    """Проводка метки кеша: хвост → памятка → запись агента.
+
+    Второй прогон берёт факты из памятки, а первым идёт `--dump`, который
+    кладёт запись без gist, — так `--state` проходит через полупопадание, ту
+    самую сборку состояния из памятки, где метка терялась бы молча.
+    """
+    at = 1785958060
+    with tempfile.TemporaryDirectory() as tmp:
+        _cached_session(tmp, A, at)
+        dump = os.path.join(tmp, "dump.json")
+        run_dump(tmp, dump)
+        first = run_state(tmp, dump)["sessions"][0]["agent"]
+        second = run_state(tmp, dump)["sessions"][0]["agent"]
+        assert first.get("cacheAt") == at, first
+        assert second.get("cacheAt") == at, second
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]
