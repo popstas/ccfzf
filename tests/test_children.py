@@ -37,6 +37,24 @@ def test_state_names_the_head_of_a_child():
         assert got[A]["parent"] == "", got[A]
 
 
+def test_an_adopted_session_and_a_grandchild_carry_their_heads():
+    """Привязанный исполнитель (head-adopt) открывался не через session-new и
+    окна в трекере может не иметь — head ему всё равно отдаётся. Внук и его
+    head-ребёнок несут каждый своего."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A, B])
+        d = os.path.join(tmp, ".ccfzf", "children")
+        write_child(d, A, head="new-h", headId=B, adopted=True,
+                    prevHeadId=HEAD_ID, prevHead="old-h", cwd="/x", createdAt=1)
+        write_child(d, B, head="top", headId=HEAD_ID)
+        got = {s["id"]: s for s in run_state(tmp, "")["sessions"]}
+        assert got[A]["head"] == "new-h" and got[A]["headId"] == B, got[A]
+        assert got[B]["head"] == "top" and got[B]["headId"] == HEAD_ID, got[B]
+        # Служебные поля привязки в строку не попадают: белый список.
+        for key in ("adopted", "prevHeadId", "prevHead"):
+            assert key not in got[A], (key, got[A])
+
+
 def test_the_directory_is_configurable_and_can_be_off():
     with tempfile.TemporaryDirectory() as tmp:
         build_home(tmp, [A])

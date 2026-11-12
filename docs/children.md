@@ -26,25 +26,60 @@ nothing written or started.
 
 ## Who may open a child
 
-Only a running head session that is not itself a child. Before anything is
-written or started:
+Only a running head session. A child may be one as well: once it has its own
+mark it opens children of its own, to any depth. Before anything is written or
+started:
 
 1. `$CCFZF_HEADS_DIR/<headId>.json` (default `~/.ccfzf/heads`) exists and
    names `headId` as its `sessionId`. The head session writes this mark —
    `{sessionId, name, cwd, createdAt}` — when it takes the lead.
 2. That session is running: `claude agents --json` lists it. A mark outlives
    its session, so the mark alone proves nothing.
-3. `headId` has no record of its own in the children directory: a child of a
-   head cannot open children.
+3. `sessionId` is not a running session: the new record would otherwise
+   overwrite the record of a live session, such as the head itself.
+4. `sessionId` is not an ancestor of the head, dead or alive: walking up
+   `headId` from the head through the children directory never meets it. A
+   record with that id would close the chain of heads into a loop. A loop
+   already in the records (they can be edited by hand) ends the walk; it does
+   not hang it.
+
+Session ids are compared without regard to case.
 
 The caller checks the same before it asks for a window; the wrapper checks
 again because a request can reach the window manager without going through the
 caller at all.
 
-A refusal is exit 3 with the reason on stderr; nothing is written or started.
+A refusal — the head check or the cwd root below — is exit 3 with the reason
+on stderr; nothing is written or started.
 In a terminal, any failure (2 or 3) waits for Enter, up to ten minutes: the
 window was opened by a request that has long had its answer, and it would
 otherwise close before anyone could read why.
+
+## Where a child may run
+
+The window manager may let a head open a child in any directory under one root
+(its `claudeWt.childCwdRoot`), not only in the projects of its own list. It runs
+on Windows and compares strings, so a symlink under the root that leads out of
+it would pass there. The wrapper checks again on this machine:
+`CCFZF_CHILD_CWD_ROOT` set and not empty means `cwd`, after `pwd -P`, has to lie
+strictly under the root, also taken after `pwd -P`. The root itself is no
+place for a child.
+
+- Outside the root: exit 3, as any refusal.
+- A root that is not an absolute path to a directory, or one the wrapper
+  cannot enter: exit 2, a wrong argument. The same goes for a `cwd` it cannot
+  enter.
+
+A leading `//` counts as `/` in both: bash keeps it in `pwd -P`, and on Linux
+it names the same directory.
+- Unset or empty: no check, as before.
+
+The manager's launch command sets it —
+`exec env CCFZF_CHILD_CWD_ROOT='{childCwdRoot}' ~/bin/claude-wt-new …` — and
+leaves it empty when the directory is in its projects list: a child admitted by
+exact match is not held to the root. A variable and not an eighth argument, so
+that an older wrapper with a newer command, and the other way round, still
+work.
 
 ## What happens next
 
