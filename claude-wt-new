@@ -103,6 +103,9 @@ done < <(compgen -e | grep -E '^(CLAUDE_CODE_.*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFF
 # different ages must keep working together. Empty means no check — the manager
 # sends it only for a child admitted by the root rule.
 root=${CCFZF_CHILD_CWD_ROOT:-}
+# A condition of this launch, not the child's environment: its own tests and
+# its own calls of this wrapper would be held to a root nobody gave them.
+unset CCFZF_CHILD_CWD_ROOT
 if [[ -n $root ]]; then
   [[ $root == /* && -d $root ]] || die "child cwd root must be an absolute directory: '$root'"
   root=$(cd -- "$root" && pwd -P)

@@ -31,7 +31,8 @@ if sys.argv[1:] == ["agents", "--json"]:
     sys.exit(0)
 with open(os.environ["FAKE_OUT"], "w", encoding="utf-8") as fh:
     json.dump({"argv": sys.argv[1:], "cwd": os.getcwd(),
-               "env": sorted(k for k in os.environ if "CLAUDE" in k)}, fh)
+               "env": sorted(k for k in os.environ
+                             if "CLAUDE" in k or k == "CCFZF_CHILD_CWD_ROOT")}, fh)
 if os.environ.get("FAKE_SLEEP"):
     time.sleep(float(os.environ["FAKE_SLEEP"]))
 if os.environ.get("FAKE_SIGNAL"):
@@ -76,7 +77,8 @@ class Env:
     def env(self, extra_env=None):
         # Без переменных той сессии, что гоняет тест: иначе ответ зависел бы
         # от того, кто его запустил.
-        env = {k: v for k, v in os.environ.items() if "CLAUDE" not in k}
+        env = {k: v for k, v in os.environ.items()
+               if "CLAUDE" not in k and k != "CCFZF_CHILD_CWD_ROOT"}
         env.update(extra_env or {})
         env.update(CCFZF_CLAUDE_COMMAND=str(self.fake),
                    CCFZF_CHILDREN_DIR=str(self.children),
@@ -294,6 +296,16 @@ def test_child_cwd_root():
             e.nothing_happened(label)
         elif label == "inside":
             assert e.record()["cwd"] == str(e.proj.resolve()), e.record()
+
+
+def test_the_root_does_not_reach_the_child():
+    """Корень — условие этого запуска, а не окружение ребёнка: иначе его тесты
+    и его собственные вызовы обёртки держались бы корня, которого им никто
+    не давал."""
+    e = Env()
+    r = e.run(*e.good(), extra_env={"CCFZF_CHILD_CWD_ROOT": str(e.root)})
+    assert r.returncode == 0, r.stderr
+    assert "CCFZF_CHILD_CWD_ROOT" not in e.called()["env"], e.called()
 
 
 def test_closing_claude_is_not_an_error():
