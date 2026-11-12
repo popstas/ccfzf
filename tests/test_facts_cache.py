@@ -248,6 +248,61 @@ def test_a_bare_filename_does_not_disable_the_memo():
             os.chdir(old_cwd)
 
 
+# ── Метка кеша промпта ─────────────────────────────────────────────────────
+
+CACHE_AT = 1785958060
+
+
+def _tail_with_cache(calls):
+    def tail(path):
+        calls.append(path)
+        return ("T", "D", 0, {}, "cli",
+                {"state": "review", "question": "", "cacheAt": CACHE_AT})
+    return tail
+
+
+def test_метка_кеша_живёт_в_памятке():
+    # Простаивающая сессия — ровно та, ради которой таймер и заводился, и
+    # mtime у неё больше не сдвинется: метка обязана пережить попадание.
+    calls = []
+    tail = _tail_with_cache(calls)
+    got = CC["facts_for"](P, 100.0, {}, tail=tail, head=lambda p: "G",
+                          size_of=lambda p: 10)
+    assert got.get("agentCacheAt") == CACHE_AT, got
+    hit = CC["facts_for"](P, 100.0, {P: got}, tail=tail, head=lambda p: "G",
+                          size_of=lambda p: 10)
+    assert hit.get("agentCacheAt") == CACHE_AT, hit
+    assert calls == [P], calls
+
+
+def test_метка_кеша_переживает_полупопадание():
+    # Запись без gist кладёт `--dump`, и следующий `--state` берёт её
+    # полупопаданием: хвост не перечитывается, а состояние собирается из
+    # памятки. Метку эта сборка терять не должна.
+    calls = []
+    cache = {P: {"mtime": 100.0, "title": "T", "doing": "D",
+                 "entrypoint": "cli", "agentState": "review", "agentQuestion": "",
+                 "agentCacheAt": CACHE_AT, "size": 5}}
+    got = CC["facts_for"](P, 100.0, cache, tail=_tail_with_cache(calls),
+                          head=lambda p: "G")
+    assert calls == [], calls
+    assert got.get("agentCacheAt") == CACHE_AT, got
+
+
+def test_без_метки_в_памятке_ноль():
+    # В памятке ноль — «искали и не нашли»; наружу он ключом не выходит,
+    # это решает запись агента (test_cache_at.py).
+    calls, tail, head = counting()
+    got = CC["facts_for"](P, 100.0, {}, tail=tail, head=head, size_of=lambda p: 10)
+    assert got.get("agentCacheAt") == 0, got
+
+
+def test_версия_памятки_поднята_ради_метки():
+    # Иначе памятка прошлой версии отдавала бы записи без метки как полные, и
+    # у простаивающей сессии таймер не появился бы никогда.
+    assert CC["FACTS_VERSION"] >= 10, CC["FACTS_VERSION"]
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]

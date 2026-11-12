@@ -433,7 +433,9 @@ HOOK_LIVE_TTL = 120
 # абсолютным путём. Причина та же, что у 5 и 7: у простаивающей сессии
 # mtime не сдвинется, и без версии такую спеку нашли бы только те, кому ещё
 # напишут.
-FACTS_VERSION = 9
+# 10: метка кеша промпта (`agentCacheAt`). Причина та же: у простаивающей
+# сессии — а таймер ради неё и заводился — mtime больше не сдвинется.
+FACTS_VERSION = 10
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -662,7 +664,19 @@ def from_tail(tail, turn_at=0, mtime=0):
         # прежнее «записи нет»: по нему он решает, есть ли что отматывать
         # отметками «просмотрено» и стоит ли верить нулю в деньгах и контексте.
         "source": "transcript",
+        **cache_of(tail),
     }
+
+
+def cache_of(tail):
+    """`{"cacheAt": …}` из хвоста, или пустота — у обеих дорог записи агента.
+
+    Метка — наблюдение по транскрипту, а не отметка хука, поэтому и у хуковой
+    записи она отсюда же: хук про вызовы API не знает ничего. Ключа нет,
+    когда метки нет, — ноль читался бы «кеш остыл в 1970-м».
+    """
+    at = int(num((tail or {}).get("cacheAt")))
+    return {"cacheAt": at} if at else {}
 
 
 def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
@@ -763,6 +777,9 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
         # Старт сессии в текущем виде: meta.json хук переписывает на каждом
         # SessionStart, а /clear, resume и сжатие — тоже старт.
         "started": num(meta.get("started")),
+        # Время последнего ответа, продлившего кеш промпта: от него читатель
+        # считает остаток часа. Только из хвоста — см. `cache_of`.
+        **cache_of(tail),
     }
     return out
 
@@ -1114,6 +1131,33 @@ def stamp_of(o):
         return 0.0
 
 
+def cache_stamp(o):
+    """Время ответа агента, продлившего кеш промпта, или 0 — «эта запись не он».
+
+    Правила — как у виджета cache-timer в ccstatusline (запасная ветвь, по
+    транскрипту): им уже верят в статуслайне, и два ответа на один вопрос в
+    двух местах экрана были бы поводом не верить обоим.
+
+    - Только основная цепочка: у субагента свой контекст и свой кеш.
+    - Ошибка API до модели не дошла и кеш не тронула.
+    - Ответ с нулями в обоих кеш-полях прошёл мимо кеша. Запись без `usage`
+      засчитывается: поле бывает не у всех версий агента, и молчание его —
+      не довод против.
+    - Без времени отсчитывать час не от чего.
+    """
+    if not isinstance(o, dict) or o.get("type") != "assistant":
+        return 0.0
+    if o.get("isSidechain") is True or o.get("isApiErrorMessage") is True:
+        return 0.0
+    m = o.get("message")
+    usage = m.get("usage") if isinstance(m, dict) else None
+    if isinstance(usage, dict):
+        if num(usage.get("cache_read_input_tokens")) + \
+                num(usage.get("cache_creation_input_tokens")) <= 0:
+            return 0.0
+    return stamp_of(o)
+
+
 def tail_facts(path, doc_root=None):
     """(title, latest activity, turn start) from the tail of the file.
 
@@ -1147,6 +1191,14 @@ def tail_facts(path, doc_root=None):
     def pick(data):
         custom = ai = doing = entry = ""
         turn_at = 0.0
+        # Метка кеша промпта (`cache_stamp`) — из того же прохода. Выход из
+        # цикла она не держит: ответ агента в файле стоит ниже реплики
+        # человека, начавшей ход, и обратный проход встречает его раньше, чем
+        # выйдет по `doing и turn_at`. Не встретил — ход только начался или
+        # весь из ошибок API; у работающей сессии таймер не нужен, а
+        # дочитывать хвост ради метки прошлого хода значило бы платить за неё
+        # у каждой работающей сессии на каждом опросе.
+        cache_at = 0.0
         docs = {}
         # Состояние агента собирается тем же проходом. `closed` копит id тех
         # вызовов, чей `tool_result` уже встретился, — проход обратный, и
@@ -1214,6 +1266,8 @@ def tail_facts(path, doc_root=None):
             if not entry:
                 got = o.get("entrypoint")
                 entry = got if isinstance(got, str) else ""
+            if not cache_at:
+                cache_at = cache_stamp(o)
             if not turn_over:
                 blocks = content_of(o)
                 if isinstance(blocks, list):
@@ -1256,8 +1310,12 @@ def tail_facts(path, doc_root=None):
         else:
             state = ""
         question = question_text(pending_input) if state == "question" else ""
-        return (custom or ai, doing, turn_at, docs, entry,
-                {"state": state, "question": question})
+        agent = {"state": state, "question": question}
+        # Не нашлось — ключа нет, а не ноль: показанный ноль врал бы, как
+        # врал бы он у `contextPct` в `from_tail`.
+        if cache_at:
+            agent["cacheAt"] = int(cache_at)
+        return (custom or ai, doing, turn_at, docs, entry, agent)
 
     try:
         size = os.path.getsize(path)
@@ -2982,7 +3040,8 @@ def facts_for(path, mtime, cache, tail=None, head=None,
         docs = {}
         entry = old.get("entrypoint", "")
         agent = {"state": old.get("agentState", ""),
-                 "question": old.get("agentQuestion", "")}
+                 "question": old.get("agentQuestion", ""),
+                 "cacheAt": old.get("agentCacheAt", 0)}
     else:
         title, doing, turn_at, docs, entry, agent = tail(path)
         title = clean(title)
@@ -3001,7 +3060,11 @@ def facts_for(path, mtime, cache, tail=None, head=None,
               # Состояние живёт в памятке по тому же правилу, что и `turnAt`:
               # считается из того же хвоста и меняется только вместе с файлом.
               "agentState": agent.get("state", ""),
-              "agentQuestion": agent.get("question", "")}
+              "agentQuestion": agent.get("question", ""),
+              # Метка кеша — по тому же правилу. Здесь ноль, а не пропуск
+              # ключа: памятка внутренняя, и ноль в ней значит «искали и не
+              # нашли». Наружу ноль ключом не выходит — см. `cache_of`.
+              "agentCacheAt": int(num(agent.get("cacheAt")))}
     if size is not None:
         result["size"] = size
 
@@ -3496,7 +3559,8 @@ elif mode == "state":
             # раз незачем — памятка фактов его уже прочла.
             "agent": agent_of(sid, path, f.get("turnAt", 0),
                               {"state": f.get("agentState", ""),
-                               "question": f.get("agentQuestion", "")},
+                               "question": f.get("agentQuestion", ""),
+                               "cacheAt": f.get("agentCacheAt", 0)},
                               mtime),
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
