@@ -199,7 +199,7 @@ def test_bad_arguments_start_nothing():
         e.nothing_happened(label)
 
 
-def test_only_a_live_marked_head_that_is_no_child_may_open_one():
+def test_only_a_live_marked_head_may_open_one():
     def no_head_id(e):
         return e.good(head_id="-")
 
@@ -219,24 +219,40 @@ def test_only_a_live_marked_head_that_is_no_child_may_open_one():
         e.alive(OTHER)
         return e.good()
 
-    def head_is_a_child(e):
-        e.children.mkdir()
-        (e.children / (HEAD_ID + ".json")).write_text(
-            json.dumps({"sessionId": HEAD_ID, "name": "h", "headId": OTHER}),
-            encoding="utf-8")
+    def sid_is_running(e):
+        e.alive(HEAD_ID, SID)
         return e.good()
+
+    def sid_is_the_head(e):
+        return e.good(sid=HEAD_ID)
 
     def agents_unavailable(e):
         e.agents.write_text("not json", encoding="utf-8")
         return e.good()
 
     for case in (no_head_id, no_mark, mark_of_another, broken_mark, dead_head,
-                 head_is_a_child, agents_unavailable):
+                 sid_is_running, sid_is_the_head, agents_unavailable):
         e = Env()
         r = e.run(*case(e))
         assert r.returncode == 3, (case.__name__, r.returncode, r.stderr)
         assert "claude-wt-new:" in r.stderr, (case.__name__, r.stderr)
         e.nothing_happened(case.__name__)
+        # nothing_happened смотрит только на SID, а здесь id ребёнка — сам head.
+        assert e.record(HEAD_ID) is None, case.__name__
+
+
+def test_a_child_that_is_a_head_opens_a_grandchild():
+    """Иерархия head разрешена (Стас, 12.11): ребёнок со своей меткой head
+    открывает внука, а его собственная запись о родителе остаётся как была."""
+    e = Env()
+    e.children.mkdir()
+    own = {"sessionId": HEAD_ID, "name": "h", "head": "top", "headId": OTHER}
+    (e.children / (HEAD_ID + ".json")).write_text(json.dumps(own), encoding="utf-8")
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    rec = e.record()
+    assert rec["headId"] == HEAD_ID and rec["head"] == "head-x", rec
+    assert e.record(HEAD_ID) == own, e.record(HEAD_ID)
 
 
 def test_closing_claude_is_not_an_error():

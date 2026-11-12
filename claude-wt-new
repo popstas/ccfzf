@@ -21,8 +21,9 @@
 #   - $CCFZF_HEADS_DIR/<headId>.json (default ~/.ccfzf/heads) exists and its
 #     sessionId is headId — the head session writes that mark when it starts;
 #   - headId is a running session according to `claude agents --json`;
-#   - headId has no record of its own in the children directory: a child of a
-#     head cannot become one.
+#   - sessionId is not a running session: a record must never overwrite a live
+#     session's own, and the hierarchy must not loop.
+# A child may itself be a head and open children; depth is not limited.
 # The check sits here and not only in the caller because a request can reach
 # the window manager without going through the head-session skill at all.
 #
@@ -101,7 +102,7 @@ agents=$(eval "${CCFZF_CLAUDE_COMMAND:-claude} agents --json" 2>/dev/null </dev/
 # On success prints the name from the mark, on refusal the reason.
 read -r -d '' head_check <<'PY' || true
 import json, os, sys
-mark, child, head_id = sys.argv[1:]
+mark, head_id, sid = sys.argv[1:]
 def no(msg):
     print(msg)
     sys.exit(1)
@@ -114,8 +115,6 @@ except (OSError, ValueError) as e:
     no("cannot read head mark %s: %s" % (mark, e))
 if not isinstance(rec, dict) or rec.get("sessionId") != head_id:
     no("head mark %s belongs to another session" % mark)
-if os.path.exists(child):
-    no("%s is itself a child session (%s) and cannot open children" % (head_id, child))
 try:
     agents = json.load(sys.stdin)
 except ValueError:
@@ -124,10 +123,15 @@ if not isinstance(agents, list):
     no("cannot read the answer of claude agents --json")
 if not any(isinstance(a, dict) and a.get("sessionId") == head_id for a in agents):
     no("head session %s is not running" % head_id)
+# The head itself or one of its ancestors: their own records would be
+# overwritten, and the chain of heads would loop.
+if any(isinstance(a, dict) and str(a.get("sessionId", "")).lower() == sid.lower()
+       for a in agents):
+    no("session %s is already running" % sid)
 name = rec.get("name")
 print(name if isinstance(name, str) and "\n" not in name else "")
 PY
-verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$children/$head_id.json" "$head_id" \
+verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$head_id" "$sid" \
   <<<"$agents") || refuse "${verdict:-head check failed for $head_id}"
 [[ $head != - || -z $verdict ]] || head=$verdict
 

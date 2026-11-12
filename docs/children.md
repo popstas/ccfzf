@@ -26,16 +26,18 @@ nothing written or started.
 
 ## Who may open a child
 
-Only a running head session that is not itself a child. Before anything is
-written or started:
+Only a running head session. A child may be one as well: once it has its own
+mark it opens children of its own, to any depth. Before anything is written or
+started:
 
 1. `$CCFZF_HEADS_DIR/<headId>.json` (default `~/.ccfzf/heads`) exists and
    names `headId` as its `sessionId`. The head session writes this mark —
    `{sessionId, name, cwd, createdAt}` — when it takes the lead.
 2. That session is running: `claude agents --json` lists it. A mark outlives
    its session, so the mark alone proves nothing.
-3. `headId` has no record of its own in the children directory: a child of a
-   head cannot open children.
+3. `sessionId` is not a running session. The new record would otherwise
+   overwrite the record of a live session — the head itself or one of its
+   ancestors — and the chain of heads would loop.
 
 The caller checks the same before it asks for a window; the wrapper checks
 again because a request can reach the window manager without going through the
