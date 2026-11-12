@@ -1,6 +1,27 @@
 # Changelog
 
 
+## v0.8.0 - 2026-11-12
+
+### Features
+
+- claude-wt-new: Каталог ребёнка только под CCFZF_CHILD_CWD_ROOT
+- claude-wt-new: Ребёнок может открывать своих детей
+
+### Bug Fixes
+
+- claude-wt-new: Четыре мелочи ревью PR #19
+- claude-wt-new: Корень не уходит в окружение ребёнка
+
+### Documentation
+
+- plan: Контракт корня согласован с windows11-manager
+- plan: Иерархия head и корень каталога ребёнка в claude-wt-new
+
+### Testing
+
+- children: Привязанная сессия и внук несут своего head
+
 ## v0.7.0 - 2026-11-11
 
 ### Features
