@@ -87,7 +87,19 @@ ccfzf --session <id>        go straight into a session by id, no picker
 ccfzf --limit <n>           how many newest sessions to look at at all (100)
 ```
 
-`--session` is for scripts, not people: a missing or unknown id is a hard error (message on stderr, exit 1) rather than a fall back to the picker, which would hang with nobody at the keyboard. It composes with `--kiosk` (runs the session, then lands on that project's session list) and with `--print` (prints `cd <dir> && claude --resume <id>` instead of running it).
+`--session` is for scripts, not people: a missing or unknown id is a hard error (message on stderr, exit 1) rather than a fall back to the picker, which would hang with nobody at the keyboard. It composes with `--kiosk` (runs the session, then lands on that project's session list) and with `--print` (prints the command instead of running it).
+
+A session that is still running is joined, not resumed a second time:
+
+| the session is | `--session` does |
+|---|---|
+| running inside tmux or zellij | `tmux attach -t <pane>` (`switch-client` from inside tmux) / `zellij attach <name>` |
+| running with no multiplexer — its window was closed, but the process survived on a pty nobody reads (sshd keeping a dead connection) | takes it over with `reptyr -T <pid>`; if that fails, says so and falls back to `claude --resume` |
+| not running | `claude --resume <id>`, as always |
+
+A running session that has not had a single prompt yet has no transcript; its directory comes from the agent's own registry (`~/.claude/sessions/<pid>.json`), so it opens rather than failing with "not found".
+
+`reptyr` needs no root, but it needs file capabilities once: `sudo setcap 'cap_sys_ptrace,cap_dac_read_search+ep' "$(command -v reptyr)"`. Not `sudo reptyr`: sudo 1.9.14+ gives the command a pty of its own, and the session would move there instead of into your terminal. Moving the same session again from yet another terminal works too: the second half of the command (`reptyr <pid of the first reptyr>`) carries the first reptyr over, and the session with it.
 
 In the session list:
 

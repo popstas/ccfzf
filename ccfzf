@@ -3212,6 +3212,45 @@ def state_defaults(limit=""):
     ]
 
 
+def session_target(sid, live, procs, registry):
+    """Чем открыть сессию по id: {how, pid, tmux, zellij, cwd}.
+
+    `how` — одно из четырёх, по убыванию сохранности, тем же порядком, что у
+    пикера (`chooseOpenStrategy` в ccfzf-picker):
+
+    - `tmux` / `zellij` — живая сессия внутри мультиплексора: присоединиться к
+      нему, ничего не трогая;
+    - `reptyr` — живая без мультиплексора, то есть сирота на чужом pty: окно
+      закрыли, а держатель pty (sshd с мёртвым соединением) жив. Её переносят
+      к себе — второй процесс на том же транскрипте был бы хуже;
+    - `resume` — всё остальное, в том числе живая, у которой pid не нашёлся:
+      переносить нечего, и остаётся только поднять агента заново.
+
+    `cwd` — из реестра агента (`~/.claude/sessions/<pid>.json`), а за ним — из
+    /proc: у сессии без единого запроса транскрипта ещё нет, и спросить каталог
+    больше не у кого. Раньше такая сессия отвечала «not found», хотя работала.
+    """
+    proc = (procs.get(sid) or {}) if sid in live else {}
+    pid = proc.get("pid") or 0
+    cwd = ""
+    for rec in registry:
+        if rec.get("sid") == sid and (not pid or rec.get("pid") == pid):
+            cwd = rec.get("cwd") or ""
+            break
+    cwd = cwd or proc.get("cwd") or ""
+    tmux = proc.get("tmux") or ""
+    zellij = proc.get("zellij") or ""
+    if tmux:
+        how = "tmux"
+    elif zellij:
+        how = "zellij"
+    elif pid:
+        how = "reptyr"
+    else:
+        how = "resume"
+    return {"how": how, "pid": pid, "tmux": tmux, "zellij": zellij, "cwd": cwd}
+
+
 # `--state` — тот же режим `state`, но без путей в argv. Пустой предел значит
 # «умолчание самого блока» (DUMP_SESSIONS), и оно совпадает со значением,
 # которое подставляет обёртка.
@@ -3666,6 +3705,16 @@ elif mode == "comment":
         sys.stderr.write("ccfzf: not a session id\n")
         sys.exit(2)
 
+elif mode == "target":
+    # Для `--session`: чем открывать сессию прямо сейчас. По полю на строку, в
+    # том порядке, в каком их читает bash: how, pid, tmux, zellij, cwd. Не
+    # табуляцией: `read` с IFS из пробельного символа склеивает подряд идущие
+    # разделители, и пустой tmux сдвинул бы zellij на его место.
+    sid = sys.argv[2] if len(sys.argv) > 2 else ""
+    live, _, procs, _ = running_sessions() if UUID_RE.match(sid) else (set(), {}, {}, [])
+    t = session_target(sid, live, procs, registry_records())
+    print("\n".join(str(t[k] or "") for k in ("how", "pid", "tmux", "zellij", "cwd")))
+
 elif mode == "newname":
     # Занятыми считаются заголовки живых сессий: имя сессии — это заголовок её
     # окна, по нему оконный трекер привязывает сессию к слоту, и мешают друг
@@ -3802,13 +3851,25 @@ posbind=""
 # Called by external automation (claude-wt restore), so a missing session is an
 # error, not a reason to drop into the picker: that would hang the caller.
 if [[ -n $session_id ]]; then
+  # Живая ли сессия и чем занята — тем же обходом /proc, что и `--state`.
+  # Раньше ветка знала только транскрипт и всегда делала `--resume`: живой
+  # сессии в tmux это поднимало второй процесс рядом с первым, а живая без
+  # единого запроса (транскрипта ещё нет) отвечала «not found».
+  # Построчным `read`, а не `mapfile`: тот появился в bash 4, а на стоковом
+  # маке bash 3.2.
+  live_how="" live_pid="" live_tmux="" live_zellij="" live_cwd=""
+  { IFS= read -r live_how; IFS= read -r live_pid; IFS= read -r live_tmux
+    IFS= read -r live_zellij; IFS= read -r live_cwd; } < <(py target "$session_id") || true
+  live_how=${live_how:-resume}
+
   sess_file=$(ls -1 "$HOME"/.claude/projects/*/"$session_id".jsonl 2>/dev/null | head -1 || true)
-  [[ -n $sess_file ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
+  [[ -n $sess_file || $live_how != resume ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
+  dir=""
   # cwd is not reliably on line 1 — recent transcripts open with a run of meta
   # records (mode, last-prompt, permission-mode, hook attachments) before the
   # first line that carries it. Same idiom as dir_cwd() above: scan up to 50
   # lines, skip ones that fail to parse, take the first cwd found.
-  dir=$(python3 -c 'import json,sys
+  [[ -z $sess_file ]] || dir=$(python3 -c 'import json,sys
 try:
     with open(sys.argv[1], "rb") as f:
         for _ in range(50):
@@ -3827,25 +3888,126 @@ try:
                 break
 except OSError:
     pass' "$sess_file")
+  # Живой сессии без транскрипта каталог называет реестр агента.
+  [[ -n $dir && -d $dir ]] || dir=$live_cwd
   [[ -n $dir && -d $dir ]] || { echo "ccfzf: session $session_id has no usable cwd" >&2; exit 1; }
   cmd="$CLAUDE_CMD --resume $(printf '%q' "$session_id")$claude_tail"
   cmd=${cmd% }
-  if ((kiosk)); then
-    (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
-    rows=$(py projects "$MARKS" "$index")
-    all_rows=$rows
-    dump_state
-    picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
-    [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$dir" "$(basename "$dir")" "$dir")
-    query=""
-    posbind=""
-  elif ((print_mode)); then
-    printf 'cd %q && %s\n' "$dir" "$cmd"
+
+  # Присоединение к мультиплексору. Изнутри tmux `attach` отказывается
+  # («sessions should be nested with care»), там нужен `switch-client`.
+  attach=()
+  case $live_how in
+    tmux)
+      if [[ -n ${TMUX-} ]]; then attach=(tmux switch-client -t "$live_tmux")
+      else attach=(tmux attach -t "$live_tmux"); fi ;;
+    zellij) attach=(zellij attach "$live_zellij") ;;
+  esac
+
+  # Перенос сироты к себе. Та же команда, что у пикера (`buildAttachCommand`
+  # в ccfzf-picker), и по тем же причинам:
+  # - `-T`, а не плоский reptyr: плоский отказывает, когда у цели есть соседи
+  #   по группе процессов, а у агента это его дети MCP;
+  # - половина после `||` — второй и следующие переносы: первая кража уносит
+  #   мастер pty от sshd к первому reptyr, и `-T` его там уже не находит.
+  #   Тогда переносится сам первый reptyr, а сессия едет следом.
+  # Без sudo: sudo 1.9.14+ заводит свой pty, и сессия уехала бы в него. Права
+  # даёт reptyr-у `setcap cap_sys_ptrace,cap_dac_read_search+ep`.
+  steal_cmd="reptyr -T $live_pid || reptyr \"\$(pgrep -x -f 'reptyr -T $live_pid' | head -1)\""
+  # reptyr запускается не прямым ребёнком этого bash, а через обёртку, и это
+  # условие второго переноса, а не украшение. Плоский reptyr, переносящий
+  # первый, заводит служебного потомка через `CLONE_PARENT` — ребёнка
+  # *родителя* цели — и ждёт его остановки. Родителем был бы этот bash, а
+  # `set -m` (которым reptyr ставился бы в свою группу) ждёт детей с
+  # WUNTRACED и забирает эту остановку себе: проверено 2026-11-14, второй
+  # перенос падал с «Timed out waiting for child stop», сессия оставалась в
+  # первом терминале, а ccfzf отвечал 0. Пикер этим не болеет: у него
+  # `exec reptyr`, и родитель — sshd. Обёртка делает то же, что `set -m`
+  # (своя группа процессов, передний план терминала), но ждёт только своего
+  # ребёнка — с ней второй перенос проходит.
+  FG_PY='import os, signal, sys
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    try:
+        os.tcsetpgrp(0, os.getpgrp())
+    except OSError:
+        pass
+    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+    try:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    except OSError:
+        os._exit(127)
+try:
+    os.setpgid(child, child)
+except OSError:
+    pass
+try:
+    os.tcsetpgrp(0, child)
+except OSError:
+    pass
+while True:
+    try:
+        _, status = os.waitpid(child, 0)
+        break
+    except InterruptedError:
+        continue
+try:
+    os.tcsetpgrp(0, os.getpgrp())
+except OSError:
+    pass
+sys.exit(os.waitstatus_to_exitcode(status))'
+  steal() {
+    local prev
+    python3 -c "$FG_PY" reptyr -T "$live_pid" && return 0
+    prev=$(pgrep -x -f "reptyr -T $live_pid" | head -1 || true)
+    [[ -n $prev ]] || return 1
+    python3 -c "$FG_PY" reptyr "$prev"
+  }
+
+  # 0 — сессия открыта или уже закончилась; 1 — открыть не вышло, нужен resume.
+  open_live() {
+    case $live_how in
+      tmux|zellij) "${attach[@]}" || true; return 0 ;;
+      reptyr)
+        command -v reptyr >/dev/null 2>&1 && steal && return 0
+        # Неудача после успешного переноса — это конец сессии, а не отказ:
+        # процесса уже нет, и поднимать его заново никто не просил.
+        command -v reptyr >/dev/null 2>&1 && ! kill -0 "$live_pid" 2>/dev/null && return 0
+        echo "ccfzf: could not take over process $live_pid with reptyr; resuming instead (a second process on the same session)" >&2
+        return 1 ;;
+    esac
+    return 1
+  }
+
+  if ((print_mode)); then
+    case $live_how in
+      tmux|zellij) printf 'cd %q && %q' "$dir" "${attach[0]}"; printf ' %q' "${attach[@]:1}"; echo ;;
+      reptyr) printf '%s\n' "$steal_cmd" ;;
+      *) printf 'cd %q && %s\n' "$dir" "$cmd" ;;
+    esac
     exit 0
-  else
-    cd "$dir"
-    exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
   fi
+
+  if open_live; then
+    ((kiosk)) || exit 0
+  else
+    [[ -n $sess_file ]] || { echo "ccfzf: session $session_id has no transcript yet, nothing to resume" >&2; exit 1; }
+    if ((kiosk)); then
+      (cd "$dir" && exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")") || true
+    else
+      cd "$dir"
+      exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
+    fi
+  fi
+  rows=$(py projects "$MARKS" "$index")
+  all_rows=$rows
+  dump_state
+  picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
+  [[ -n $picked ]] || picked=$(printf '%s\t%s\t%s' "$dir" "$(basename "$dir")" "$dir")
+  query=""
+  posbind=""
 fi
 
 # --- resolve the project argument ------------------------------------------
