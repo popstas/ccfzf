@@ -93,6 +93,22 @@ def test_junk_terminal_name_does_not_cost_the_window():
     assert windows[UUID_A]["title"] == "ccfzf", windows[UUID_A]
 
 
+def test_window_icon_reaches_the_reader():
+    # Иконку окна ставит трекер (корона у head, иконка проекта), читатель рисует
+    # её в строке: путь на машине трекера доезжает как есть.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW,
+                                       "icon": "C:\\images\\ico\\ccfzf-picker.ico"}))
+    assert windows[UUID_A]["icon"] == "C:\\images\\ico\\ccfzf-picker.ico", windows[UUID_A]
+
+
+def test_window_icon_missing_or_junk_is_empty():
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW}))
+    assert windows[UUID_A]["icon"] == "", windows[UUID_A]
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW,
+                                       "icon": ["нет"]}))
+    assert windows[UUID_A]["icon"] == "", windows[UUID_A]
+
+
 def test_minimized_reaches_the_reader():
     # Свёрнутость видит только трекер: у читателя окон нет вовсе, а гасить по
     # ней строку и выкидывать её из раскладки — его работа.
