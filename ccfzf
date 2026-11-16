@@ -12,7 +12,7 @@
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
 #   ccfzf --limit <n>           how many newest sessions to look at at all
-#                               (default 100; applies to --state and --dump)
+#                               (default 300; applies to --state and --dump)
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -100,10 +100,12 @@ comment_id=""
 comment_host=""
 project=""
 session_id=""
-# Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
-# рассчитаны на список для человека; читателю дампа столько не нужно никогда,
-# а платит за них и он (разбор), и машина-писатель (двести хвостов на каждый опрос).
-limit=100
+# Сколько новейших сессий ccfzf вообще рассматривает. 10.08 урезали 200 → 100
+# ради CPU на pc-virt (двести хвостов на каждый опрос); памятка фактов сняла эту
+# цену — тёплый вызов почти не зависит от лимита. 16.11 сто сессий покрывали
+# уже 3 дня вместо 7, и история пикера теряла сессии недельной давности; 300 —
+# ~9 дней. Растёт теперь ответ --state (~1.8 КБ на сессию), а не CPU.
+limit=300
 claude_args=()
 
 while (($#)); do
@@ -372,7 +374,7 @@ def project_docs(cwd, now=None):
             if kind not in best or st.st_mtime > best[kind][0]:
                 best[kind] = (st.st_mtime, rel_dir + "/" + name)
     return {kind: rel for kind, (_, rel) in best.items()}
-DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
+DUMP_SESSIONS = 300       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
 # дольше этого значит, что машину выключили или демон умер, а не что расклад
