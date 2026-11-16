@@ -148,6 +148,31 @@ def test_unknown_content_age_falls_back_to_mtime():
     assert rows[0]["mtime"] == 9000.0, rows
 
 
+def test_icon_sticks_to_the_row_it_belongs_to():
+    # Иконка проекта клеится тем же путём, что и хоткей.
+    dirs = [{"dir": "/d/-p-one", "cwd": "/p/one",
+             "files": [("/d/-p-one/a.jsonl", 1000.0)]}]
+    rows = CC["project_rows"](dirs, set(), {})
+    out = CC["merge_project_hotkeys"](rows, [{"cwd": "/p/one", "name": "one",
+                                              "icon": "C:\\i\\one.ico"}])
+    assert out[0]["icon"] == "C:\\i\\one.ico", out
+    assert "hotkey" not in out[0], out
+
+
+def test_icon_alone_does_not_invent_a_row():
+    # Строку заводит только хоткей: клавише нужна строка, иконке — нет.
+    # Проект без сессий и закладки с одной иконкой в список не попадает.
+    out = CC["merge_project_hotkeys"]([], [{"cwd": "/p/cold", "name": "cold",
+                                            "icon": "C:\\i\\cold.ico"}])
+    assert out == [], out
+
+
+def test_synthetic_hotkey_row_carries_its_icon():
+    out = CC["merge_project_hotkeys"]([], [{"cwd": "/p/cold", "name": "cold",
+                                            "hotkey": "Ctrl+F12", "icon": "C:\\i\\cold.ico"}])
+    assert out[0]["hotkey"] == "Ctrl+F12" and out[0]["icon"] == "C:\\i\\cold.ico", out
+
+
 if __name__ == "__main__":
     fails = 0
     names = [n for n in globals() if n.startswith("test_")]

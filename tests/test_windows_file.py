@@ -370,6 +370,50 @@ def test_junk_open_session_reads_as_yes():
     assert opens is True, opens
 
 
+def test_project_icon_reaches_the_reader():
+    # Строкам без окна (история и проекты пикера) иконку брать больше неоткуда:
+    # в записи окна она есть только у открытого. Проект с иконкой, но без
+    # хоткея, тоже доезжает — без ключа `hotkey`, а не с пустым: у читателя
+    # «нет клавиши» и «клавиша пустая» — разные вещи.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["projects"] = [
+        {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "icon": "C:\\i\\home.ico"},
+        {"cwd": "/p/plain", "name": "plain", "icon": "C:\\i\\plain.ico"},
+        {"cwd": "/p/none", "name": "none"},
+        {"cwd": "/p/junk", "name": "junk", "icon": 5},
+    ]
+    assert _read_projects(payload) == [
+        {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "icon": "C:\\i\\home.ico"},
+        {"cwd": "/p/plain", "name": "plain", "icon": "C:\\i\\plain.ico"},
+    ], _read_projects(payload)
+
+
+def _read_head_icon(obj, now=NOW):
+    """Десятое значение read_windows — корона head от трекера."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "windows.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+        return CC["read_windows"](path, now)[9]
+
+
+def test_head_icon_reaches_the_reader():
+    # Корона для закрытой head-сессии в истории: окна у неё нет, а трекер знает,
+    # какую иконку он поставил бы её окну.
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    payload["headIcon"] = "C:\\repo\\icons\\crown.ico"
+    assert _read_head_icon(payload) == "C:\\repo\\icons\\crown.ico"
+
+
+def test_head_icon_missing_or_junk_is_empty():
+    payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
+    assert _read_head_icon(payload) == ""
+    payload["headIcon"] = ["no"]
+    assert _read_head_icon(payload) == ""
+    # Протухший файл — пустота целиком, и корона тоже.
+    assert _read_head_icon({"generated": 0, "host": "pc", "windows": {}, "headIcon": "x"}) == ""
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
