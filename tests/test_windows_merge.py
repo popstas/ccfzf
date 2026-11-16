@@ -19,7 +19,7 @@ def _write(path, obj):
 
 
 def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None,
-          open_session=None, mqtt_base=None, http=None):
+          open_session=None, mqtt_base=None, http=None, head_icon=None):
     out = {"generated": NOW - 1, "host": host, "pid": pid, "windows": windows}
     if focus is not None:
         out["focus"] = focus
@@ -33,6 +33,8 @@ def _file(host, windows, pid=42, focus=None, projects=None, snapshots=None,
         out["mqttBase"] = mqtt_base
     if http is not None:
         out["http"] = http
+    if head_icon is not None:
+        out["headIcon"] = head_icon
     return out
 
 
@@ -260,6 +262,18 @@ def test_snapshot_carries_the_machine_that_took_it():
     assert by_id["2026-08-14T01-00-00"]["mqttBase"] == "", snaps
     assert by_id["2026-08-14T02-00-00"]["host"] == "mac-host", snaps
     assert by_id["2026-08-14T02-00-00"]["mqttBase"] == "home/room/mac/windows", snaps
+
+
+def test_head_icon_lives_in_the_host_record():
+    # Путь короны — на диске машины трекера, поэтому он приписан машине: пикер
+    # возьмёт его только у своей. Трекер без короны ключа не получает вовсе —
+    # запись машины прежней формы читателям прошлой версии не меняется.
+    _, _, _, _, _, hosts = _merge(
+        legacy=_file("windows-box", {}, head_icon="C:\\r\\crown.ico"),
+        dir_files={"mac-host.json": _file("mac-host", {}, pid=7)},
+    )
+    assert hosts[0]["headIcon"] == "C:\\r\\crown.ico", hosts
+    assert "headIcon" not in hosts[1], hosts
 
 
 if __name__ == "__main__":
