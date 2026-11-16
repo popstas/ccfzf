@@ -31,7 +31,8 @@ it needs — nothing else:
    "mtime": 1785460166.26,
    "kind": "interactive",
    "parent": "",
-   "activityAt": 1785460166
+   "activityAt": 1785460166,
+   "shell": false
   }
  ]
 }
@@ -42,6 +43,17 @@ it needs — nothing else:
 never did — the reader ranks same-titled candidates by it, and computing it here
 saves it a network `stat` per candidate. `kind` is `interactive` or `background`,
 and `parent` names the session a background agent was forked from.
+
+`shell` is `true` while the session's turn is over but a background command it
+started — Bash with `run_in_background`, or a Monitor — is still running: what
+Claude Code itself writes as `"status": "shell"` in `~/.claude/sessions/<pid>.json`.
+It replaces only `idle` there; mid-turn the record says `busy`, and a pending
+question says `waiting`, background command or not. An agent too old to write a
+status is judged by its processes instead: a child shell wrapped in
+`~/.claude/shell-snapshots/snapshot-…` while the hook says the turn is over. The
+command line itself stays out of this file — from here it travels on into MQTT
+and Home Assistant, and a command line can carry a token. It goes to
+[`--state`](state.md) only.
 
 ## `CCFZF_PROJECTS_FILE`
 

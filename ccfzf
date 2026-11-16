@@ -1693,6 +1693,12 @@ WINDOWS = sys.platform == "win32"
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
+# Статусы, которые агент пишет в свою запись реестра (сверено по 2.1.325).
+# `shell` он ставит вместо `idle`, когда ход закончен, а фоновая команда
+# (Bash с run_in_background или Monitor) ещё идёт: `busy` и `waiting` её
+# перебивают. Посреди хода с фоновой командой запись остаётся `busy`.
+REGISTRY_STATUSES = ("busy", "shell", "idle", "waiting")
+
 
 def registry_records(path=SESSIONS_DIR):
     """[{sid, pid, cwd, procStart}] из `~/.claude/sessions/<pid>.json`.
@@ -1743,8 +1749,14 @@ def registry_records(path=SESSIONS_DIR):
         if rec.get("kind", "interactive") != "interactive":
             continue
         name = rec.get("name")
+        # `status` — что агент сам говорит о себе: busy / idle / waiting /
+        # shell. `None`, когда поля нет или значение незнакомо: «агент этой
+        # версии не пишет статус» и «пишет `idle`» читаются по-разному —
+        # первому положен запасной ход по процессам (`background_shell`).
+        status = rec.get("status")
         out.append({"sid": sid, "pid": pid, "cwd": cwd, "procStart": str(started),
-                    "name": name if isinstance(name, str) else ""})
+                    "name": name if isinstance(name, str) else "",
+                    "status": status if status in REGISTRY_STATUSES else None})
     return out
 
 
@@ -1776,7 +1788,8 @@ def registry_by_pid(path=SESSIONS_DIR):
     """
     if path in _REGISTRY:
         return _REGISTRY[path]
-    out = {rec["pid"]: {"sid": rec["sid"], "cwd": rec["cwd"], "name": rec["name"]}
+    out = {rec["pid"]: {"sid": rec["sid"], "cwd": rec["cwd"], "name": rec["name"],
+                        "status": rec["status"]}
            for rec in registry_records(path)}
     _REGISTRY[path] = out
     return out
@@ -1927,7 +1940,8 @@ def windows_sessions(records=None, started_of=None):
             continue
         live.add(rec["sid"])
         procs[rec["sid"]] = {"pid": rec["pid"], "tty": "", "tmux": None,
-                             "zellij": None, "cwd": rec["cwd"]}
+                             "zellij": None, "cwd": rec["cwd"],
+                             "status": rec.get("status")}
     return live, procs
 
 
@@ -2647,6 +2661,16 @@ def running_sessions():
     moved, resolved = reattribute_by_pid(live, procs, agents, pid_owners())
     moved |= reattribute(live, procs, agents, stamps, now, skip_procs=resolved)
     live_by_hook(live, stamps, now, skip=moved)
+    # Статус из реестра — после переездов, потому что переезжает запись
+    # процесса целиком, а реестр отвечает про процесс, не про id. Сверка
+    # каталога — та же, что у `registry_claim`, и по той же причине: реестр за
+    # собой не чистят, и вчерашний покойник с тем же номером назвал бы статус
+    # чужого процесса.
+    by_pid = registry_by_pid()
+    for p in procs.values():
+        rec = by_pid.get(p["pid"])
+        ok = rec is not None and (not p.get("cwd") or rec["cwd"] == p["cwd"])
+        p["status"] = rec["status"] if ok else None
     for name, n in zellij_agents.items():
         if name in zellij:
             zellij[name]["agents"] = n
@@ -2654,6 +2678,94 @@ def running_sessions():
     # (poller.rs), и порядок, зависящий от обхода /proc, дёргал бы его без
     # всякой причины.
     return live, agents, procs, sorted(zellij.values(), key=lambda r: r["name"])
+
+
+SNAPSHOT_MARK = "/.claude/shell-snapshots/snapshot-"
+EVAL_RE = re.compile(r"\beval '((?:[^']|'\\'')*)'")
+SHELL_CMD_MAX = 80
+
+
+def shell_command(args):
+    """Текст команды из argv оболочки, которую агент поднял под Bash; None — не она.
+
+    Агент запускает каждую команду одинаково: `<шелл> -c 'source
+    ~/.claude/shell-snapshots/snapshot-….sh … && eval '<команда>' < /dev/null'`.
+    Метка снимка — признак, что процесс его, а сама команда — последний
+    `eval '…'` в строке, с одинарной кавычкой внутри, записанной как `'\''`.
+    Не нашлось `eval` — `""`: процесс агента, но команду не разобрать.
+
+    Склейка через пробел — ради мака: там argv приезжает из `ps` одной
+    строкой, а на Linux команда и так целиком лежит в одном аргументе `-c`.
+    """
+    text = " ".join(args)
+    if SNAPSHOT_MARK not in text:
+        return None
+    found = EVAL_RE.findall(text)
+    if not found:
+        return ""
+    cmd = " ".join(found[-1].replace("'\\''", "'").split())
+    return cmd if len(cmd) <= SHELL_CMD_MAX else cmd[:SHELL_CMD_MAX - 1] + "…"
+
+
+def agent_shells(pid):
+    """[текст команды] у оболочек, которые сейчас держит процесс агента.
+
+    Дети спрашиваются только у этого процесса, а не в общем обходе
+    `running_sessions`: тот идёт раз в секунду по всем процессам машины, а
+    сюда приходят единицы — сессии, о которых уже известно, что ход закончен.
+    На Windows детей спросить нечем, и реестр там единственный ответ.
+    """
+    if WINDOWS:
+        return []
+    if DARWIN:
+        kids = [k for k, row in ps_table().items() if row.get("ppid") == str(pid)]
+    else:
+        kids = []
+        for path in glob.glob("/proc/%s/task/*/children" % pid):
+            try:
+                with open(path) as fh:
+                    kids += fh.read().split()
+            except OSError:
+                continue
+    out = []
+    for kid in kids:
+        try:
+            cmd = shell_command(proc_args(kid))
+        except OSError:
+            continue
+        if cmd is not None:
+            out.append(cmd)
+    return out
+
+
+# Состояния хука, в которых ход закончен. Только в них оболочка-ребёнок
+# значит фоновую команду: посреди хода такой же ребёнок у обычного вызова Bash.
+TURN_OVER = ("idle", "review")
+
+
+def background_shell(proc, agent_state, shells=agent_shells):
+    """(ход закончен, а фоновая команда идёт; её короткий текст или `""`).
+
+    Ответ агента главнее: `status` из реестра, и при нём дети процесса
+    спрашиваются только ради текста команды. Запасной ход — для агента,
+    который статуса не пишет (`status` None): оболочка-ребёнок при состоянии
+    хука из `TURN_OVER`. Статус, отличный от `shell`, — ответ «нет» и без
+    запасного хода: `busy` и `waiting` перебивают фоновую команду у самого
+    агента, а `idle` при живом ребёнке значит, что команда уже кончилась и
+    процесс доживает доли секунды.
+    """
+    pid = (proc or {}).get("pid") or 0
+    if not pid:
+        return False, ""
+    status = proc.get("status")
+    if status is not None and status != "shell":
+        return False, ""
+    if status is None and agent_state not in TURN_OVER:
+        return False, ""
+    cmds = shells(pid)
+    if status is None and not cmds:
+        return False, ""
+    return True, next((c for c in cmds if c), "")
 
 
 def scan_dirs():
@@ -2951,7 +3063,12 @@ def merge_project_hotkeys(rows, projects):
 # ходит вовсе, он берёт --state по ssh. Комментарий над режимом dump обещал
 # «for whatever else wants to know it»; желающих не нашлось, а платят за
 # обещание оба читателя, разбирая и выбрасывая эти байты четырежды в минуту.
-DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt")
+#
+# `shell` — для кнопки окна на панели задач: ход закончен, а фоновая команда
+# идёт (background_shell). Логический всегда, даже `false`: читатель дампа
+# отличает его от отсутствия — ccfzf прошлой версии поля не пишет.
+DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt",
+             "shell")
 
 
 def dump_record(s):
@@ -3529,12 +3646,19 @@ elif mode == "dump":
                               tail=lambda p, root=cwd: tail_facts(p, root))
                 facts[path] = f
             agent = agents.get(sid) or {}
+            # Состояние хука нужно только запасному ходу — агенту без статуса в
+            # реестре; у остальных agent_of не зовётся вовсе.
+            proc = procs.get(sid) if sid in live else None
+            need_hook = proc is not None and proc.get("status") is None
+            shell, _ = background_shell(
+                proc, ((agent_of(sid) or {}).get("state", "")) if need_hook else "")
             sessions.append(dump_record({
                 "id": sid, "cwd": cwd, "title": f["title"],
                 "mtime": mtime, "live": sid in live,
                 "kind": agent.get("kind", "interactive"),
                 "parent": agent.get("parent", ""),
                 "activityAt": int(stamps.get(sid, 0)),
+                "shell": shell,
             }))
         if facts != cache:
             save_facts(FACTS_FILE, facts)
@@ -3642,6 +3766,16 @@ elif mode == "state":
             facts[path] = f
         agent = agents.get(sid) or {}
         wins = windows.get(sid)
+        # Хвост транскрипта передаётся готовым и здесь: на машине без
+        # хуков он единственный источник состояния, а читать файл второй
+        # раз незачем — памятка фактов его уже прочла.
+        hook = agent_of(sid, path, f.get("turnAt", 0),
+                        {"state": f.get("agentState", ""),
+                         "question": f.get("agentQuestion", ""),
+                         "cacheAt": f.get("agentCacheAt", 0)},
+                        mtime)
+        shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
+                                            (hook or {}).get("state", ""))
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
@@ -3693,14 +3827,13 @@ elif mode == "state":
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
             "zellij": (procs.get(sid) or {}).get("zellij"),
-            # Хвост транскрипта передаётся готовым и здесь: на машине без
-            # хуков он единственный источник состояния, а читать файл второй
-            # раз незачем — памятка фактов его уже прочла.
-            "agent": agent_of(sid, path, f.get("turnAt", 0),
-                              {"state": f.get("agentState", ""),
-                               "question": f.get("agentQuestion", ""),
-                               "cacheAt": f.get("agentCacheAt", 0)},
-                              mtime),
+            "agent": hook,
+            # Ход закончен, а фоновая команда агента ещё идёт — то, что агент
+            # сам пишет в реестр как `shell` (см. background_shell). Не часть
+            # `agent`: тот — запись хука, а это ответ процесса. `shellCmd` —
+            # её начало для карточки, только здесь: в дамп командная строка
+            # не едет, оттуда она ушла бы дальше, в MQTT и Home Assistant.
+            "shell": shell, "shellCmd": shell_cmd,
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
             # некому — она не видна ни в одной строке списка.

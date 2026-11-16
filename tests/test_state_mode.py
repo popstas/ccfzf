@@ -170,7 +170,7 @@ def test_activity_at_comes_from_the_hook_file():
         assert by_id[B]["activityAt"] == 0, by_id[B]
 
 
-def test_the_dump_written_on_the_way_has_only_the_eight_fields():
+def test_the_dump_written_on_the_way_has_only_the_nine_fields():
     with tempfile.TemporaryDirectory() as tmp:
         build_home(tmp, [A, B])
         dump_path = os.path.join(tmp, "dump.json")
@@ -180,7 +180,8 @@ def test_the_dump_written_on_the_way_has_only_the_eight_fields():
         assert dump["sessions"], dump
         for s in dump["sessions"]:
             assert set(s) == {"id", "title", "cwd", "live", "mtime",
-                              "kind", "parent", "activityAt"}, s
+                              "kind", "parent", "activityAt", "shell"}, s
+            assert s["shell"] is False, s
 
 
 def test_the_state_answer_drops_what_the_picker_never_reads():

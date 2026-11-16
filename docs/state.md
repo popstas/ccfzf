@@ -7,14 +7,21 @@ and `snapshots`.
 The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
-`todo`, `comment`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`, and
-the `head`/`headId` of a session started by [`claude-wt-new`](children.md). An
+`todo`, `comment`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
+`shell`/`shellCmd`, and the `head`/`headId` of a session started by
+[`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
 the reader treats a missing key exactly as it treated the empty one. Two
 exceptions: a `live` session always carries a numeric `pid` (zero when only an
 open window makes it live), and an `agent` record always carries `updated`.
 Inside `agent` the same rule applies, and `lastSummary` is left out whenever
 `summary` is set, since the reader only falls back to it on an empty `summary`.
+
+`shell` is `true` on a live session whose turn is over while a background
+command still runs — the same flag as in [the dump](dumps.md), where its rules
+are. `shellCmd` is the start of that command, whitespace collapsed, cut to 80
+characters, for the card; empty, and so absent, when the command line could not
+be read (always on Windows, where the registry answers but no process list does).
 
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).

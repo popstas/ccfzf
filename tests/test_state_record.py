@@ -12,7 +12,7 @@ HISTORY = {
     "prompts": 3, "title": "", "gist": "g", "doing": "d", "mtime": 100.5,
     "age": "1m", "live": False, "frozen": False, "activityAt": 99,
     "kind": "interactive", "parent": "", "pid": 0, "tty": "", "tmux": None,
-    "zellij": None, "window": None, "windows": None,
+    "zellij": None, "window": None, "windows": None, "shell": False, "shellCmd": "",
     "agent": {"state": "idle", "event": "", "message": "", "summary": "итог",
               "lastSummary": "прошлый", "prompt": "сделай", "question": "",
               "branch": "", "pr_url": "", "costUsd": 0, "contextPct": 12.0,
@@ -36,6 +36,14 @@ def test_the_source_row_is_not_touched():
     CC["state_record"](HISTORY)
     assert HISTORY == before
     assert set(CC["dump_record"](HISTORY)) == set(CC["DUMP_KEEP"])
+
+
+def test_a_background_command_survives_only_when_it_is_running():
+    live = {**HISTORY, "live": True, "pid": 7, "shell": True, "shellCmd": "sleep 300"}
+    got = CC["state_record"](live)
+    assert got["shell"] is True and got["shellCmd"] == "sleep 300", got
+    got = CC["state_record"]({**live, "shell": False, "shellCmd": ""})
+    assert "shell" not in got and "shellCmd" not in got, got
 
 
 def test_last_summary_stays_when_summary_is_blank():

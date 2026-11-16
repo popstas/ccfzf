@@ -48,7 +48,7 @@ def _record(pid, sid, cwd="/p", **extra):
 def test_the_registry_is_indexed_by_pid():
     d = _dir([("10.json", _record(10, UUID_A, name="one"))])
     assert CC["registry_by_pid"](d) == {
-        10: {"sid": UUID_A, "cwd": "/p", "name": "one"},
+        10: {"sid": UUID_A, "cwd": "/p", "name": "one", "status": None},
     }
 
 
