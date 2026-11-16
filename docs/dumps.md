@@ -10,7 +10,7 @@ dump without opening the picker.
 
 ## `CCFZF_SESSIONS_FILE`
 
-The newest sessions across **all** projects (`--limit`, 300 by default), newest
+The newest sessions across **all** projects (`--limit`, 500 by default), newest
 first, plus every live session and every session with a window open, so the file
 always holds whoever a window on screen might belong to.
 

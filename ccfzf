@@ -12,7 +12,7 @@
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
 #   ccfzf --limit <n>           how many newest sessions to look at at all
-#                               (default 300; applies to --state and --dump)
+#                               (default 500; applies to --state and --dump)
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -104,8 +104,10 @@ session_id=""
 # ради CPU на pc-virt (двести хвостов на каждый опрос); памятка фактов сняла эту
 # цену — тёплый вызов почти не зависит от лимита. 16.11 сто сессий покрывали
 # уже 3 дня вместо 7, и история пикера теряла сессии недельной давности; 300 —
-# ~9 дней. Растёт теперь ответ --state (~1.8 КБ на сессию), а не CPU.
-limit=300
+# ~9 дней. Растёт теперь ответ --state, а не CPU. Тот же день ответ урезан
+# (state_record: без полей, которых пикер не читает, и без пустых), и 500 —
+# ~17 дней — весят ~371 КБ, легче прежних 300 до среза (644 КБ).
+limit=500
 claude_args=()
 
 while (($#)); do
@@ -374,7 +376,7 @@ def project_docs(cwd, now=None):
             if kind not in best or st.st_mtime > best[kind][0]:
                 best[kind] = (st.st_mtime, rel_dir + "/" + name)
     return {kind: rel for kind, (_, rel) in best.items()}
-DUMP_SESSIONS = 300       # умолчание для --limit: сколько новейших сессий смотрим
+DUMP_SESSIONS = 500       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
 # дольше этого значит, что машину выключили или демон умер, а не что расклад
@@ -2970,7 +2972,7 @@ def dump_record(s):
 # ключ и так выбрасывал), `activityAt` (он для дампа и уезжает туда через
 # DUMP_KEEP). `gist` buildSessionList переписывает в строку, но дальше его не
 # читает никто. Вместе с пустыми ключами ниже это больше половины ответа: при
-# --limit 300 он весил 649 КБ, и пикер тянул его по ssh раз в секунду.
+# --limit 300 он весил 644 КБ, и пикер тянул его по ssh раз в секунду.
 #
 # Срез — только на выводе, а не при сборке: те же `sessions` уходят в
 # dump_record, и `activityAt` с `parent` там обязательны.
