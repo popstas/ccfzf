@@ -45,7 +45,8 @@ saves it a network `stat` per candidate. `kind` is `interactive` or `background`
 and `parent` names the session a background agent was forked from.
 
 `shell` is `true` while the session's turn is over but a background command it
-started — Bash with `run_in_background`, or a Monitor — is still running: what
+started — Bash with `run_in_background` (and, by the agent's code, a Monitor;
+not observed) — is still running: what
 Claude Code itself writes as `"status": "shell"` in `~/.claude/sessions/<pid>.json`.
 It replaces only `idle` there; mid-turn the record says `busy`, and a pending
 question says `waiting`, background command or not. An agent too old to write a

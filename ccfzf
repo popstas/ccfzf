@@ -1695,8 +1695,9 @@ SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
 # Статусы, которые агент пишет в свою запись реестра (сверено по 2.1.325).
 # `shell` он ставит вместо `idle`, когда ход закончен, а фоновая команда
-# (Bash с run_in_background или Monitor) ещё идёт: `busy` и `waiting` её
-# перебивают. Посреди хода с фоновой командой запись остаётся `busy`.
+# (Bash с run_in_background; по коду агента — и Monitor, вживую не сверено)
+# ещё идёт: `busy` и `waiting` её перебивают. Посреди хода с фоновой
+# командой запись остаётся `busy` — сверено вживую.
 REGISTRY_STATUSES = ("busy", "shell", "idle", "waiting")
 
 
