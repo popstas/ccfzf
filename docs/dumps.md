@@ -84,7 +84,7 @@ measured — the signature of a transcript replaced outright (restored from a
 backup, compacted) rather than appended to, which an `mtime` bump alone would not
 catch. A stable `gist` otherwise survives any number of appends unchanged.
 
-The stored `gist` is capped at 200 characters, matching the field it feeds in
-`--state`. The file carries a version number; a version it does not recognise is
+The stored `gist` is capped at 200 characters, matching the field it used to
+feed in `--state` (the answer no longer sends it: no reader looked at it). The file carries a version number; a version it does not recognise is
 read as an empty memo, so a format change costs one cold run rather than a wrong
 one.

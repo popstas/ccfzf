@@ -158,8 +158,11 @@ def test_activity_at_comes_from_the_hook_file():
         # поймало бы регрессию, потерявшую int(...) в ccfzf — json.loads
         # тихо вернул бы float, и assert прошёл бы как ни в чём не бывало.
         os.utime(state_file, (1234567890.7, 1234567890.7))
-        out = run_state(tmp, os.path.join(tmp, "dump.json"))
-        by_id = {s["id"]: s for s in out["sessions"]}
+        # Поле уезжает дампом, а не ответом: пикер его не читает (STATE_DROP).
+        dump_path = os.path.join(tmp, "dump.json")
+        run_state(tmp, dump_path)
+        with open(dump_path, encoding="utf-8") as fh:
+            by_id = {s["id"]: s for s in json.load(fh)["sessions"]}
         assert by_id[A]["activityAt"] == 1234567890, by_id[A]
         assert isinstance(by_id[A]["activityAt"], int), by_id[A]
         # Хук про неё не писал — ноль, ровно то же, что сегодня возвращает
@@ -180,15 +183,56 @@ def test_the_dump_written_on_the_way_has_only_the_eight_fields():
                               "kind", "parent", "activityAt"}, s
 
 
-def test_the_state_answer_keeps_its_rich_shape():
-    # Обрезается только файл. Пикер читает stdout, и поля gist/doing/agent
-    # рисуются у него в строке — забрать их значило бы опустошить список.
+def test_the_state_answer_drops_what_the_picker_never_reads():
+    # Пикер (buildSessionList, place_order.rs) не читает file, projects,
+    # doing, gist, age, activityAt — они уходят из ответа. Первые пять полей
+    # дампа при этом на месте: проекция только на выводе.
     with tempfile.TemporaryDirectory() as tmp:
         build_home(tmp, [A])
         out = run_state(tmp, os.path.join(tmp, "dump.json"))
         s = out["sessions"][0]
-        for key in ("file", "projects", "gist", "doing", "frozen", "agent"):
-            assert key in s, (key, sorted(s))
+        for key in ("file", "projects", "doing", "gist", "age", "activityAt"):
+            assert key not in s, (key, sorted(s))
+
+
+def test_the_state_answer_keeps_what_validate_state_requires():
+    # validateState пикера (state-shape.js) отбрасывает весь опрос, если у
+    # сессии нет id/cwd/title/mtime/live/kind нужного типа — даже пустых.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_reply_session(tmp, A, "", "")
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        s = out["sessions"][0]
+        assert s["title"] == "" and s["live"] is False, s
+        for key, typ in (("id", str), ("cwd", str), ("title", str),
+                         ("mtime", float), ("live", bool), ("kind", str)):
+            assert isinstance(s[key], typ), (key, s)
+
+
+def test_the_state_answer_has_no_empty_values():
+    # Пустое пикер сводит к тому же ''/null/0/false сам; пустой ключ в
+    # ответе — байты на каждый опрос ради того, что значит отсутствие.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A, B])
+        out = run_state(tmp, os.path.join(tmp, "dump.json"))
+        required = {"id", "cwd", "title", "mtime", "live", "kind"}
+        for s in out["sessions"]:
+            for key, v in s.items():
+                if key in required:
+                    continue
+                assert v not in ("", 0, None, False, [], {}), (key, s)
+
+
+def test_the_state_answer_is_compact_json():
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        env = dict(os.environ)
+        env.update(_facts_env(tmp, os.path.join(tmp, "dump.json")))
+        r = subprocess.run(["bash", SRC, "--state"], capture_output=True,
+                           text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        compact = json.dumps(json.loads(r.stdout), ensure_ascii=False,
+                             separators=(",", ":"))
+        assert r.stdout == compact, r.stdout[:300]
 
 
 def test_the_state_answer_carries_the_zellij_list():
@@ -206,16 +250,14 @@ def test_the_state_answer_carries_the_zellij_list():
             assert isinstance(row["agents"], int), row
 
 
-def test_every_session_says_which_zellij_holds_it():
-    # Поле обязано быть у каждой записи, даже когда zellij не при делах:
-    # у отрисовщика не должно быть третьего случая «поля нет вовсе» — то же
-    # правило, что у `window` и `tmux`.
+def test_zellij_of_a_session_is_a_name_or_absent():
+    # Пустой `zellij` опускается (state_record): третьего случая у
+    # отрисовщика всё равно нет — buildSessionList кладёт `s.zellij || null`.
     with tempfile.TemporaryDirectory() as tmp:
         build_home(tmp, [A])
         out = run_state(tmp, os.path.join(tmp, "dump.json"))
         s = out["sessions"][0]
-        assert "zellij" in s, sorted(s)
-        assert s["zellij"] is None or isinstance(s["zellij"], str), s["zellij"]
+        assert "zellij" not in s or (isinstance(s["zellij"], str) and s["zellij"]), s
 
 
 def _sorted_sessions(out):
@@ -263,6 +305,12 @@ def test_a_removed_fixture_drops_out_of_the_memo():
         assert not any(p.endswith(A + ".jsonl") for p in after["files"]), after
 
 
+def _memo_gist(tmp, sid):
+    with open(os.path.join(tmp, "facts.json"), encoding="utf-8") as fh:
+        files = json.load(fh)["files"]
+    return next(v["gist"] for p, v in files.items() if p.endswith(sid + ".jsonl"))
+
+
 def test_state_after_a_cold_dump_still_answers_the_first_prompt_not_the_latest_reply():
     # Сценарий B из второго круга ревью. Порядок важен: dump должен увидеть
     # сессию первым, на холодной памятке — тогда его старая запись несла
@@ -277,8 +325,10 @@ def test_state_after_a_cold_dump_still_answers_the_first_prompt_not_the_latest_r
 
         run_dump(tmp, dump_path)  # тот самый писатель, что раньше отравлял памятку
 
-        out = run_state(tmp, dump_path)
-        assert out["sessions"][0]["gist"] == "FIRST PROMPT", out["sessions"]
+        run_state(tmp, dump_path)
+        # gist в ответ больше не уезжает (STATE_DROP), но памятка фактов его
+        # по-прежнему хранит — и сторожится здесь она.
+        assert _memo_gist(tmp, A) == "FIRST PROMPT"
 
 
 def test_truncation_guard_survives_a_dump_in_the_middle():
@@ -301,8 +351,8 @@ def test_truncation_guard_survives_a_dump_in_the_middle():
 
         run_dump(tmp, dump_path)
 
-        out = run_state(tmp, dump_path)
-        assert out["sessions"][0]["gist"] == "NEW", out["sessions"]
+        run_state(tmp, dump_path)
+        assert _memo_gist(tmp, A) == "NEW"
 
 
 def test_state_reports_every_window_and_names_the_first_one():
@@ -381,7 +431,11 @@ def test_the_answer_is_utf8_whatever_the_console_wants():
     воспроизводится переменной окружения — настоящей cp1251 на Linux не завести.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        build_reply_session(tmp, A, "план → готово", "ответ")
+        path, _ = build_reply_session(tmp, A, "план → готово", "ответ")
+        # Знак — в заголовке: gist, где он жил раньше, в ответ не уезжает.
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "custom-title",
+                                 "customTitle": "план → готово"}) + "\n")
         dump = os.path.join(tmp, "dump.json")
         py = os.path.join(tmp, "ccfzf.py")
         with open(py, "w", encoding="utf-8") as fh:
@@ -479,7 +533,8 @@ def test_the_fresh_row_counts_no_prompts():
         with fresh_session(tmp):
             out = run_state(tmp, os.path.join(tmp, "dump.json"))
         row = next(s for s in out["sessions"] if s["id"] == C)
-        assert row["prompts"] == 0, row
+        # Ноль опускается (state_record); пикер читает `Number(s.prompts) || 0`.
+        assert row.get("prompts", 0) == 0, row
 
 
 def test_the_fresh_row_reaches_the_dump():
