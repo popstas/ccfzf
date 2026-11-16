@@ -12,7 +12,7 @@
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
 #   ccfzf --limit <n>           how many newest sessions to look at at all
-#                               (default 100; applies to --state and --dump)
+#                               (default 500; applies to --state and --dump)
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -100,10 +100,14 @@ comment_id=""
 comment_host=""
 project=""
 session_id=""
-# Сколько новейших сессий ccfzf вообще рассматривает. Прежние 200 были
-# рассчитаны на список для человека; читателю дампа столько не нужно никогда,
-# а платит за них и он (разбор), и машина-писатель (двести хвостов на каждый опрос).
-limit=100
+# Сколько новейших сессий ccfzf вообще рассматривает. 10.08 урезали 200 → 100
+# ради CPU на pc-virt (двести хвостов на каждый опрос); памятка фактов сняла эту
+# цену — тёплый вызов почти не зависит от лимита. 16.11 сто сессий покрывали
+# уже 3 дня вместо 7, и история пикера теряла сессии недельной давности; 300 —
+# ~9 дней. Растёт теперь ответ --state, а не CPU. Тот же день ответ урезан
+# (state_record: без полей, которых пикер не читает, и без пустых), и 500 —
+# ~17 дней — весят ~371 КБ, легче прежних 300 до среза (644 КБ).
+limit=500
 claude_args=()
 
 while (($#)); do
@@ -372,7 +376,7 @@ def project_docs(cwd, now=None):
             if kind not in best or st.st_mtime > best[kind][0]:
                 best[kind] = (st.st_mtime, rel_dir + "/" + name)
     return {kind: rel for kind, (_, rel) in best.items()}
-DUMP_SESSIONS = 100       # умолчание для --limit: сколько новейших сессий смотрим
+DUMP_SESSIONS = 500       # умолчание для --limit: сколько новейших сессий смотрим
 # Возраст, после которого файл окон считается брошенным. Оконный трекер живёт
 # на другой машине и переписывает файл не реже раза в полминуты; молчание
 # дольше этого значит, что машину выключили или демон умер, а не что расклад
@@ -1689,6 +1693,13 @@ WINDOWS = sys.platform == "win32"
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
+# Статусы, которые агент пишет в свою запись реестра (сверено по 2.1.325).
+# `shell` он ставит вместо `idle`, когда ход закончен, а фоновая команда
+# (Bash с run_in_background; по коду агента — и Monitor, вживую не сверено)
+# ещё идёт: `busy` и `waiting` её перебивают. Посреди хода с фоновой
+# командой запись остаётся `busy` — сверено вживую.
+REGISTRY_STATUSES = ("busy", "shell", "idle", "waiting")
+
 
 def registry_records(path=SESSIONS_DIR):
     """[{sid, pid, cwd, procStart}] из `~/.claude/sessions/<pid>.json`.
@@ -1739,8 +1750,14 @@ def registry_records(path=SESSIONS_DIR):
         if rec.get("kind", "interactive") != "interactive":
             continue
         name = rec.get("name")
+        # `status` — что агент сам говорит о себе: busy / idle / waiting /
+        # shell. `None`, когда поля нет или значение незнакомо: «агент этой
+        # версии не пишет статус» и «пишет `idle`» читаются по-разному —
+        # первому положен запасной ход по процессам (`background_shell`).
+        status = rec.get("status")
         out.append({"sid": sid, "pid": pid, "cwd": cwd, "procStart": str(started),
-                    "name": name if isinstance(name, str) else ""})
+                    "name": name if isinstance(name, str) else "",
+                    "status": status if status in REGISTRY_STATUSES else None})
     return out
 
 
@@ -1772,7 +1789,8 @@ def registry_by_pid(path=SESSIONS_DIR):
     """
     if path in _REGISTRY:
         return _REGISTRY[path]
-    out = {rec["pid"]: {"sid": rec["sid"], "cwd": rec["cwd"], "name": rec["name"]}
+    out = {rec["pid"]: {"sid": rec["sid"], "cwd": rec["cwd"], "name": rec["name"],
+                        "status": rec["status"]}
            for rec in registry_records(path)}
     _REGISTRY[path] = out
     return out
@@ -1923,7 +1941,8 @@ def windows_sessions(records=None, started_of=None):
             continue
         live.add(rec["sid"])
         procs[rec["sid"]] = {"pid": rec["pid"], "tty": "", "tmux": None,
-                             "zellij": None, "cwd": rec["cwd"]}
+                             "zellij": None, "cwd": rec["cwd"],
+                             "status": rec.get("status")}
     return live, procs
 
 
@@ -2643,6 +2662,16 @@ def running_sessions():
     moved, resolved = reattribute_by_pid(live, procs, agents, pid_owners())
     moved |= reattribute(live, procs, agents, stamps, now, skip_procs=resolved)
     live_by_hook(live, stamps, now, skip=moved)
+    # Статус из реестра — после переездов, потому что переезжает запись
+    # процесса целиком, а реестр отвечает про процесс, не про id. Сверка
+    # каталога — та же, что у `registry_claim`, и по той же причине: реестр за
+    # собой не чистят, и вчерашний покойник с тем же номером назвал бы статус
+    # чужого процесса.
+    by_pid = registry_by_pid()
+    for p in procs.values():
+        rec = by_pid.get(p["pid"])
+        ok = rec is not None and (not p.get("cwd") or rec["cwd"] == p["cwd"])
+        p["status"] = rec["status"] if ok else None
     for name, n in zellij_agents.items():
         if name in zellij:
             zellij[name]["agents"] = n
@@ -2650,6 +2679,94 @@ def running_sessions():
     # (poller.rs), и порядок, зависящий от обхода /proc, дёргал бы его без
     # всякой причины.
     return live, agents, procs, sorted(zellij.values(), key=lambda r: r["name"])
+
+
+SNAPSHOT_MARK = "/.claude/shell-snapshots/snapshot-"
+EVAL_RE = re.compile(r"\beval '((?:[^']|'\\'')*)'")
+SHELL_CMD_MAX = 80
+
+
+def shell_command(args):
+    """Текст команды из argv оболочки, которую агент поднял под Bash; None — не она.
+
+    Агент запускает каждую команду одинаково: `<шелл> -c 'source
+    ~/.claude/shell-snapshots/snapshot-….sh … && eval '<команда>' < /dev/null'`.
+    Метка снимка — признак, что процесс его, а сама команда — последний
+    `eval '…'` в строке, с одинарной кавычкой внутри, записанной как `'\''`.
+    Не нашлось `eval` — `""`: процесс агента, но команду не разобрать.
+
+    Склейка через пробел — ради мака: там argv приезжает из `ps` одной
+    строкой, а на Linux команда и так целиком лежит в одном аргументе `-c`.
+    """
+    text = " ".join(args)
+    if SNAPSHOT_MARK not in text:
+        return None
+    found = EVAL_RE.findall(text)
+    if not found:
+        return ""
+    cmd = " ".join(found[-1].replace("'\\''", "'").split())
+    return cmd if len(cmd) <= SHELL_CMD_MAX else cmd[:SHELL_CMD_MAX - 1] + "…"
+
+
+def agent_shells(pid):
+    """[текст команды] у оболочек, которые сейчас держит процесс агента.
+
+    Дети спрашиваются только у этого процесса, а не в общем обходе
+    `running_sessions`: тот идёт раз в секунду по всем процессам машины, а
+    сюда приходят единицы — сессии, о которых уже известно, что ход закончен.
+    На Windows детей спросить нечем, и реестр там единственный ответ.
+    """
+    if WINDOWS:
+        return []
+    if DARWIN:
+        kids = [k for k, row in ps_table().items() if row.get("ppid") == str(pid)]
+    else:
+        kids = []
+        for path in glob.glob("/proc/%s/task/*/children" % pid):
+            try:
+                with open(path) as fh:
+                    kids += fh.read().split()
+            except OSError:
+                continue
+    out = []
+    for kid in kids:
+        try:
+            cmd = shell_command(proc_args(kid))
+        except OSError:
+            continue
+        if cmd is not None:
+            out.append(cmd)
+    return out
+
+
+# Состояния хука, в которых ход закончен. Только в них оболочка-ребёнок
+# значит фоновую команду: посреди хода такой же ребёнок у обычного вызова Bash.
+TURN_OVER = ("idle", "review")
+
+
+def background_shell(proc, agent_state, shells=agent_shells):
+    """(ход закончен, а фоновая команда идёт; её короткий текст или `""`).
+
+    Ответ агента главнее: `status` из реестра, и при нём дети процесса
+    спрашиваются только ради текста команды. Запасной ход — для агента,
+    который статуса не пишет (`status` None): оболочка-ребёнок при состоянии
+    хука из `TURN_OVER`. Статус, отличный от `shell`, — ответ «нет» и без
+    запасного хода: `busy` и `waiting` перебивают фоновую команду у самого
+    агента, а `idle` при живом ребёнке значит, что команда уже кончилась и
+    процесс доживает доли секунды.
+    """
+    pid = (proc or {}).get("pid") or 0
+    if not pid:
+        return False, ""
+    status = proc.get("status")
+    if status is not None and status != "shell":
+        return False, ""
+    if status is None and agent_state not in TURN_OVER:
+        return False, ""
+    cmds = shells(pid)
+    if status is None and not cmds:
+        return False, ""
+    return True, next((c for c in cmds if c), "")
 
 
 def scan_dirs():
@@ -2947,7 +3064,12 @@ def merge_project_hotkeys(rows, projects):
 # ходит вовсе, он берёт --state по ssh. Комментарий над режимом dump обещал
 # «for whatever else wants to know it»; желающих не нашлось, а платят за
 # обещание оба читателя, разбирая и выбрасывая эти байты четырежды в минуту.
-DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt")
+#
+# `shell` — для кнопки окна на панели задач: ход закончен, а фоновая команда
+# идёт (background_shell). Логический всегда, даже `false`: читатель дампа
+# отличает его от отсутствия — ccfzf прошлой версии поля не пишет.
+DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt",
+             "shell")
 
 
 def dump_record(s):
@@ -2959,6 +3081,75 @@ def dump_record(s):
     молча отданный читателю индекс без title стирается целиком.
     """
     return {k: s[k] for k in DUMP_KEEP}
+
+
+# Чего пикер в строке сессии не читает вовсе — сверено 2026-11-16 по
+# ccfzf-picker (frontend-src/*.js, sessions.html, src-tauri/src/*.rs): `file`,
+# `projects` (каталоги-владельцы; проекты пикер берёт из верхнего `projects`),
+# `doing`, `age` (возраст пикер считает сам, его fingerprint в poller.rs этот
+# ключ и так выбрасывал), `activityAt` (он для дампа и уезжает туда через
+# DUMP_KEEP). `gist` buildSessionList переписывает в строку, но дальше его не
+# читает никто. Вместе с пустыми ключами ниже это больше половины ответа: при
+# --limit 300 он весил 644 КБ, и пикер тянул его по ssh раз в секунду.
+#
+# Срез — только на выводе, а не при сборке: те же `sessions` уходят в
+# dump_record, и `activityAt` с `parent` там обязательны.
+STATE_DROP = ("file", "projects", "doing", "gist", "age", "activityAt")
+
+# Ключи, которые читатель обязан получить всегда, даже пустыми: validateState
+# в пикере (frontend-src/state-shape.js) отбрасывает весь опрос, если у
+# сессии нет любого из них, — а пикер на каждой машине выкатывается отдельно.
+STATE_REQUIRED = ("id", "cwd", "title", "mtime", "live", "kind")
+
+
+def _empty(v):
+    return v is None or v is False or v == "" or v == 0 or v == [] or v == {}
+
+
+def state_agent(agent):
+    """Запись агента для ответа `--state`: без пустых полей.
+
+    Каждое поле записи пикер читает через `|| ''` / `|| 0` (session-list.js,
+    unwrap_or в place_order.rs), так что пустая строка и отсутствие ключа у
+    него неразличимы. Пустых у истории большинство: `event`, `branch`,
+    `pr_url`, `question`, нули денег. «Ноль» и «не считали» у денег читатель
+    по ключу и не различает — это решает `source`, а он непуст.
+
+    `updated` остаётся всегда: validateState требует у записи агента число.
+
+    `lastSummary` уходит, когда непуст `summary`: читает его одна
+    sessionDescription (session-agent.js), и только при пустом `summary`.
+    """
+    if not isinstance(agent, dict):
+        return agent
+    out = {k: v for k, v in agent.items() if k == "updated" or not _empty(v)}
+    if str(agent.get("summary") or "").strip():
+        out.pop("lastSummary", None)
+    return out
+
+
+def state_record(s):
+    """Запись сессии для ответа `--state`: то, что читает пикер, без пустот.
+
+    Пустые значения опускаются у всех ключей, кроме STATE_REQUIRED: пикер
+    сводит отсутствующее к тем же `''`/`null`/`0`/`false`, что приходили
+    раньше (buildSessionList, windowsOf, place_order.rs). Исключение — `pid`
+    у живой сессии: validateState требует у неё число, даже нулевое (живая
+    по одному открытому окну своего процесса здесь не имеет).
+
+    Прежнее правило «у отрисовщика не должно быть третьего случая — поля нет
+    вовсе» (`window`, `tmux`, `zellij`) соблюдает сам пикер: buildSessionList
+    кладёт в строку `null`/`''` при любом ответе агрегатора.
+    """
+    out = {}
+    for k, v in s.items():
+        if k in STATE_DROP:
+            continue
+        if k == "agent":
+            v = state_agent(v)
+        if k in STATE_REQUIRED or (k == "pid" and s.get("live")) or not _empty(v):
+            out[k] = v
+    return out
 
 
 def load_facts(path):
@@ -3456,12 +3647,19 @@ elif mode == "dump":
                               tail=lambda p, root=cwd: tail_facts(p, root))
                 facts[path] = f
             agent = agents.get(sid) or {}
+            # Состояние хука нужно только запасному ходу — агенту без статуса в
+            # реестре; у остальных agent_of не зовётся вовсе.
+            proc = procs.get(sid) if sid in live else None
+            need_hook = proc is not None and proc.get("status") is None
+            shell, _ = background_shell(
+                proc, ((agent_of(sid) or {}).get("state", "")) if need_hook else "")
             sessions.append(dump_record({
                 "id": sid, "cwd": cwd, "title": f["title"],
                 "mtime": mtime, "live": sid in live,
                 "kind": agent.get("kind", "interactive"),
                 "parent": agent.get("parent", ""),
                 "activityAt": int(stamps.get(sid, 0)),
+                "shell": shell,
             }))
         if facts != cache:
             save_facts(FACTS_FILE, facts)
@@ -3569,6 +3767,16 @@ elif mode == "state":
             facts[path] = f
         agent = agents.get(sid) or {}
         wins = windows.get(sid)
+        # Хвост транскрипта передаётся готовым и здесь: на машине без
+        # хуков он единственный источник состояния, а читать файл второй
+        # раз незачем — памятка фактов его уже прочла.
+        hook = agent_of(sid, path, f.get("turnAt", 0),
+                        {"state": f.get("agentState", ""),
+                         "question": f.get("agentQuestion", ""),
+                         "cacheAt": f.get("agentCacheAt", 0)},
+                        mtime)
+        shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
+                                            (hook or {}).get("state", ""))
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
@@ -3620,14 +3828,13 @@ elif mode == "state":
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
             "zellij": (procs.get(sid) or {}).get("zellij"),
-            # Хвост транскрипта передаётся готовым и здесь: на машине без
-            # хуков он единственный источник состояния, а читать файл второй
-            # раз незачем — памятка фактов его уже прочла.
-            "agent": agent_of(sid, path, f.get("turnAt", 0),
-                              {"state": f.get("agentState", ""),
-                               "question": f.get("agentQuestion", ""),
-                               "cacheAt": f.get("agentCacheAt", 0)},
-                              mtime),
+            "agent": hook,
+            # Ход закончен, а фоновая команда агента ещё идёт — то, что агент
+            # сам пишет в реестр как `shell` (см. background_shell). Не часть
+            # `agent`: тот — запись хука, а это ответ процесса. `shellCmd` —
+            # её начало для карточки, только здесь: в дамп командная строка
+            # не едет, оттуда она ушла бы дальше, в MQTT и Home Assistant.
+            "shell": shell, "shellCmd": shell_cmd,
             # Отсутствует, а не null: «окна нет» и «про окна ничего не известно»
             # у читателя рисуются одинаково, и заводить между ними разницу
             # некому — она не видна ни в одной строке списка.
@@ -3680,7 +3887,10 @@ elif mode == "state":
     # 6 из 46, и они-то и есть причина отдавать список проектов отдельно.
     # Формат «сколько назад» по нулю нарисует 1970 год. Режим `dump` этот же
     # ноль сторожит явно: `"age": ago(...) if r["mtime"] else ""`.
-    json.dump({"generated": now, "sessions": sessions,
+    # Сессии — проекцией state_record: без полей, которых пикер не читает, и
+    # без пустых. Разделители без пробелов по той же причине: ответ едет по
+    # ssh раз в секунду, а пробел после каждой запятой и двоеточия — ещё 4%.
+    json.dump({"generated": now, "sessions": [state_record(s) for s in sessions],
                # `todo` уезжает только пустым-непустым: у двадцати проектов из
                # сорока пяти docs/TODO.md нет вовсе, и ключ с пустым списком
                # стоил бы места в ответе ради «считать нечего» — того же, что
@@ -3712,7 +3922,7 @@ elif mode == "state":
                # строка его зелийной сессии — ровно та невидимость, ради
                # которой всё делается.
                "zellij": zellij_rows},
-              sys.stdout, ensure_ascii=False)
+              sys.stdout, ensure_ascii=False, separators=(",", ":"))
 
 elif mode == "comment":
     # Запись комментария. Текст приходит на **stdin**, а не аргументом, и это

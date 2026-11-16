@@ -10,7 +10,7 @@ dump without opening the picker.
 
 ## `CCFZF_SESSIONS_FILE`
 
-The newest sessions across **all** projects (`--limit`, 100 by default), newest
+The newest sessions across **all** projects (`--limit`, 500 by default), newest
 first, plus every live session and every session with a window open, so the file
 always holds whoever a window on screen might belong to.
 
@@ -31,7 +31,8 @@ it needs — nothing else:
    "mtime": 1785460166.26,
    "kind": "interactive",
    "parent": "",
-   "activityAt": 1785460166
+   "activityAt": 1785460166,
+   "shell": false
   }
  ]
 }
@@ -42,6 +43,18 @@ it needs — nothing else:
 never did — the reader ranks same-titled candidates by it, and computing it here
 saves it a network `stat` per candidate. `kind` is `interactive` or `background`,
 and `parent` names the session a background agent was forked from.
+
+`shell` is `true` while the session's turn is over but a background command it
+started — Bash with `run_in_background` (and, by the agent's code, a Monitor;
+not observed) — is still running: what
+Claude Code itself writes as `"status": "shell"` in `~/.claude/sessions/<pid>.json`.
+It replaces only `idle` there; mid-turn the record says `busy`, and a pending
+question says `waiting`, background command or not. An agent too old to write a
+status is judged by its processes instead: a child shell wrapped in
+`~/.claude/shell-snapshots/snapshot-…` while the hook says the turn is over. The
+command line itself stays out of this file — from here it travels on into MQTT
+and Home Assistant, and a command line can carry a token. It goes to
+[`--state`](state.md) only.
 
 ## `CCFZF_PROJECTS_FILE`
 
@@ -84,7 +97,7 @@ measured — the signature of a transcript replaced outright (restored from a
 backup, compacted) rather than appended to, which an `mtime` bump alone would not
 catch. A stable `gist` otherwise survives any number of appends unchanged.
 
-The stored `gist` is capped at 200 characters, matching the field it feeds in
-`--state`. The file carries a version number; a version it does not recognise is
+The stored `gist` is capped at 200 characters, matching the field it used to
+feed in `--state` (the answer no longer sends it: no reader looked at it). The file carries a version number; a version it does not recognise is
 read as an empty memo, so a format change costs one cold run rather than a wrong
 one.

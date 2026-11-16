@@ -40,8 +40,16 @@ def test_a_record_is_read_whole():
     d = _dir([("10980.json", _record(10980, UUID_A))])
     assert CC["registry_records"](d) == [
         {"sid": UUID_A, "pid": 10980, "cwd": "<drive>:\\projects\\some-project",
-         "procStart": "134317286687059374", "name": ""},
+         "procStart": "134317286687059374", "name": "", "status": None},
     ]
+
+
+def test_the_status_is_read_when_known():
+    d = _dir([("1.json", _record(1, UUID_A, status="shell")),
+              ("2.json", _record(2, UUID_B, status="sleeping"))])
+    got = {r["pid"]: r["status"] for r in CC["registry_records"](d)}
+    # Незнакомое значение — то же, что отсутствие: запасной ход, а не «нет».
+    assert got == {1: "shell", 2: None}, got
 
 
 def test_an_absent_directory_reads_as_no_sessions():
@@ -91,7 +99,8 @@ def test_a_live_record_brings_its_pid_and_directory():
     live, procs = CC["windows_sessions"](_records(), lambda pid: "111")
     assert live == {UUID_A}, live
     assert procs[UUID_A] == {"pid": 10, "tty": "", "tmux": None,
-                             "zellij": None, "cwd": "<drive>:\\a"}, procs
+                             "zellij": None, "cwd": "<drive>:\\a",
+                             "status": None}, procs
 
 
 def test_a_dead_pid_is_not_alive():

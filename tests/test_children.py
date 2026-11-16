@@ -33,8 +33,9 @@ def test_state_names_the_head_of_a_child():
         assert got[A]["headId"] == HEAD_ID, got[A]
         # Обычная сессия — без ключей, как у todo и comment.
         assert "head" not in got[B] and "headId" not in got[B], got[B]
-        # `parent` занят фоновыми форками и записью не трогается.
-        assert got[A]["parent"] == "", got[A]
+        # `parent` занят фоновыми форками и записью не трогается. В ответе
+        # пустой `parent` опускается (state_record) — значит, ключа нет.
+        assert not got[A].get("parent"), got[A]
 
 
 def test_an_adopted_session_and_a_grandchild_carry_their_heads():

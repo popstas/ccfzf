@@ -12,7 +12,7 @@ FULL = {
     "title": "t", "gist": "g", "doing": "d", "mtime": 100.0, "age": "1m",
     "live": True, "frozen": False, "kind": "interactive", "parent": "",
     "activityAt": 99, "pid": 7, "tty": "pts/0", "tmux": None, "agent": {},
-    "window": None,
+    "window": None, "shell": False, "shellCmd": "",
 }
 
 
@@ -22,7 +22,15 @@ def test_dump_keeps_exactly_what_the_reader_uses():
     # разбирают четырежды в минуту и выбрасывают.
     assert CC["DUMP_KEEP"] == (
         "id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt",
+        "shell",
     ), CC["DUMP_KEEP"]
+
+
+def test_the_command_text_stays_out_of_the_dump():
+    # Дамп читает windows11-manager и везёт дальше, в MQTT и Home Assistant;
+    # командная строка может нести токены — ей место только в --state.
+    got = CC["dump_record"]({**FULL, "shell": True, "shellCmd": "curl -H 'Bearer x'"})
+    assert got["shell"] is True and "shellCmd" not in got, got
 
 
 def test_dump_record_drops_everything_else():

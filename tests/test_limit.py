@@ -47,14 +47,14 @@ def test_help_documents_the_key():
     assert "--limit" in r.stdout, r.stdout
 
 
-def test_the_default_is_100_everywhere_it_is_written_down():
-    # Умолчание существует дважды в ccfzf — `limit=100` в разборе argv и
-    # `DUMP_SESSIONS = 100` (запасное значение для режимов dump/state,
+def test_the_default_is_500_everywhere_it_is_written_down():
+    # Умолчание существует дважды в ccfzf — `limit=500` в разборе argv и
+    # `DUMP_SESSIONS = 500` (запасное значение для режимов dump/state,
     # когда argv его не передаёт). Ничто их не связывает — пришпиливаем оба
     # числом и проверяем, что то же число видит человек в --help.
-    assert CC["DUMP_SESSIONS"] == 100, CC["DUMP_SESSIONS"]
+    assert CC["DUMP_SESSIONS"] == 500, CC["DUMP_SESSIONS"]
     r = run("--help")
-    assert "100" in r.stdout, r.stdout
+    assert "default 500" in r.stdout, r.stdout
 
 
 if __name__ == "__main__":
