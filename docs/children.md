@@ -81,6 +81,29 @@ exact match is not held to the root. A variable and not an eighth argument, so
 that an older wrapper with a newer command, and the other way round, still
 work.
 
+## Files next to the prompt
+
+A child that needs an MCP server or a development channel (the
+`telegram-delegate` channel server, for one) gets it through files that the
+caller puts next to the prompt, named after the session id. The window manager
+that sends the launch over ssh passes only the seven arguments and does not
+have to know about them. The files are looked up in the directory of
+`promptFile`, or in `~/.ccfzf/prompts` when `promptFile` is `-`:
+
+- `<sessionId>.mcp.json` becomes `--mcp-config <its physical path>`. The path is
+  absolute because claude starts after `cd` into the child's `cwd`. The wrapper
+  does not read the file; claude does.
+- `<sessionId>.channels` holds one channel per line, each passed on after a
+  single `--dangerously-load-development-channels`. Empty lines are skipped, and
+  an empty file adds no flag. Every other line must match
+  `^server:[a-z0-9][a-z0-9-]{0,40}$` (the letters are ASCII whatever the
+  locale): those lines end up in claude's argv.
+
+A line of another shape, or a side file that is not a readable regular file, is
+a wrong argument: exit 2, and nothing written or started. Without the files the
+command is exactly what it was before them. Nothing here removes them; that is
+for whoever wrote them.
+
 ## What happens next
 
 In this order:
@@ -92,7 +115,9 @@ In this order:
    `createdAt` is unix seconds. If claude then fails to start, the record stays: nothing cleans the
    directory up, and nothing has to, since only the ids `--state` lists are ever
    looked up.
-2. `claude -n <name> --session-id <id> [--permission-mode <m>] [-- <prompt>]`
+2. `claude -n <name> --session-id <id> [--permission-mode <m>] [--mcp-config <file>]
+   [--dangerously-load-development-channels <server:name>...] [-- <prompt>]`
+   (the middle two from [files next to the prompt](#files-next-to-the-prompt))
    runs in an interactive `$SHELL` after `cd` into `cwd`, the same way ccfzf
    starts its own commands, so the rc file is read and `chpwd` hooks fire. The
    `--` keeps a prompt that starts with a dash from being read as an option;

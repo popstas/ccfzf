@@ -29,8 +29,21 @@
 # The check sits here and not only in the caller because a request can reach
 # the window manager without going through the head-session skill at all.
 #
+# Two optional files may lie next to the prompt (in the directory of
+# promptFile, or ~/.ccfzf/prompts when promptFile is `-`), named after the
+# session id:
+#   <sessionId>.mcp.json  passed on as `--mcp-config <its physical path>`;
+#   <sessionId>.channels  one channel per line, each `server:<name>` with a name
+#                         of [a-z0-9-], at most 41 characters, not starting with
+#                         a dash; empty lines are skipped. Passed on as
+#                         `--dangerously-load-development-channels <line>...`.
+#                         Any other line is a wrong argument.
+# This is how a child gets a channel server: the caller writes the files, the
+# window manager that sends the launch over ssh does not have to know about them.
+#
 # Variables of a parent Claude Code session (CLAUDE_CODE_* and a few more) are
 # unset first. claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
+# [--mcp-config <file>] [--dangerously-load-development-channels <s>...]
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
@@ -95,6 +108,35 @@ prompt=""
 if [[ $prompt_file != - ]]; then
   [[ -f $prompt_file && -r $prompt_file ]] || die "cannot read prompt file: $prompt_file"
   prompt=$(cat -- "$prompt_file")
+fi
+
+# --- files next to the prompt: MCP config and development channels -------------
+side_dir=$HOME/.ccfzf/prompts
+[[ $prompt_file == - ]] || side_dir=$(dirname -- "$prompt_file")
+mcp_config=""
+channels=()
+# Physical, because claude starts after `cd` into the child's cwd, where a
+# relative path would point elsewhere. No directory means no files.
+if [[ -d $side_dir ]] && side_dir=$(phys "$side_dir"); then
+  f=$side_dir/$sid.mcp.json
+  if [[ -e $f || -L $f ]]; then
+    [[ -f $f && -r $f ]] || die "cannot read MCP config: $f"
+    mcp_config=$f
+  fi
+  f=$side_dir/$sid.channels
+  if [[ -e $f || -L $f ]]; then
+    [[ -f $f && -r $f ]] || die "cannot read channels file: $f"
+    # Every line ends up in claude's argv, so only the one shape a development
+    # channel server has gets through. The letters are spelled out: a range
+    # like [a-z] follows the locale and may let other letters in.
+    lc='abcdefghijklmnopqrstuvwxyz0123456789'
+    channel_re="^server:[$lc][$lc-]{0,40}\$"
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -n $line ]] || continue
+      [[ $line =~ $channel_re ]] || die "bad channel in $f: '$line'"
+      channels+=("$line")
+    done <"$f"
+  fi
 fi
 
 # Started from a shell inside another Claude Code session, claude would inherit
@@ -210,6 +252,8 @@ mv -f -- "$tmp" "$children/$sid.json"
 
 args=(-n "$name" --session-id "$sid")
 [[ $mode == - ]] || args+=(--permission-mode "$mode")
+[[ -z $mcp_config ]] || args+=(--mcp-config "$mcp_config")
+((${#channels[@]} == 0)) || args+=(--dangerously-load-development-channels "${channels[@]}")
 # `--` keeps a prompt that starts with a dash from being read as an option.
 [[ -n $prompt ]] && args+=(-- "$prompt")
 
