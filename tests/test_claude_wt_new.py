@@ -440,6 +440,139 @@ def test_a_refusal_stays_on_screen_in_a_terminal():
     e.nothing_happened("pty")
 
 
+
+# --- файлы рядом с заданием: MCP-конфиг и каналы разработки -------------------
+
+CHANNELS = "--dangerously-load-development-channels"
+
+
+def side(e, sid=SID, mcp=None, channels=None, where=None):
+    d = pathlib.Path(where or e.prompt.parent)
+    d.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    if mcp is not None:
+        paths["mcp"] = d / (sid + ".mcp.json")
+        paths["mcp"].write_text(mcp, encoding="utf-8")
+    if channels is not None:
+        paths["channels"] = d / (sid + ".channels")
+        paths["channels"].write_text(channels, encoding="utf-8")
+    return paths
+
+
+def test_mcp_config_and_channels_are_passed():
+    e = Env()
+    f = side(e, mcp='{"mcpServers": {}}\n',
+             channels="server:telegram-delegate\n\nserver:x-1\n")
+    r = e.run(*e.good(mode="plan"))
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == [
+        "-n", "t", "--session-id", SID, "--permission-mode", "plan",
+        "--mcp-config", str(f["mcp"].resolve()),
+        CHANNELS, "server:telegram-delegate", "server:x-1",
+        "--", "скажи ок"], e.called()
+
+
+def test_each_side_file_works_alone():
+    e = Env()
+    f = side(e, mcp="{}")
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                  "--mcp-config", str(f["mcp"].resolve()),
+                                  "--", "скажи ок"], e.called()
+    e = Env()
+    side(e, channels="server:telegram-delegate")  # без перевода строки в конце
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                  CHANNELS, "server:telegram-delegate",
+                                  "--", "скажи ок"], e.called()
+
+
+def test_without_a_prompt_side_files_come_from_the_prompts_dir():
+    e = Env()
+    f = side(e, mcp="{}", channels="server:telegram-delegate\n",
+             where=e.root / ".ccfzf" / "prompts")
+    r = e.run(*e.good(prompt="-"))
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                  "--mcp-config", str(f["mcp"].resolve()),
+                                  CHANNELS, "server:telegram-delegate"], e.called()
+
+
+def test_a_relative_prompt_path_gives_an_absolute_mcp_path():
+    """claude стартует после cd в cwd ребёнка: относительный путь к конфигу
+    указал бы уже не туда."""
+    e = Env()
+    f = side(e, mcp="{}")
+    r = subprocess.run([str(WRAPPER), *map(str, e.good(prompt="prompt.txt"))],
+                       env=e.env(), cwd=e.root, capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stderr
+    argv = e.called()["argv"]
+    assert argv[argv.index("--mcp-config") + 1] == str(f["mcp"].resolve()), argv
+
+
+def test_an_empty_channels_file_adds_no_flag():
+    e = Env()
+    side(e, channels="\n\n")
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID, "--", "скажи ок"]
+
+
+def test_bad_channel_line_starts_nothing():
+    bad = {
+        "injection": "server:x; rm -rf ~",
+        "not a server": "plugin:telegram@claude-plugins-official",
+        "no name": "server:",
+        "dash first": "server:-x",
+        "upper case": "server:Telegram",
+        "underscore": "server:a_b",
+        "cyrillic": "server:тест",
+        "space": "server:a b",
+        "leading space": " server:a",
+        "carriage return": "server:a\r",
+        "option": "--dangerously-skip-permissions",
+        "too long": "server:" + "a" * 42,
+        "good then bad": "server:telegram-delegate\nserver:$(id)",
+    }
+    for label, text in bad.items():
+        e = Env()
+        side(e, mcp="{}", channels=text + "\n")
+        r = e.run(*e.good())
+        assert r.returncode == 2, (label, r.returncode, r.stderr)
+        assert "claude-wt-new:" in r.stderr, (label, r.stderr)
+        e.nothing_happened(label)
+    e = Env()
+    side(e, channels="server:" + "a" * 41 + "\n")
+    r = e.run(*e.good())
+    assert r.returncode == 0, ("41 is the limit", r.stderr)
+
+
+def test_a_side_file_that_is_not_a_file_starts_nothing():
+    for which in ("mcp.json", "channels"):
+        e = Env()
+        (e.prompt.parent / (SID + "." + which)).mkdir()
+        r = e.run(*e.good())
+        assert r.returncode == 2, (which, r.returncode, r.stderr)
+        e.nothing_happened(which)
+
+
+def test_no_side_files_no_flags():
+    """Регрессия: обёртка боевая (~/bin/claude-wt-new), и запуск без файлов
+    рядом с заданием должен остаться прежним. Файлы другой сессии не в счёт."""
+    e = Env()
+    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n")
+    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n",
+         where=e.root / ".ccfzf" / "prompts")
+    for prompt, tail in ((e.prompt, ["--", "скажи ок"]), ("-", [])):
+        r = e.run(*e.good(prompt=prompt, mode="plan"))
+        assert r.returncode == 0, r.stderr
+        assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                      "--permission-mode", "plan", *tail], e.called()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
