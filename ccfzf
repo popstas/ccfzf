@@ -7,7 +7,7 @@
 #   ccfzf webapp --model opus   trailing arguments are passed on to claude
 #   ccfzf --kiosk               run commands inside and return to the list
 #   ccfzf --print               print the command instead of running it (zle widget)
-#   ccfzf --session <id>        go straight into a session by id, no picker
+#   ccfzf --session <id|name>   go straight into a session by id or name, no picker
 #   ccfzf --dump                rewrite the sessions/projects json dumps and exit
 #   ccfzf --state               print the whole picture as json on stdout, for a
 #                               picker on another machine; no picker, no fzf
@@ -3469,6 +3469,93 @@ def session_target(sid, live, procs, registry):
     return {"how": how, "pid": pid, "tmux": tmux, "zellij": zellij, "cwd": cwd}
 
 
+def session_by_name(name, live, cache=None, title_of=None):
+    """Id сессии, чей заголовок — ровно `name`, или пустая строка.
+
+    Ради ссылок вида `- Сессия <имя>` в заметках: там стоит имя из /rename, а
+    не UUID, и `--session` обязан понять его так же, как id. Заголовок — то же
+    поле, что `title` в дампе (custom-title, за ним ai-title), причёсанное
+    `clean`, и сравнивается с причёсанным же `name` целиком, без подстрок.
+
+    Искать приходится по всем транскриптам, а не по дампу: дамп держит
+    `--limit` новейших (500 из 2740 на pc-virt 20.11), а ссылки в заметках
+    живут дольше. Поэтому в два прохода:
+
+    1. Памятка фактов (`cache`, путь → запись). Запись с тем же mtime отвечает
+       заголовком без чтения файла; запись, у которой mtime сдвинулся, читается
+       заново: /rename дописывает custom-title, то есть у только что
+       переименованной сессии памятка и устарела.
+    2. Нашлось хоть что-то — хватит: всё, чего в памятке нет, старше всего, что
+       в ней есть. Нет — хвосты остальных файлов (0.5 с на 2744 тёплых).
+
+    Хвост сначала проверяется на само имя в JSON-записи, без `tail_facts`:
+    разбирать ради одного имени 2700 хвостов дорого. Заголовок совпавших
+    (единиц) спрашивается честно — имя могло встретиться в тексте реплики, а
+    заголовок с тех пор смениться. Хвост без единого заголовка у файла длиннее
+    хвоста проверяется на имя целиком: так же поступает и `tail_facts`.
+
+    Тёзок бывает много (21 имя на 500 сессий дампа): живая побеждает мёртвую,
+    дальше — свежая по mtime.
+    """
+    want = clean(name)
+    if not want:
+        return ""
+    title_of = title_of or (lambda p: clean(tail_facts(p)[0]))
+    needle = json.dumps(want, ensure_ascii=False)[1:-1].encode("utf-8")
+    cache = load_facts(FACTS_FILE) if cache is None else cache
+
+    def mentions(path):
+        try:
+            with open(path, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                if size > TAIL:
+                    fh.seek(size - TAIL)
+                data = fh.read()
+                if needle in data:
+                    return True
+                if size > TAIL and b'-title"' not in data:
+                    fh.seek(0)
+                    return needle in fh.read()
+        except OSError:
+            pass
+        return False
+
+    def matches(paths, memo):
+        out = []
+        for path in paths:
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            rec = memo.get(path) or {}
+            if rec.get("mtime") == mtime and "title" in rec:
+                hit = clean(rec.get("title")) == want
+            else:
+                hit = mentions(path) and title_of(path) == want
+            if hit:
+                out.append((os.path.basename(path)[:-6], mtime))
+        return out
+
+    memo = {p: r for p, r in cache.items()
+            if isinstance(r, dict) and p.endswith(".jsonl")
+            and os.path.dirname(os.path.dirname(p)) == PROJECTS_DIR}
+    # Живые — в первый проход вместе с памяткой: живая, простаивающая дольше,
+    # чем держит памятка, иначе проиграла бы мёртвой тёзке из неё. Их единицы.
+    first = set(memo)
+    for sid in live:
+        if UUID_RE.match(sid):
+            first.update(glob.glob(os.path.join(PROJECTS_DIR, "*", sid + ".jsonl")))
+    found = matches(first, memo)
+    if not found:
+        rest = [p for p in glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl"))
+                if p not in first]
+        found = matches(rest, {})
+    found = [(sid, mtime) for sid, mtime in found if UUID_RE.match(sid)]
+    if not found:
+        return ""
+    return max(found, key=lambda x: (x[0] in live, x[1]))[0]
+
+
 # `--state` — тот же режим `state`, но без путей в argv. Пустой предел значит
 # «умолчание самого блока» (DUMP_SESSIONS), и оно совпадает со значением,
 # которое подставляет обёртка.
@@ -3950,10 +4037,19 @@ elif mode == "target":
     # том порядке, в каком их читает bash: how, pid, tmux, zellij, cwd. Не
     # табуляцией: `read` с IFS из пробельного символа склеивает подряд идущие
     # разделители, и пустой tmux сдвинул бы zellij на его место.
+    #
+    # Шестая строка — id, о котором ответ: не UUID значит имя сессии
+    # (`session_by_name`), и bash дальше работает уже с найденным id. Пустая —
+    # такой сессии нет. Живость нужна и поиску (живая тёзка главнее), поэтому
+    # /proc обходится один раз на оба.
     sid = sys.argv[2] if len(sys.argv) > 2 else ""
-    live, _, procs, _ = running_sessions() if UUID_RE.match(sid) else (set(), {}, {}, [])
-    t = session_target(sid, live, procs, registry_records())
-    print("\n".join(str(t[k] or "") for k in ("how", "pid", "tmux", "zellij", "cwd")))
+    live, _, procs, _ = running_sessions() if sid else (set(), {}, {}, [])
+    if sid and not UUID_RE.match(sid):
+        sid = session_by_name(sid, live)
+    t = session_target(sid, live, procs, registry_records()) if sid else \
+        {"how": "resume", "pid": 0, "tmux": "", "zellij": "", "cwd": ""}
+    t["sid"] = sid
+    print("\n".join(str(t[k] or "") for k in ("how", "pid", "tmux", "zellij", "cwd", "sid")))
 
 elif mode == "newname":
     # Занятыми считаются заголовки живых сессий: имя сессии — это заголовок её
@@ -4097,10 +4193,21 @@ if [[ -n $session_id ]]; then
   # единого запроса (транскрипта ещё нет) отвечала «not found».
   # Построчным `read`, а не `mapfile`: тот появился в bash 4, а на стоковом
   # маке bash 3.2.
-  live_how="" live_pid="" live_tmux="" live_zellij="" live_cwd=""
+  #
+  # Вместо id можно назвать сессию именем (заголовок из /rename) — так на неё
+  # ссылаются заметки. Найденный id приходит шестой строкой и дальше заменяет
+  # имя везде: и в поиске транскрипта, и в `--resume`. Для UUID шестая строка —
+  # он сам; пустая при UUID значит упавший питон, и тогда ветка идёт как
+  # раньше, по транскрипту.
+  live_how="" live_pid="" live_tmux="" live_zellij="" live_cwd="" live_sid=""
   { IFS= read -r live_how; IFS= read -r live_pid; IFS= read -r live_tmux
-    IFS= read -r live_zellij; IFS= read -r live_cwd; } < <(py target "$session_id") || true
+    IFS= read -r live_zellij; IFS= read -r live_cwd; IFS= read -r live_sid; } < <(py target "$session_id") || true
   live_how=${live_how:-resume}
+  uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+  if [[ ! $session_id =~ $uuid_re ]]; then
+    [[ -n $live_sid ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
+    session_id=$live_sid
+  fi
 
   sess_file=$(ls -1 "$HOME"/.claude/projects/*/"$session_id".jsonl 2>/dev/null | head -1 || true)
   [[ -n $sess_file || $live_how != resume ]] || { echo "ccfzf: session $session_id not found" >&2; exit 1; }
