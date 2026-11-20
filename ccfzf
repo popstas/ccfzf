@@ -439,7 +439,11 @@ HOOK_LIVE_TTL = 120
 # напишут.
 # 10: метка кеша промпта (`agentCacheAt`). Причина та же: у простаивающей
 # сессии — а таймер ради неё и заводился — mtime больше не сдвинется.
-FACTS_VERSION = 10
+# 11: граница сжатия (`compact_boundary`): сводка и `/compact` больше не
+# реплика человека, у сжатой и не продолженной сессии — `idle` и
+# `agentCompactAt`. Причина та же: у такой сессии mtime не сдвинется, и
+# прежний ответ («работает» с секунды сжатия) остался бы в памятке навсегда.
+FACTS_VERSION = 11
 FACTS_FILE = os.environ.get("CCFZF_FACTS_FILE")
 if FACTS_FILE is None:
     FACTS_FILE = os.path.join(
@@ -669,6 +673,7 @@ def from_tail(tail, turn_at=0, mtime=0):
         # отметками «просмотрено» и стоит ли верить нулю в деньгах и контексте.
         "source": "transcript",
         **cache_of(tail),
+        **compact_of(tail),
     }
 
 
@@ -681,6 +686,19 @@ def cache_of(tail):
     """
     at = int(num((tail or {}).get("cacheAt")))
     return {"cacheAt": at} if at else {}
+
+
+def compact_of(tail):
+    """`{"compactAt": …}` — сессия сжата, и после сжатия не было ничего.
+
+    Наблюдение по транскрипту, как и метка кеша, и по той же причине уезжает
+    у обеих дорог: хук отмечает сжатие событием, но следом пишет уведомление
+    «жду ввода», и по записи хука сжатую сессию от простаивающей не отличить.
+    Читатель гасит такую строку сразу, не дожидаясь порога возраста: контекст
+    её пуст, продолжения нет. Ключа нет, когда метки нет.
+    """
+    at = int(num((tail or {}).get("compactAt")))
+    return {"compactAt": at} if at else {}
 
 
 def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
@@ -784,6 +802,8 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
         # Время последнего ответа, продлившего кеш промпта: от него читатель
         # считает остаток часа. Только из хвоста — см. `cache_of`.
         **cache_of(tail),
+        # Сжата и не продолжена — см. `compact_of`.
+        **compact_of(tail),
     }
     return out
 
@@ -1122,6 +1142,14 @@ def is_human_message(o):
     Разбирается это по полям записи, а не по обёрткам в тексте: слэш-команду
     человек тоже посылает тегами (`<command-name>/do</command-name>`), и отсев
     «начинается с `<`» забрал бы вместе с уведомлением её.
+
+    Исключений из этого правила два, и оба — про сжатие контекста. Сводка
+    (`isCompactSummary`) и вывод `/compact` (`repeatsCompactSummary`, вообще —
+    `<local-command-stdout>`) пишет сам Claude Code, и ход они не начинают:
+    агент на них не отвечает. Сама команда `/compact` — слэш-команда человека,
+    но местная: до агента она не доходит, и признака у её записи нет никакого,
+    кроме имени. Приняв их за реплику, сжатая и простаивающая сессия числилась
+    бы работающей с секунды сжатия (живая сессия e586230b, 2026-11-20).
     """
     if not isinstance(o, dict) or o.get("type") != "user":
         return False
@@ -1129,10 +1157,16 @@ def is_human_message(o):
         return False
     if o.get("promptSource") == "system":
         return False
+    if o.get("isCompactSummary") or o.get("repeatsCompactSummary"):
+        return False
     origin = o.get("origin")
     if isinstance(origin, dict) and origin.get("kind") == "task-notification":
         return False
     content = content_of(o)
+    if isinstance(content, str) and (
+            content.startswith(("<local-command-stdout>", "<local-command-stderr>"))
+            or content.startswith("<command-name>/compact</command-name>")):
+        return False
     # Нечитаемое содержимое — не человек. Настоящая реплика несёт либо строку,
     # либо список блоков; всё прочее означает порченую запись, а датировать ход
     # по ней значило бы врать про «секунду назад» на основании мусора.
@@ -1241,6 +1275,30 @@ def tail_facts(path, doc_root=None):
         # ответил на вопрос не кнопкой, а новым промптом, вечно числилась бы
         # ждущей: незакрытый `AskUserQuestion` так и остался бы незакрытым.
         turn_over = False
+        # Граница сжатия контекста (`compact_boundary`). Всё, что выше неё, —
+        # прошлое: кеш следующий вызов начнёт заново со сводки, а ход,
+        # закончившийся до сжатия, закончен. Поэтому за границу не ходят ни
+        # метка кеша, ни состояние агента, ни поиск начала хода.
+        #
+        # Исключение одно — ход, идущий через границу: автосжатие приходит
+        # посреди работы, агент продолжает после него, а реплика человека,
+        # начавшая ход, осталась выше. Тогда за границу идёт только поиск
+        # этой реплики (`spans`).
+        #
+        # Граница, после которой нет ни реплики, ни ответа агента, — это
+        # сжатая и простаивающая сессия. Состояние у неё `idle`, а метка
+        # `compactAt` говорит читателю, что продолжения не было.
+        #
+        # Но только если и до границы ход был закончен. Автосжатие посреди
+        # хода оставляет ту же картину на время одного вызова API: граница
+        # легла, ответа агента после неё ещё нет. Отличает их ближайший ответ
+        # основной цепочки до границы (`pre`): `end_turn` — ход кончился,
+        # иначе он идёт через границу.
+        past = False
+        spans = False
+        peek = False
+        pre = None
+        boundary_at = 0.0
         lines = data.split(b"\n")
         for raw in lines:
             if b'-title"' not in raw:
@@ -1294,9 +1352,22 @@ def tail_facts(path, doc_root=None):
             if not entry:
                 got = o.get("entrypoint")
                 entry = got if isinstance(got, str) else ""
-            if not cache_at:
+            if not past and o.get("type") == "system" \
+                    and o.get("subtype") == "compact_boundary":
+                past = True
+                boundary_at = stamp_of(o)
+                spans = bool(stop or pending) and not turn_over
+                peek = not (stop or pending or turn_over)
+            elif peek and pre is None:
+                if o.get("type") == "assistant" and not o.get("isSidechain"):
+                    m = o.get("message")
+                    pre = (m.get("stop_reason") or "") if isinstance(m, dict) else ""
+                    spans = pre != "end_turn"
+                elif is_human_message(o):
+                    pre = ""
+            if not cache_at and not past:
                 cache_at = cache_stamp(o)
-            if not turn_over:
+            if not turn_over and not past:
                 blocks = content_of(o)
                 if isinstance(blocks, list):
                     for b in blocks:
@@ -1311,15 +1382,19 @@ def tail_facts(path, doc_root=None):
                 if not stop and o.get("type") == "assistant":
                     m = o.get("message")
                     stop = (m.get("stop_reason") or "") if isinstance(m, dict) else ""
-            if is_human_message(o):
+            if is_human_message(o) and (not past or spans):
                 if not turn_at:
                     turn_at = stamp_of(o)
                 turn_over = True
-            if not doing and o.get("type") in ("user", "assistant"):
+            # Сводка сжатия — пересказ прошлого, а не дело сессии: «чем занята»
+            # отвечает то, что было до неё.
+            if not doing and o.get("type") in ("user", "assistant") \
+                    and not o.get("isCompactSummary"):
                 t = clean(text_of(content_of(o)))
                 if t and not noisy(t):
                     doing = t[:200]
-            if doing and turn_at:
+            decided = past and not spans and (not peek or pre is not None)
+            if doing and (turn_at or decided):
                 break
         # Незакрытый вызов главнее `stop_reason`: он и есть то, чем сессия
         # занята прямо сейчас. `end_turn` — ход кончился, ответа никто не
@@ -1333,8 +1408,10 @@ def tail_facts(path, doc_root=None):
             state = "question" if pending in QUESTION_TOOLS else "active"
         elif stop == "end_turn":
             state = "review"
-        elif stop or turn_at:
+        elif stop or turn_at or spans:
             state = "active"
+        elif past:
+            state = "idle"
         else:
             state = ""
         question = question_text(pending_input) if state == "question" else ""
@@ -1343,16 +1420,28 @@ def tail_facts(path, doc_root=None):
         # врал бы он у `contextPct` в `from_tail`.
         if cache_at:
             agent["cacheAt"] = int(cache_at)
-        return (custom or ai, doing, turn_at, docs, entry, agent)
+        if state == "idle" and boundary_at:
+            agent["compactAt"] = int(boundary_at)
+        # Седьмое значение — «граница найдена, и ход за неё не идёт»: начала
+        # хода тогда нет законно, и второй, широкий проход его не найдёт.
+        return (custom or ai, doing, turn_at, docs, entry, agent,
+                past and not spans and (not peek or pre is not None))
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             fh.seek(max(0, size - TAIL))
-            title, doing, turn_at, docs, entry, agent = pick(fh.read())
-            if not turn_at and size > TAIL:
+            title, doing, turn_at, docs, entry, agent, bounded = pick(fh.read())
+            if not turn_at and not bounded and size > TAIL:
                 fh.seek(max(0, size - TURN_TAIL))
-                turn_at = pick(fh.read())[2]
+                # Из широкого прохода берётся и запись агента: он видит всё то
+                # же, что узкий, и больше. Без этого сжатая сессия, у которой
+                # за границей лежит больше TAIL вложений (на живых сессиях
+                # 250–430 КБ), оставалась бы без состояния — узкий хвост
+                # видит одни вложения.
+                wide = pick(fh.read())
+                turn_at, agent = wide[2], wide[5]
+                doing = doing or wide[1]
             if not title and size > TAIL:
                 fh.seek(0)
                 title = pick(fh.read())[0]
@@ -3259,7 +3348,8 @@ def facts_for(path, mtime, cache, tail=None, head=None,
         entry = old.get("entrypoint", "")
         agent = {"state": old.get("agentState", ""),
                  "question": old.get("agentQuestion", ""),
-                 "cacheAt": old.get("agentCacheAt", 0)}
+                 "cacheAt": old.get("agentCacheAt", 0),
+                 "compactAt": old.get("agentCompactAt", 0)}
     else:
         title, doing, turn_at, docs, entry, agent = tail(path)
         title = clean(title)
@@ -3282,7 +3372,9 @@ def facts_for(path, mtime, cache, tail=None, head=None,
               # Метка кеша — по тому же правилу. Здесь ноль, а не пропуск
               # ключа: памятка внутренняя, и ноль в ней значит «искали и не
               # нашли». Наружу ноль ключом не выходит — см. `cache_of`.
-              "agentCacheAt": int(num(agent.get("cacheAt")))}
+              "agentCacheAt": int(num(agent.get("cacheAt"))),
+              # Метка сжатия — тем же правилом, что метка кеша.
+              "agentCompactAt": int(num(agent.get("compactAt")))}
     if size is not None:
         result["size"] = size
 
@@ -3860,7 +3952,8 @@ elif mode == "state":
         hook = agent_of(sid, path, f.get("turnAt", 0),
                         {"state": f.get("agentState", ""),
                          "question": f.get("agentQuestion", ""),
-                         "cacheAt": f.get("agentCacheAt", 0)},
+                         "cacheAt": f.get("agentCacheAt", 0),
+                         "compactAt": f.get("agentCompactAt", 0)},
                         mtime)
         shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
                                             (hook or {}).get("state", ""))
