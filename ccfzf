@@ -1288,8 +1288,16 @@ def tail_facts(path, doc_root=None):
         # Граница, после которой нет ни реплики, ни ответа агента, — это
         # сжатая и простаивающая сессия. Состояние у неё `idle`, а метка
         # `compactAt` говорит читателю, что продолжения не было.
+        #
+        # Но только если и до границы ход был закончен. Автосжатие посреди
+        # хода оставляет ту же картину на время одного вызова API: граница
+        # легла, ответа агента после неё ещё нет. Отличает их ближайший ответ
+        # основной цепочки до границы (`pre`): `end_turn` — ход кончился,
+        # иначе он идёт через границу.
         past = False
         spans = False
+        peek = False
+        pre = None
         boundary_at = 0.0
         lines = data.split(b"\n")
         for raw in lines:
@@ -1349,6 +1357,14 @@ def tail_facts(path, doc_root=None):
                 past = True
                 boundary_at = stamp_of(o)
                 spans = bool(stop or pending) and not turn_over
+                peek = not (stop or pending or turn_over)
+            elif peek and pre is None:
+                if o.get("type") == "assistant" and not o.get("isSidechain"):
+                    m = o.get("message")
+                    pre = (m.get("stop_reason") or "") if isinstance(m, dict) else ""
+                    spans = pre != "end_turn"
+                elif is_human_message(o):
+                    pre = ""
             if not cache_at and not past:
                 cache_at = cache_stamp(o)
             if not turn_over and not past:
@@ -1377,7 +1393,8 @@ def tail_facts(path, doc_root=None):
                 t = clean(text_of(content_of(o)))
                 if t and not noisy(t):
                     doing = t[:200]
-            if doing and (turn_at or (past and not spans)):
+            decided = past and not spans and (not peek or pre is not None)
+            if doing and (turn_at or decided):
                 break
         # Незакрытый вызов главнее `stop_reason`: он и есть то, чем сессия
         # занята прямо сейчас. `end_turn` — ход кончился, ответа никто не
@@ -1391,7 +1408,7 @@ def tail_facts(path, doc_root=None):
             state = "question" if pending in QUESTION_TOOLS else "active"
         elif stop == "end_turn":
             state = "review"
-        elif stop or turn_at:
+        elif stop or turn_at or spans:
             state = "active"
         elif past:
             state = "idle"
@@ -1407,7 +1424,8 @@ def tail_facts(path, doc_root=None):
             agent["compactAt"] = int(boundary_at)
         # Седьмое значение — «граница найдена, и ход за неё не идёт»: начала
         # хода тогда нет законно, и второй, широкий проход его не найдёт.
-        return (custom or ai, doing, turn_at, docs, entry, agent, past and not spans)
+        return (custom or ai, doing, turn_at, docs, entry, agent,
+                past and not spans and (not peek or pre is not None))
 
     try:
         size = os.path.getsize(path)

@@ -169,6 +169,26 @@ def test_автосжатие_посреди_хода_ход_не_теряет()
     assert "compactAt" not in agent, agent
 
 
+def test_автосжатие_посреди_хода_до_первого_ответа_после():
+    # Граница только что легла, агент ещё не ответил после неё. Ход не
+    # кончался — ближайший ответ до границы стоит на `tool_use`, — и сжатой
+    # и простаивающей такая сессия не считается.
+    recs = [_human(HUMAN_AT), _answer(T1, stop="tool_use")] \
+        + _compact(T2, trigger="auto")
+    title, doing, turn_at, docs, entry, agent = _facts(recs)
+    assert agent["state"] == "active", agent
+    assert "compactAt" not in agent, agent
+    assert turn_at == HUMAN_AT, turn_at
+
+
+def test_автосжатие_после_конца_хода_простаивает():
+    # Автосжатие бывает и после законченного хода: тогда продолжения нет,
+    # как и у ручного.
+    agent = _facts(BEFORE + _compact(T2, trigger="auto"))[5]
+    assert agent["state"] == "idle", agent
+    assert agent.get("compactAt") == T2, agent
+
+
 def test_метка_кеша_за_границу_не_ходит():
     # После сжатия агент ещё не отвечал (только сайдчейн или ошибка) — метка
     # прошлого хода из-за границы не подхватывается.
