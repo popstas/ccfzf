@@ -83,11 +83,13 @@ ccfzf ~/projects/js/webapp  the same, by path
 ccfzf webapp --model opus   trailing arguments are passed on to claude
 ccfzf --kiosk               run everything inside, return to the list on exit
 ccfzf --print               print the command instead of running it
-ccfzf --session <id>        go straight into a session by id, no picker
+ccfzf --session <id|name>   go straight into a session by id or name, no picker
 ccfzf --limit <n>           how many newest sessions to look at at all (500)
 ```
 
 `--session` is for scripts, not people: a missing or unknown id is a hard error (message on stderr, exit 1) rather than a fall back to the picker, which would hang with nobody at the keyboard. It composes with `--kiosk` (runs the session, then lands on that project's session list) and with `--print` (prints the command instead of running it).
+
+Instead of an id, `--session` takes a session's name — its title, the one `/rename` sets (or the generated one), matched exactly. That is how notes link to sessions (`- Сессия nginx-cve-1811`), so the name is looked up in every transcript, not only the newest `--limit`: first the facts cache, then the tails of the rest (about half a second for 2700 transcripts). When several sessions share the name, a running one wins, then the most recently active.
 
 A session that is still running is joined, not resumed a second time:
 
