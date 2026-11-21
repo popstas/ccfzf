@@ -38,18 +38,30 @@
 #                         a dash; empty lines are skipped. Passed on as
 #                         `--dangerously-load-development-channels <line>...`.
 #                         Any other line is a wrong argument.
-# This is how a child gets a channel server: the caller writes the files, the
-# window manager that sends the launch over ssh does not have to know about them.
+#   <sessionId>.fork      the child starts as a fork of the head's conversation:
+#                         `--resume <headId> --fork-session` go after
+#                         `--session-id`, so the copy is written under the
+#                         child's own id. Only the presence counts, the content
+#                         is not read: the session to fork is headId, which has
+#                         passed the head check. The head's transcript must exist
+#                         under ~/.claude/projects, otherwise the launch is
+#                         refused — claude would only say "No conversation found"
+#                         and close.
+# This is how a child gets a channel server or a fork: the caller writes the
+# files, the window manager that sends the launch over ssh does not have to know
+# about them.
 #
 # Variables of a parent Claude Code session (CLAUDE_CODE_* and a few more) are
-# unset first. claude runs as `claude -n <name> --session-id <id> [--permission-mode <m>]
+# unset first. claude runs as `claude -n <name> --session-id <id>
+# [--resume <headId> --fork-session] [--permission-mode <m>]
 # [--mcp-config <file>] [--dangerously-load-development-channels <s>...]
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
 #
 # Exit code 2 when an argument is wrong (bypassPermissions and a bad
 # CCFZF_CHILD_CWD_ROOT count as one), 3 when a check refuses (the head, the cwd
-# root); either way nothing is written or started.
+# root, the head's transcript for a fork); either way nothing is written or
+# started.
 # Otherwise the code is claude's, except that a session closed by HUP, INT or
 # TERM (129/130/143) ends with 0. In a terminal a failure waits for Enter (up to
 # ten minutes): the window would otherwise close before anyone read it, and the
@@ -115,6 +127,7 @@ side_dir=$HOME/.ccfzf/prompts
 [[ $prompt_file == - ]] || side_dir=$(dirname -- "$prompt_file")
 mcp_config=""
 channels=()
+fork=""
 # Physical, because claude starts after `cd` into the child's cwd, where a
 # relative path would point elsewhere. No directory means no files.
 if [[ -d $side_dir ]] && side_dir=$(phys "$side_dir"); then
@@ -136,6 +149,11 @@ if [[ -d $side_dir ]] && side_dir=$(phys "$side_dir"); then
       [[ $line =~ $channel_re ]] || die "bad channel in $f: '$line'"
       channels+=("$line")
     done <"$f"
+  fi
+  f=$side_dir/$sid.fork
+  if [[ -e $f || -L $f ]]; then
+    [[ -f $f && -r $f ]] || die "cannot read fork file: $f"
+    fork=1
   fi
 fi
 
@@ -230,6 +248,15 @@ verdict=$(python3 -c "$head_check" "$heads/$head_id.json" "$children" "$head_id"
   <<<"$agents") || refuse "${verdict:-head check failed for $head_id}"
 [[ $head != - || -z $verdict ]] || head=$verdict
 
+# A fork needs the head's transcript; claude looks it up by id in every project
+# directory, whatever the child's cwd. Checked before the record is written.
+if [[ -n $fork ]]; then
+  shopt -s nullglob
+  transcripts=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$head_id".jsonl)
+  shopt -u nullglob
+  ((${#transcripts[@]} > 0)) || refuse "cannot fork head $head_id: no transcript $head_id.jsonl under ~/.claude/projects"
+fi
+
 # --- the record and the launch --------------------------------------------------
 mkdir -p -- "$children"
 # Through a temporary file: a reader polling --state every second must never
@@ -251,6 +278,7 @@ PY
 mv -f -- "$tmp" "$children/$sid.json"
 
 args=(-n "$name" --session-id "$sid")
+[[ -z $fork ]] || args+=(--resume "$head_id" --fork-session)
 [[ $mode == - ]] || args+=(--permission-mode "$mode")
 [[ -z $mcp_config ]] || args+=(--mcp-config "$mcp_config")
 ((${#channels[@]} == 0)) || args+=(--dangerously-load-development-channels "${channels[@]}")

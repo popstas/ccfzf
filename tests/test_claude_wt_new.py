@@ -446,10 +446,13 @@ def test_a_refusal_stays_on_screen_in_a_terminal():
 CHANNELS = "--dangerously-load-development-channels"
 
 
-def side(e, sid=SID, mcp=None, channels=None, where=None):
+def side(e, sid=SID, mcp=None, channels=None, fork=None, where=None):
     d = pathlib.Path(where or e.prompt.parent)
     d.mkdir(parents=True, exist_ok=True)
     paths = {}
+    if fork is not None:
+        paths["fork"] = d / (sid + ".fork")
+        paths["fork"].write_text(fork, encoding="utf-8")
     if mcp is not None:
         paths["mcp"] = d / (sid + ".mcp.json")
         paths["mcp"].write_text(mcp, encoding="utf-8")
@@ -551,7 +554,7 @@ def test_bad_channel_line_starts_nothing():
 
 
 def test_a_side_file_that_is_not_a_file_starts_nothing():
-    for which in ("mcp.json", "channels"):
+    for which in ("mcp.json", "channels", "fork"):
         e = Env()
         (e.prompt.parent / (SID + "." + which)).mkdir()
         r = e.run(*e.good())
@@ -563,14 +566,88 @@ def test_no_side_files_no_flags():
     """Регрессия: обёртка боевая (~/bin/claude-wt-new), и запуск без файлов
     рядом с заданием должен остаться прежним. Файлы другой сессии не в счёт."""
     e = Env()
-    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n")
-    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n",
+    head_transcript(e)
+    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n", fork="")
+    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n", fork="",
          where=e.root / ".ccfzf" / "prompts")
     for prompt, tail in ((e.prompt, ["--", "скажи ок"]), ("-", [])):
         r = e.run(*e.good(prompt=prompt, mode="plan"))
         assert r.returncode == 0, r.stderr
         assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
                                       "--permission-mode", "plan", *tail], e.called()
+
+
+# --- форк: ребёнок стартует копией разговора head --------------------------------
+
+FORK = ["--resume", HEAD_ID, "--fork-session"]
+
+
+def head_transcript(e, sid=HEAD_ID, project="-somewhere-else"):
+    """Транскрипт head в каталоге чужого проекта: claude ищет его по id во всех
+    каталогах проектов, cwd ребёнка тут ни при чём (сверено вживую, 2.1.330)."""
+    d = e.root / ".claude" / "projects" / project
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (sid + ".jsonl")).write_text("{}\n", encoding="utf-8")
+
+
+def test_a_fork_file_resumes_the_head_under_the_child_id():
+    e = Env()
+    head_transcript(e)
+    f = side(e, mcp="{}", channels="server:telegram-delegate\n", fork="")
+    r = e.run(*e.good(mode="plan"))
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == [
+        "-n", "t", "--session-id", SID, *FORK, "--permission-mode", "plan",
+        "--mcp-config", str(f["mcp"].resolve()),
+        CHANNELS, "server:telegram-delegate",
+        "--", "скажи ок"], e.called()
+    rec = e.record()
+    assert rec["headId"] == HEAD_ID and rec["sessionId"] == SID, rec
+
+
+def test_the_fork_file_content_is_not_read():
+    """Источник форка — headId, прошедший проверку head, а не текст файла:
+    в argv из файла не попадает ничего."""
+    e = Env()
+    head_transcript(e)
+    side(e, fork=OTHER + "\n--dangerously-skip-permissions\n")
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID, *FORK,
+                                  "--", "скажи ок"], e.called()
+
+
+def test_without_a_prompt_the_fork_file_comes_from_the_prompts_dir():
+    e = Env()
+    head_transcript(e)
+    side(e, fork="", where=e.root / ".ccfzf" / "prompts")
+    r = e.run(*e.good(prompt="-"))
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID, *FORK], e.called()
+
+
+def test_a_fork_without_the_head_transcript_starts_nothing():
+    """claude на `--resume` неизвестного id пишет «No conversation found» и
+    выходит с 1 — окно закрылось бы, а запись о ребёнке осталась бы."""
+    e = Env()
+    head_transcript(e, sid=OTHER)
+    side(e, fork="")
+    r = e.run(*e.good())
+    assert r.returncode == 3, (r.returncode, r.stderr)
+    assert "transcript" in r.stderr, r.stderr
+    e.nothing_happened("no transcript")
+
+
+def test_the_head_transcript_follows_claude_config_dir():
+    e = Env()
+    conf = e.root / "conf"
+    d = conf / "projects" / "-p"
+    d.mkdir(parents=True)
+    (d / (HEAD_ID + ".jsonl")).write_text("{}\n", encoding="utf-8")
+    side(e, fork="")
+    r = e.run(*e.good(), extra_env={"CLAUDE_CONFIG_DIR": str(conf)})
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"][4:7] == FORK, e.called()
 
 
 if __name__ == "__main__":
