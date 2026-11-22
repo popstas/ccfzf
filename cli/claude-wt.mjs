@@ -57,6 +57,7 @@ const cmd = (file) => async () => (await import(`./lib/commands/${file}.mjs`)).d
 const COMMANDS = {
   tree: cmd('tree'),
   'window focus': cmd('window-focus'),
+  'window layout': cmd('window-layout'),
 };
 
 async function main(argv) {
