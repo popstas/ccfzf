@@ -7,11 +7,15 @@ import { readTrackers } from '../../cli/lib/sources.mjs';
 import { runCliAsync, world, mockManager, now } from './helpers.mjs';
 import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, CHILD2, OTHER, CLOSED } from './fixtures.mjs';
 
-async function open(target, reply, { caller = HEAD, extra = [], env = {}, edit } = {}) {
+// В фикстуре CHILD2 живая и без окна; открывать можно только закрытую свою сессию,
+// поэтому по умолчанию она здесь закрыта (live:false), а liveChild2 оставляет её живой.
+async function open(target, reply, { caller = HEAD, extra = [], env = {}, edit, liveChild2 = false } = {}) {
   const m = await mockManager(reply);
   const t = trackers(now(), { port: m.port });
   if (edit) edit(t);
-  const w = world({ state: loadState(), trackers: t, children: CHILDREN, heads: HEADS, caller });
+  const state = loadState();
+  if (!liveChild2) state.sessions.find((x) => x.id === CHILD2).live = false;
+  const w = world({ state, trackers: t, children: CHILDREN, heads: HEADS, caller });
   try {
     const r = await runCliAsync(['session', 'open', target, '--json', ...extra], { ...w.env, ...env });
     return { ...r, o: r.stdout ? JSON.parse(r.stdout) : null, requests: m.requests };
@@ -136,4 +140,27 @@ test('две свежие машины: окно открывается там, 
     assert.equal(c.o.host, 'box-a');
     assert.equal(other.requests.length, 0);
   } finally { await other.close(); }
+});
+
+test('живая без окна (только что открыта или окно отвалилось): код 1, запроса нет — второй claude на ту же сессию нельзя', async () => {
+  const r = await open(CHILD2, ok({ ok: true, action: 'resume' }), { liveChild2: true });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.o.error, "session is running without a window — wait for its window (just spawned) or use the picker's Reopen (disconnected)");
+  assert.equal(r.requests.length, 0);
+});
+
+test('только что открытый ребёнок: в --state его ещё нет, claude agents знает — код 1, запроса нет', async () => {
+  const NEW = 'aaaaaaaa-0000-4000-8000-000000000009';
+  const m = await mockManager(ok({ ok: true, action: 'resume' }));
+  const w = world({
+    state: loadState(), trackers: trackers(now(), { port: m.port }), heads: HEADS, caller: HEAD,
+    children: [...CHILDREN, { sessionId: NEW, headId: HEAD, createdAt: 40 }],
+    agents: [{ sessionId: NEW, name: '.new-kid', status: 'busy' }],
+  });
+  try {
+    const r = await runCliAsync(['session', 'open', NEW, '--json'], w.env);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(JSON.parse(r.stdout).error, /^session is running without a window/);
+    assert.equal(m.requests.length, 0);
+  } finally { w.cleanup(); await m.close(); }
 });

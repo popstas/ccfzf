@@ -10,6 +10,7 @@ const skip = !LEGACY && 'WT_LEGACY_SKILLS не задан';
 const SID = 'cccccccc-0000-4000-8000-000000000001';
 
 // Два одинаковых мира: один для скрипта, другой для CLI (команды пишут файлы).
+const bothRaw = (...a) => both(...a);
 async function both(setup, rel, cmd, args, drop = [], { noJson = false } = {}) {
   const a = legacyWorld({ sessionId: SID, pid: 910001 });
   const b = legacyWorld({ sessionId: SID, pid: 910001 });
@@ -127,8 +128,11 @@ const spawnWorld = (w) => {
   w.write(`.claude/sessions/${w.me.pid}.json`, { pid: w.me.pid, sessionId: SID, name: 'boss', cwd: '/p/side' });
 };
 
-test('session spawn --dry-run: как spawn.mjs', { skip }, async () => {
+// intro сознательно разошёлся со скриптом: ребёнку называется `claude-wt session find`,
+// а не путь скрипта скилла, — сверяется всё, кроме него.
+test('session spawn --dry-run: как spawn.mjs, кроме intro', { skip }, async () => {
   const S = ['session', 'spawn'];
+  const both = (setup, rel, cmd, args) => bothRaw(setup, rel, cmd, args, ['intro']);
   const base = (w) => ['--task', 'Wide 2/3', '--prompt-file', `${w.home}/task.md`, '--cwd', '/p/demo', '--session-id', CHILD, '--dry-run'];
   await both(spawnWorld, SPAWN_OLD, S, base);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--mcp-config', `${w.home}/mcp.json`, '--dev-channels', 'server:a,server:b', '--zone', '2:1', '--terminal', 'wt']);

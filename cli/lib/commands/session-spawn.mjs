@@ -157,7 +157,7 @@ function zoneArg(args) {
 
 // По-русски: дети работают по-русски. claude-wt-new читает файл на машине агентов и передаёт одним словом argv.
 function intro(me, cwd, fork) {
-  const ready = `Сейчас одно действие: SendMessage на "${me.name}" с одной строкой "готов, cwd <твой текущий каталог>" (ожидается ${cwd}). Имя не доставилось - узнай текущее: node ~/.claude/skills/session-find/find.mjs --session-id ${me.headId} --timeout 0, поле name.`;
+  const ready = `Сейчас одно действие: SendMessage на "${me.name}" с одной строкой "готов, cwd <твой текущий каталог>" (ожидается ${cwd}). Имя не доставилось - узнай текущее: claude-wt session find --session-id ${me.headId} --timeout 0, поле name.`;
   const reply = 'Дальше отвечай head только через SendMessage: скопируй атрибут from его сообщения в to. Отчёты, вопросы и итог - head, не в свой чат.';
   if (!fork) {
     return [
@@ -169,7 +169,7 @@ function intro(me, cwd, fork) {
   return [
     `Ты НЕ head. Ты дочерняя сессия-форк head-сессии "${me.name}" (sessionId ${me.headId}). Весь разговор выше - копия разговора head: его вёл head, и "я" в нём - head, не ты. У тебя свои sessionId, имя и cwd.`,
     '',
-    'Роль head не наследуется. Не раздавай задачи, не вызывай head-mark, session-spawn, session-close, head-adopt, session-rename. Не отвечай на сообщения исполнителей из истории выше и не продолжай в ней незаконченное - и вызов spawn.mjs, которым head открыл тебя, тоже. Разговор выше - справка к заданию, а не задание.',
+    'Роль head не наследуется. Не раздавай задачи, не вызывай head-mark, session-spawn, session-close, head-adopt, session-rename. Не отвечай на сообщения исполнителей из истории выше и не продолжай в ней незаконченное - и вызов claude-wt session spawn, которым head открыл тебя, тоже. Разговор выше - справка к заданию, а не задание.',
     '',
     'Задачу head пришлёт отдельным сообщением, до него работу не начинай.',
     '',
