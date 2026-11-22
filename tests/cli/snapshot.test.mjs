@@ -85,6 +85,20 @@ test('--sessions с чужой — отказ', async () => {
   assert.equal(r.requests.length, 0);
 });
 
+test('снимок без сессий или с записями без id — отказ, запроса нет', async () => {
+  // Пустой sessionIds менеджер читает как «все сессии снимка» — чужие тоже.
+  for (const sessions of [[], [{ title: 'someone-else' }]]) {
+    const st = loadState();
+    st.snapshots.push({ id: 'EMPTY', created: 999, host: 'box-a', sessions });
+    const r = await cli(['snapshot', 'restore', 'EMPTY'], { state: st });
+    assert.equal(r.status, 1, JSON.stringify(sessions));
+    assert.match(r.o.error, /no sessions/);
+    assert.equal(r.requests.length, 0);
+    const last = await cli(['snapshot', 'restore', 'last'], { state: st });
+    assert.notEqual(last.o.id, 'EMPTY', 'last не берёт пустой снимок');
+  }
+});
+
 test('снимок мака или неизвестный — код 2', async () => {
   for (const id of [MAC_SNAP, 'no-such-snapshot']) {
     const r = await cli(['snapshot', 'restore', id]);

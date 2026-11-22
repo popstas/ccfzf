@@ -70,7 +70,8 @@ export function world({ state = { sessions: [], snapshots: [] }, agents = [], tr
 }
 
 // Мок менеджера: запоминает запросы, отвечает тем, что вернёт reply(path, body).
-// reply может вернуть {status, body} или 'hang' — тогда ответа нет вовсе.
+// reply может вернуть {status, body}, {status, raw} (тело как есть), 'hang' — ответа
+// нет вовсе, или 'destroy' — соединение рвётся после чтения запроса.
 export async function mockManager(reply) {
   const requests = [];
   const server = createServer((req, res) => {
@@ -82,8 +83,10 @@ export async function mockManager(reply) {
       requests.push({ method: req.method, path: req.url, body });
       const r = reply(req.url, body);
       if (r === 'hang') return;
+      // Запрос дошёл, а соединение оборвалось до ответа (менеджер упал).
+      if (r === 'destroy') { req.socket.destroy(); return; }
       res.writeHead(r.status ?? 200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(r.body ?? {}));
+      res.end(r.raw !== undefined ? r.raw : JSON.stringify(r.body ?? {}));
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));

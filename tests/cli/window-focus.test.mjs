@@ -107,6 +107,29 @@ test('не-2xx: тело с reason и пустое', async () => {
   assert.equal(e.o.error, 'boom');
 });
 
+test('не-2xx без тела — HTTP <status>', async () => {
+  for (const raw of ['', '{}']) {
+    const r = await focus(CHILD1, () => ({ status: 502, raw }));
+    assert.equal(r.status, 1, JSON.stringify(raw));
+    assert.equal(r.o.error, 'HTTP 502');
+  }
+});
+
+test('2xx без ok:true — не успех', async () => {
+  const html = await focus(CHILD1, () => ({ status: 200, raw: '<html>proxy</html>' }));
+  assert.equal(html.status, 1);
+  assert.match(html.o.error, /unexpected answer from manager \(HTTP 200\)/);
+  const empty = await focus(CHILD1, () => ({ status: 200, raw: '{}' }));
+  assert.equal(empty.status, 1, 'тело без ok — не ответ менеджера');
+});
+
+test('обрыв после отправки — код 3, исход неизвестен', async () => {
+  const r = await focus(CHILD1, () => 'destroy');
+  assert.equal(r.requests.length, 1, 'запрос дошёл');
+  assert.equal(r.status, 3);
+  assert.match(r.o.error, /outcome unknown/);
+});
+
 test('протухший трекер — отказ с именем файла', async () => {
   const r = await focus(CHILD1, ok({ ok: true, foreground: true }), { tracker: { generated: now() - 3600 } });
   assert.equal(r.status, 1);
@@ -148,7 +171,13 @@ test('managerFor: нет трекера — 2, нет http — 1, --machine', ()
 });
 
 test('post: отказ соединения — не таймаут', async () => {
-  const r = await post('http://127.0.0.1:1', '/x', {}, { timeoutMs: 2000 });
-  assert.ok(r.error && !r.timeout, JSON.stringify(r));
+  // Свободный порт: занять и сразу отпустить.
+  const m = await mockManager(() => ({ status: 200, body: { ok: true } }));
+  await m.close();
+  const r = await post(m.url, '/x', {}, { timeoutMs: 2000 });
+  assert.ok(r.error && !r.timeout && !r.lost, JSON.stringify(r));
+  assert.match(r.error, /ECONNREFUSED/);
   assert.equal(answer(r).code, 1);
+  // Порт, который fetch не пускает вовсе, — запрос не ушёл.
+  assert.equal(answer(await post('http://127.0.0.1:1', '/x', {}, { timeoutMs: 2000 })).code, 1);
 });

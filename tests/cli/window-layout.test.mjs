@@ -28,6 +28,13 @@ test('тело group с selected=head', async () => {
   assert.deepEqual(r.o.group, [HEAD, CHILD1, GRAND]);
 });
 
+test('placed:0 — успех: группа уже разложена', async () => {
+  const r = await layout(HEAD, placed(0));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.o.placed, 0);
+  assert.equal(r.o.warnings, undefined);
+});
+
 test('дети без окна не входят', async () => {
   const r = await layout(HEAD, placed(3));
   assert.ok(!r.requests[0].body.groups[0].includes('aaaaaaaa-0000-4000-8000-000000000003'));

@@ -51,7 +51,7 @@ export async function restore(args, opts, env) {
 
   let snap;
   if (arg === 'last') {
-    snap = snaps.find((x) => (wanted ? wanted.every((id) => x.sessions.includes(id)) : x.own));
+    snap = snaps.find((x) => x.sessions.length && (wanted ? wanted.every((id) => x.sessions.includes(id)) : x.own));
     if (!snap) return { code: EXIT.NOT_FOUND, error: wanted ? 'no snapshot holds all of --sessions' : 'no snapshot of your own sessions' };
   } else {
     snap = snaps.find((x) => x.id === arg);
@@ -71,6 +71,9 @@ export async function restore(args, opts, env) {
     }
     sessionIds = snap.sessions;
   }
+
+  // Пустой sessionIds менеджер читает как «все сессии снимка» — чужие тоже.
+  if (!sessionIds.length) return { id: snap.id, code: EXIT.REFUSED, error: `snapshot ${snap.id} lists no sessions by id; nothing to restore` };
 
   const mg = manager(snap.host, trackers, opts);
   if (mg.fail) return { id: snap.id, ...mg.fail };
