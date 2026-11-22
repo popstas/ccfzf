@@ -178,6 +178,12 @@ test('managerFor: нет трекера — 2, нет http — 1, --machine', ()
   assert.equal(managerFor({ host: null, trackers: t }).code, 2);
 });
 
+test('managerFor: --machine и хост без учёта регистра, как в spawn.mjs', () => {
+  const t = [{ file: 'box-a.json', host: 'box-a', http: { host: 'a.lan', port: 1 }, fresh: true }];
+  assert.equal(managerFor({ host: 'x', machine: 'BOX-A', trackers: t }).url, 'http://a.lan:1');
+  assert.equal(managerFor({ host: 'Box-A', trackers: t }).url, 'http://a.lan:1');
+});
+
 test('post: отказ соединения — не таймаут', async () => {
   // Свободный порт: занять и сразу отпустить.
   const m = await mockManager(() => ({ status: 200, body: { ok: true } }));

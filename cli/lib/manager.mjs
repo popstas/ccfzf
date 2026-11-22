@@ -20,7 +20,8 @@ export function managerFor({ host, trackers, url, machine }) {
   }
   const want = machine ?? host;
   if (!want) return { error: 'no machine: the window does not name its host (pass --machine or --url)', code: EXIT.NOT_FOUND };
-  const mine = trackers.filter((t) => t.host === want).sort((a, b) => (b.generated ?? 0) - (a.generated ?? 0));
+  const lc = String(want).toLowerCase();
+  const mine = trackers.filter((t) => String(t.host).toLowerCase() === lc).sort((a, b) => (b.generated ?? 0) - (a.generated ?? 0));
   if (!mine.length) return { error: `no tracker for ${want}`, code: EXIT.NOT_FOUND };
   const t = mine.find((x) => x.http) ?? mine[0];
   if (!t.http) return { error: `no http manager for ${want}`, code: EXIT.REFUSED };
