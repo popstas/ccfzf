@@ -13,6 +13,7 @@ something.
 claude-wt tree [--json]                  sessions, windows, heads and children, snapshots; marks your own
 claude-wt window focus <session>         raise the existing window of your session (never opens one)
 claude-wt window layout <head>           lay out the windows of your head's group
+claude-wt window place <session> --zone M:P   move your session's existing window into a FancyZones zone
 claude-wt snapshot list [--json]         snapshots of trackers that have an http manager
 claude-wt snapshot restore <id|last> [--sessions a,b]
 claude-wt session open <session>         open a window for your session that has none
@@ -66,6 +67,25 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   Fewer than two windows is refused without a request. Descendants left out
   are listed in `skipped: [{id, why}]`, `why` being `no window` or
   `other machine`.
+- **`window place <session> --zone <monitor>:<position>`** moves the existing
+  window of your session into a FancyZones zone of its machine (Windows: the
+  numbering is FancyZones', the same as `claudeWt.headZones`). A `--zone` that
+  is missing or is not two integers from 1 is refused with code 1 before
+  anything else; a session with no window is code 2 before a request, like
+  `focus` — it never opens a window. The request is
+  `POST /claude-wt/place {mode: "zone", id, zone: {monitor, position}}`. The
+  manager checks the zone against the FancyZones layout of a monitor that is
+  connected now — it does not have to be one of `claudeWt.headZones` — and
+  answers `{ok: true, placed, zone}`; `placed: 0` means the window already
+  stood there. A zone outside the layout, a minimized or too narrow window is
+  code 1 with the manager's reason; `no window` from the manager is code 2; a
+  manager that predates the mode answers `bad payload`, which is code 1 with
+  `manager does not know mode zone`. The window is not raised or focused and
+  stays on its desktop. `session find` reports `monitor`/`zone`/`slot` by the
+  main zones (`headZones`) only: a window in another zone shows up as the main
+  zone it falls into (on nb `1:3` lies inside `1:2`: `zone: 2, slot: 2`), or
+  `zone: null` when it falls into none. `--machine`/`--url` that lead anywhere but the window's machine
+  are refused, as with `focus`.
 - **`snapshot list`** lists snapshots of machines whose tracker has an http
   manager, newest first.
 - **`snapshot restore <id|last>`** restores a snapshot whose sessions are all
@@ -160,7 +180,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `session unread` and `session seen` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread` and `session seen` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
 
 ## Environment
 

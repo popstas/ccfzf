@@ -177,6 +177,7 @@ The installer never edits `~/.claude/settings.json`; merge the printed fragment 
 claude-wt tree --json                   # sessions, windows, heads and children, snapshots
 claude-wt window focus <session>        # raise an existing window; never opens one
 claude-wt window layout <head>          # lay out the head's group
+claude-wt window place <session> --zone 3:1  # move an existing window into a FancyZones zone (Windows)
 claude-wt snapshot restore last         # restore the newest snapshot of your own sessions
 claude-wt session open <session>        # open a window for your session that has none
 ```

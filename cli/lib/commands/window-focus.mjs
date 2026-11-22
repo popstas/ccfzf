@@ -1,26 +1,8 @@
 // claude-wt window focus <session>: поднять существующее окно своей сессии.
 // Окна нет — отказ до запроса: старый менеджер без raiseOnly открыл бы новое.
 import { EXIT } from '../out.mjs';
-import { context, ownTarget, manager } from '../act.mjs';
+import { context, ownTarget, manager, offMachine } from '../act.mjs';
 import { post, answer, timeoutMs } from '../manager.mjs';
-
-// --machine/--url, ведущие не на машину окна: там этого окна нет, и менеджер
-// без raiseOnly открыл бы новое — а focus окон не открывает (решение Стаса).
-// Адрес машины окна — её имя или http.host из её трекера; иначе не проверить — отказ.
-function offMachine(host, trackers, opts) {
-  const lc = (x) => String(x ?? '').toLowerCase();
-  if (opts.machine !== undefined && lc(opts.machine) !== lc(host)) {
-    return `--machine ${opts.machine} is not the window's machine (${host})`;
-  }
-  if (opts.url !== undefined) {
-    let name = null;
-    try { name = lc(new URL(opts.url).hostname); } catch { return null; } // кривой --url отвергнет managerFor
-    const known = new Set([lc(host)]);
-    for (const t of trackers) if (lc(t.host) === lc(host) && t.http?.host) known.add(lc(t.http.host));
-    if (!known.has(name)) return `--url ${opts.url} does not point to the window's machine (${host}); known addresses: ${[...known].join(', ')}`;
-  }
-  return null;
-}
 
 export default async function windowFocus(args, opts, env) {
   const ctx = context(env);
