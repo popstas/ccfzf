@@ -79,9 +79,10 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   code 1 with the manager's reason; `no window` from the manager is code 2; a
   manager that predates the mode answers `bad payload`, which is code 1 with
   `manager does not know mode zone`. The window is not raised or focused and
-  stays on its desktop. A zone outside `headZones` shows up in `session find`
-  as `monitor` with `zone: null`: the tracker locates windows by the main
-  zones only. `--machine`/`--url` that lead anywhere but the window's machine
+  stays on its desktop. `session find` reports `monitor`/`zone`/`slot` by the
+  main zones (`headZones`) only: a window in another zone shows up as the main
+  zone it falls into (on nb `1:3` lies inside `1:2`: `zone: 2, slot: 2`), or
+  `zone: null` when it falls into none. `--machine`/`--url` that lead anywhere but the window's machine
   are refused, as with `focus`.
 - **`snapshot list`** lists snapshots of machines whose tracker has an http
   manager, newest first.
