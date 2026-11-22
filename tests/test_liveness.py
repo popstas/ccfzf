@@ -390,6 +390,40 @@ def test_last_message_at_gives_zero_after_a_fruitless_second_pass():
         assert CC["last_message_at"](path) == 0.0
 
 
+def test_last_message_at_does_not_hand_bytes_to_json():
+    """До 3.6 `json.loads` на bytes бросал `TypeError`, а хвост читается байтами.
+
+    Расширить `except` было бы хуже бага: на такой версии каждая строка
+    пропускалась бы молча, и функция отдавала бы ноль у любого файла —
+    «возраст неизвестен» вместо падения. Поэтому строка декодируется до
+    разбора, а проверяется это подменой `json.loads`, которая bytes не
+    принимает, как не принимал старый питон.
+    """
+    real = CC["json"]
+
+    class StrictJson:
+        @staticmethod
+        def loads(s, *a, **kw):
+            if isinstance(s, (bytes, bytearray)):
+                raise TypeError("the JSON object must be str, not 'bytes'")
+            return real.loads(s, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    with tempfile.TemporaryDirectory() as d:
+        path = _jsonl(d, "a.jsonl", [
+            {"type": "user", "timestamp": "2026-08-05T19:00:00.000Z"},
+            {"type": "assistant", "timestamp": "2026-08-05T19:51:00.000Z"},
+        ])
+        CC["json"] = StrictJson()
+        try:
+            got = CC["last_message_at"](path)
+        finally:
+            CC["json"] = real
+        assert got == 1785959460.0, got
+
+
 def test_fresh_ids_takes_the_newest_transcript_by_content():
     # Файл со свежим mtime, но старым содержимым, проигрывает файлу, чьё
     # содержимое новее. Сортировка идёт по содержимому, mtime не спрашивается.

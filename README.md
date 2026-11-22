@@ -171,7 +171,7 @@ There is no cache to go stale, and no truncation window — the list is always c
 
 ## Requirements
 
-- `bash`, `python3` (3.4+), and the usual POSIX tools
+- `bash`, `python3` **3.7+** (`subprocess.run(capture_output=…)` and `datetime.fromisoformat` come from 3.7), and the usual POSIX tools
 - `fzf` **0.36+** — that is where `pos()` and the `load` event came from; older builds fail loudly with `unknown action: pos`
 - `claude`
 

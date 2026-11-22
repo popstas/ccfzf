@@ -1660,7 +1660,11 @@ def last_message_at(path):
             return 0.0
         for raw in reversed(lines):
             try:
-                o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
+                # Декодирование до разбора: до 3.6 `json.loads` не принимал
+                # bytes вовсе и бросал `TypeError` мимо этого except. Обрезанная
+                # первая строка хвоста отсеется здесь же — `replace` не даст ей
+                # упасть на разрезанном посреди символа UTF-8.
+                o = json.loads(raw.decode("utf-8", "replace"))
             except ValueError:
                 continue
             ts = o.get("timestamp") if isinstance(o, dict) else None
