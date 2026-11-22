@@ -2,9 +2,12 @@
 
 `claude-wt` is a command for a Claude Code session to read the picture of
 sessions and windows and to act on the windows of its own sessions: raise one,
-lay out a head's group, restore a layout snapshot. Its user is an agent, so
-every command prints one JSON line with `--json` and exits with a code that
-means something.
+lay out a head's group, restore a layout snapshot, open a window for a session
+that has none. It also carries the session commands that used to be separate
+skill scripts (find, rename, close, spawn a child; mark a head, adopt
+sessions). Its user is an agent, so every command prints one JSON line with
+`--json` (the session commands always) and exits with a code that means
+something.
 
 ```
 claude-wt tree [--json]                  sessions, windows, heads and children, snapshots; marks your own
@@ -12,6 +15,14 @@ claude-wt window focus <session>         raise the existing window of your sessi
 claude-wt window layout <head>           lay out the windows of your head's group
 claude-wt snapshot list [--json]         snapshots of trackers that have an http manager
 claude-wt snapshot restore <id|last> [--sessions a,b]
+claude-wt session open <session>         open a window for your session that has none
+
+claude-wt session find --session-id <id> [--timeout s] [--interval s] | --name <n> | --list [--cwd c]
+claude-wt session rename --session-id <id> --to <name> | --cancel [--settings f]
+claude-wt session close --session-id <id> [--force] [--kill] [--wait s]
+claude-wt session spawn --task <slug> --prompt-file <f> [...]
+claude-wt head mark
+claude-wt head adopt [--release] <name|id>...
 ```
 
 `<session>` is a sessionId, a unique prefix of it (6 characters or more) or a
@@ -60,6 +71,42 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   snapshot). `last` is the newest snapshot of your own. The manager answers at
   once and raises the windows over the next half minute, so success is
   `pending: true` — "accepted, outcome unknown".
+- **`session open <session>`** opens a window for your session when it has
+  none — it never opens a second one: a session with a window in `--state` is
+  refused before anything is sent (`window exists, use window focus`). The
+  request is `POST /claude-wt/session-open {id, action: "terminal", cwd}` to
+  the freshest tracker with an http manager that takes such requests
+  (`openSession` in its tracker file; absent means yes, `false` means no).
+  `--machine`/`--url` choose another one, but never a machine with
+  `openSession: false`. The answer's `action` (`resume`, `restore`, …) comes
+  back with code 0; `pending` — the same session is already opening — is code 0
+  too, with `pending: true`. A timeout or a connection lost after sending is
+  code 3, `outcome unknown — do not retry; check with tree in 30 s`: a repeat
+  could open a second window. The timeout is 20 seconds unless
+  `CLAUDE_WT_TIMEOUT_MS` is set.
+
+## Session and head commands
+
+`session find`, `session rename`, `session close`, `session spawn`, `head mark`
+and `head adopt` moved here from the scripts of the `session-*` and
+`head-session` skills. **They are compatible with those scripts**: the same
+arguments (`--key value`, a flag without a value), the same JSON object with
+the same keys, the same exit codes — only on one line instead of indented, and
+printed always, without `--json`. The scripts become thin wrappers that call
+`claude-wt` with their arguments, so every caller that reads `next`, `hint`,
+`prevHead` or `sessionId` by name keeps working.
+
+| Command | What it does | Exit codes |
+|---|---|---|
+| `session find` | a live session by id (waits up to `--timeout`, 45 s), by name, or the list; name, registry name history, window place (`windowHost`, `monitor`, `zone`, `slot`) | 0 found, 2 not found, 1 error |
+| `session rename` | queues a name for the rename hook, which applies it on the target's next prompt; refuses a multi-line name, a taken one, or when the hook is not registered | 0 / 1 |
+| `session close` | SIGTERM to a child of this head (busy only with `--force`, SIGKILL only with `--kill`); only from a head with a live mark, only its own children, only when the pid still matches the registry | 0 closed / 1 |
+| `session spawn` | opens a child in a claude-wt window: `POST /claude-wt/session-new` to the freshest tracker with http; the child starts with a short intro, the task stays in `taskFile`. Never `bypassPermissions` for a child; `--fork` only with a `claude-wt-new` that supports it | 0, 1, 3 = outcome unknown — never resend, look the child up by the printed `sessionId` |
+| `head mark` | marks this session a head (`~/.ccfzf/heads/<id>.json`) | 0 / 1 |
+| `head adopt` | records live sessions as children of this head (`adopted: true`); `--release` only adopted ones | 0 nothing refused / 1 |
+
+They need `CLAUDE_CODE_SESSION_ID` and, for `head mark` and `session spawn`,
+`CLAUDE_PID` — both set by Claude Code in every session.
 
 ## Where the command goes
 
@@ -86,14 +133,18 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus` and `layout` are safe to retry; `snapshot restore` is not — it could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus` and `layout` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
 
 ## Environment
 
 Every path can be replaced, which is how the tests run without touching a
 live machine: `CCFZF_BIN` (default `ccfzf`), `CLAUDE_BIN` (`claude`),
 `CCFZF_WINDOWS_DIR` (`~/.ccfzf/windows`), `CCFZF_CHILDREN_DIR`
-(`~/.ccfzf/children`), `CCFZF_HEADS_DIR` (`~/.ccfzf/heads`).
+(`~/.ccfzf/children`), `CCFZF_HEADS_DIR` (`~/.ccfzf/heads`). The session
+commands read `~/.claude/sessions` and `~/.ccfzf/prompts` under `HOME`, and
+keep the overrides of their scripts: `SESSION_RENAME_DIR` (the rename queue)
+and `SPAWN_TEST_HEAD_MODE` (tests only: the head's permission mode instead of
+its transcript).
 
 ## Install
 
