@@ -2269,6 +2269,121 @@ def sendq_verdicts(samples, prev, now):
     return disc, state
 
 
+# Прошлый замер очередей. Рядом с памяткой фактов: тот же класс файла —
+# кеш, который можно стереть в любой момент, и промах стоит одной лишней
+# пробы. Пустая строка выключает признак вовсе.
+SENDQ_FILE = os.environ.get("CCFZF_SENDQ_FILE")
+if SENDQ_FILE is None:
+    SENDQ_FILE = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "ccfzf", "sendq.json")
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return b""
+
+
+def _reptyr_holders(proc_root):
+    """{pid цели: pid reptyr}: кто перенёс процесс в свой терминал.
+
+    `reptyr -T <pid>` держит перенесённого агента, а второй перенос целится
+    в первый reptyr (`reptyr <pid reptyr>`, см. steal_cmd), поэтому цель —
+    последний числовой аргумент.
+    """
+    out = {}
+    try:
+        names = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return out
+    for pid in names:
+        argv = [a for a in _read_bytes(os.path.join(proc_root, pid, "cmdline"))
+                .decode("utf-8", "ignore").split("\0") if a]
+        if not argv or os.path.basename(argv[0]) != "reptyr":
+            continue
+        nums = [a for a in argv[1:] if a.isdigit()]
+        if nums:
+            out[int(nums[-1])] = int(pid)
+    return out
+
+
+def _starttime(proc_root, pid):
+    """22-е поле `/proc/<pid>/stat` (тики с загрузки), "" — не прочиталось."""
+    text = _read_bytes(os.path.join(proc_root, str(pid), "stat")).decode("utf-8", "ignore")
+    try:
+        return text.rsplit(")", 1)[1].split()[19]
+    except IndexError:
+        return ""
+
+
+def disconnected_ids(procs, proc_root="/proc", state_path=None, now=None):
+    """id живых сессий, чья ssh-связь разорвана (см. sendq_verdicts).
+
+    `procs` — {sid: {pid, tmux, zellij, …}} из running_sessions. Пропускаются:
+    сессии без pid; сессии в tmux и zellij — их SSH_CONNECTION принадлежит
+    клиенту, который мог уйти давным-давно, а сама сессия цела; сессии без
+    SSH_CONNECTION (местные) и без своего сокета (связь уже закрыта — улики
+    нет, это форма «агент осиротел», её признак не видит).
+
+    Перенесённую `reptyr -T` сессию держит reptyr под новым ssh, а в environ
+    агента остаётся старый SSH_CONNECTION, чей сокет висит до `ClientAlive*`.
+    Поэтому environ читается у последнего звена цепочки reptyr — иначе живая
+    сессия получила бы пометку, и Reopen убил бы её.
+
+    Не-Linux (нет `proc_root`) — пустое множество и ни одной записи на диск.
+    Файл замеров пишется только при изменении.
+    """
+    path = SENDQ_FILE if state_path is None else state_path
+    if not path or not os.path.isdir(proc_root):
+        return set()
+    now = time.time() if now is None else now
+    cand = {sid: p for sid, p in procs.items()
+            if (p or {}).get("pid") and not p.get("tmux") and not p.get("zellij")}
+    # Обход /proc и чтение таблиц — только когда есть кого проверять.
+    holders, queues = {}, {}
+    if cand:
+        holders = _reptyr_holders(proc_root)
+        queues = tcp_queues(
+            _read_bytes(os.path.join(proc_root, "net", "tcp")).decode("ascii", "ignore") + "\n"
+            + _read_bytes(os.path.join(proc_root, "net", "tcp6")).decode("ascii", "ignore"))
+    samples, owner = {}, {}
+    for sid, p in cand.items():
+        pid = int(p["pid"])
+        holder, seen = pid, {pid}
+        while holder in holders and holders[holder] not in seen:
+            holder = holders[holder]
+            seen.add(holder)
+        peer = ssh_peer(_read_bytes(os.path.join(proc_root, str(holder), "environ")))
+        if not peer:
+            continue
+        cip, cport, sip, sport = peer
+        q = queues.get((sip, sport, cip, cport))
+        if q is None:
+            continue
+        key = "%d:%s:%s:%d:%s:%d" % (holder, _starttime(proc_root, holder), cip, cport, sip, sport)
+        samples[key] = q
+        owner[key] = sid
+    path = os.path.expanduser(path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            prev = json.load(fh)
+    except (OSError, ValueError):
+        prev = {}
+    if not isinstance(prev, dict):
+        prev = {}
+    disc, state = sendq_verdicts(samples, prev, now)
+    if state != prev:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        except OSError:
+            pass
+        write_json(path, state, indent=None)
+    return {owner[k] for k in disc}
+
+
 def proc_args(pid):
     if DARWIN:
         return list(ps_field(pid, "args", []))
@@ -4173,6 +4288,10 @@ elif mode == "state":
 
     dirs = scan_dirs()
     live, agents, procs, zellij_rows = running_sessions()
+    # Разорванные — по застрявшей очереди ssh-сокета (disconnected_ids). Только
+    # здесь: две пробы — это два соседних опроса `--state`, а у прочих режимов
+    # соседей нет.
+    disconnected = disconnected_ids(procs)
     # Отметки хуков — те самые, за mtime которых читатель дампа сегодня ходит
     # по сети на каждого кандидата с общим заголовком. Здесь файлы локальные и
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
@@ -4309,6 +4428,11 @@ elif mode == "state":
             "tty": (procs.get(sid) or {}).get("tty", ""),
             "tmux": (procs.get(sid) or {}).get("tmux"),
             "zellij": (procs.get(sid) or {}).get("zellij"),
+            # Агент жив, а ssh, через который к нему входили, разорван: клиент
+            # уснул или потерял сеть, вывод копится в очереди сокета. Ложь
+            # из ответа уходит (state_record), в дамп поле не едет вовсе
+            # (DUMP_KEEP) — читателям дампа поднимать сессию нечем.
+            "disconnected": sid in disconnected,
             "agent": hook,
             # Ход закончен, а фоновая команда агента ещё идёт — то, что агент
             # сам пишет в реестр как `shell` (см. background_shell). Не часть

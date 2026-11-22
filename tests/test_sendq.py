@@ -145,6 +145,142 @@ def test_vanished_key_is_dropped():
     assert disc == set() and prev == {}, (disc, prev)
 
 
+# ---- проба в --state: фальшивый /proc --------------------------------------
+
+import json
+import tempfile
+
+SID = "aaaaaaaa-1111-2222-3333-444444444444"
+
+
+def fake_proc(root, procs, tcp):
+    """procs: {pid: (argv, environ-пары)}; tcp — текст /proc/net/tcp."""
+    os.makedirs(os.path.join(root, "net"), exist_ok=True)
+    with open(os.path.join(root, "net", "tcp"), "w") as fh:
+        fh.write(tcp)
+    for pid, (argv, envp) in procs.items():
+        d = os.path.join(root, str(pid))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "cmdline"), "wb") as fh:
+            fh.write("\0".join(argv).encode() + b"\0")
+        with open(os.path.join(d, "environ"), "wb") as fh:
+            fh.write(env(*envp))
+        with open(os.path.join(d, "stat"), "w") as fh:
+            # 22-е поле — starttime; comm с пробелом, как бывает в жизни.
+            fh.write("%d (claude x) S 1 %s 4242 0\n" % (pid, " ".join(["0"] * 17)))
+
+
+STUCK_ENV = ("SSH_CONNECTION=192.0.2.15 63374 192.0.2.14 22",)
+IDLE_ENV = ("SSH_CONNECTION=192.0.2.15 60372 192.0.2.14 22",)
+
+
+def probe_twice(procs_rec, proc_tree, tcp):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "proc")
+        fake_proc(root, proc_tree, tcp)
+        state = os.path.join(tmp, "cache", "sendq.json")
+        first = CC["disconnected_ids"](procs_rec, root, state, 0)
+        second = CC["disconnected_ids"](procs_rec, root, state, 9)
+        return first, second, os.path.exists(state)
+
+
+def test_disconnected_ids_marks_stuck_socket():
+    first, second, _ = probe_twice(
+        {SID: {"pid": 100, "tmux": None, "zellij": None}},
+        {100: (["claude", "-n", "api"], STUCK_ENV)},
+        "\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
+    assert first == set() and second == {SID}, (first, second)
+
+
+def test_disconnected_ids_idle_socket():
+    _, second, _ = probe_twice(
+        {SID: {"pid": 100, "tmux": None, "zellij": None}},
+        {100: (["claude"], IDLE_ENV)},
+        "\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
+    assert second == set(), second
+
+
+def test_disconnected_ids_skips_multiplexer():
+    for mux in ({"tmux": "%3", "zellij": None}, {"tmux": None, "zellij": "home"}):
+        _, second, _ = probe_twice(
+            {SID: dict(pid=100, **mux)},
+            {100: (["claude"], STUCK_ENV)},
+            "\n".join([HEADER, TCP_STUCK]))
+        assert second == set(), (mux, second)
+
+
+def test_disconnected_ids_follows_reptyr():
+    # Сессию перенёс `reptyr -T`: у агента старый SSH_CONNECTION с застрявшим
+    # сокетом, а держит её reptyr под новым ssh, у которого очередь пуста.
+    _, second, _ = probe_twice(
+        {SID: {"pid": 100, "tmux": None, "zellij": None}},
+        {100: (["claude"], STUCK_ENV),
+         200: (["reptyr", "-T", "100"], IDLE_ENV)},
+        "\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
+    assert second == set(), second
+
+
+def test_disconnected_ids_follows_reptyr_chain():
+    # Второй перенос целится в первый reptyr; держатель — последнее звено.
+    _, second, _ = probe_twice(
+        {SID: {"pid": 100, "tmux": None, "zellij": None}},
+        {100: (["claude"], IDLE_ENV),
+         200: (["/usr/bin/reptyr", "-T", "100"], IDLE_ENV),
+         300: (["reptyr", "200"], STUCK_ENV)},
+        "\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
+    assert second == {SID}, second
+
+
+def test_disconnected_ids_without_socket_or_peer():
+    # Местная сессия (SSH_CONNECTION нет) и сессия без своего сокета — не улика.
+    _, second, _ = probe_twice(
+        {SID: {"pid": 100, "tmux": None, "zellij": None},
+         "b": {"pid": 101, "tmux": None, "zellij": None}},
+        {100: (["claude"], ("HOME=/h",)),
+         101: (["claude"], ("SSH_CONNECTION=192.0.2.99 1 192.0.2.14 22",))},
+        "\n".join([HEADER, TCP_STUCK]))
+    assert second == set(), second
+
+
+def test_disconnected_ids_without_proc_root():
+    with tempfile.TemporaryDirectory() as tmp:
+        state = os.path.join(tmp, "sendq.json")
+        got = CC["disconnected_ids"]({SID: {"pid": 100}}, os.path.join(tmp, "nope"), state, 0)
+        assert got == set() and not os.path.exists(state), got
+
+
+def test_disconnected_ids_survives_broken_state_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "proc")
+        fake_proc(root, {100: (["claude"], STUCK_ENV)}, "\n".join([HEADER, TCP_STUCK]))
+        state = os.path.join(tmp, "sendq.json")
+        with open(state, "w") as fh:
+            fh.write("{не json")
+        rec = {SID: {"pid": 100, "tmux": None, "zellij": None}}
+        assert CC["disconnected_ids"](rec, root, state, 0) == set()
+        assert CC["disconnected_ids"](rec, root, state, 9) == {SID}
+        with open(state) as fh:
+            json.load(fh)
+
+
+def test_disconnected_ids_empty_path_disables():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "proc")
+        fake_proc(root, {100: (["claude"], STUCK_ENV)}, "\n".join([HEADER, TCP_STUCK]))
+        rec = {SID: {"pid": 100, "tmux": None, "zellij": None}}
+        assert CC["disconnected_ids"](rec, root, "", 0) == set()
+        assert CC["disconnected_ids"](rec, root, "", 9) == set()
+
+
+def test_state_branch_emits_field():
+    # Проводку ветки state сквозным прогоном не поймать: настоящий /proc в
+    # тесте не подделать. Сторожится форма — вызов пробы и поле записи.
+    src = harness.block()
+    state = src.split('elif mode == "state"', 1)[1].split("\nelif mode", 1)[0]
+    assert "disconnected_ids(procs)" in state
+    assert '"disconnected": sid in disconnected' in state
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
