@@ -1,6 +1,21 @@
 # Changelog
 
 
+## v0.15.0 - 2026-11-22
+
+### Features
+
+- claude-wt: Window place <session> --zone M:P
+- claude-wt: Session unread|seen и поле window.unreadAt в --state
+
+### Documentation
+
+- claude-wt: Window place — что session find покажет у зоны вне headZones
+
+### Testing
+
+- state: Окно трекера держит сессию за пределом среза в ответе и в дампе
+
 ## v0.14.0 - 2026-11-22
 
 ### Features
