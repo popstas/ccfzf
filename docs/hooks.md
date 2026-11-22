@@ -44,7 +44,9 @@ quietly.
 It links `~/.claude/hooks/<file>` to `<clone>/hooks/<file>`, the same way
 `~/bin/ccfzf` is a symlink, so `git pull` updates the hooks too. It is
 idempotent: a correct link is left alone, a file with the same content is
-replaced, anything else is moved to `<file>.bak-<date>` first. It refuses to
+replaced, anything else is moved to `<file>.bak-<date>` first. It links
+`~/bin/claude-wt` to `<clone>/cli/claude-wt.mjs` by the same rules
+([docs/claude-wt.md](claude-wt.md)). It refuses to
 run from a git worktree, whose links would dangle once the worktree is removed.
 
 It does **not** edit `~/.claude/settings.json`. It prints the fragment to merge

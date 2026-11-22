@@ -160,12 +160,27 @@ A picker polling once a second passes back the answer's `fingerprint` with `--if
 The `agent` field of `--state` — what each agent is doing, its last answer, the question it waits on, cost and context — is filled by Claude Code hooks shipped in [`hooks/`](hooks). A fourth hook rewrites the dump on SessionStart, so a session started by hand in a terminal shows up without waiting for the next poll.
 
 ```sh
-ccfzf/hooks/install.sh   # symlinks into ~/.claude/hooks/, prints the settings.json fragment
+ccfzf/hooks/install.sh   # symlinks into ~/.claude/hooks/ and ~/bin/claude-wt, prints the settings.json fragment
 ```
 
 The installer never edits `~/.claude/settings.json`; merge the printed fragment by hand. The hooks are Linux-only: on Windows and macOS there is no `~/.claude/claude-wt/`, and `ccfzf` reads the agent's state from the transcript tail instead (`tail_facts`), without cost and context.
 
 → What each hook writes, install details, requirements: [docs/hooks.md](docs/hooks.md).
+
+### `claude-wt`: windows for agents
+
+`claude-wt` lets a Claude Code session read the whole picture in one call and act on the windows of its own sessions — itself and its descendants — and nothing else:
+
+```sh
+claude-wt tree --json                   # sessions, windows, heads and children, snapshots
+claude-wt window focus <session>        # raise an existing window; never opens one
+claude-wt window layout <head>          # lay out the head's group
+claude-wt snapshot restore last         # restore the newest snapshot of your own sessions
+```
+
+Exit codes: `0` done (or accepted, `pending`), `1` refused, `2` not found, `3` outcome unknown. `hooks/install.sh` links it into `~/bin/`.
+
+→ Commands, ownership rules, where a command goes: [docs/claude-wt.md](docs/claude-wt.md).
 
 ## Why
 
@@ -210,6 +225,7 @@ A session belongs to its own `cwd`. It additionally shows up under the nearest a
 - [docs/live-detection.md](docs/live-detection.md) — how a running session is recognised
 - [docs/hooks.md](docs/hooks.md) — the session state hooks in `hooks/` and how to install them
 - [docs/children.md](docs/children.md) — `claude-wt-new`: a session started with a fixed id and name, and the `head` it reports in `--state`
+- [docs/claude-wt.md](docs/claude-wt.md) — `claude-wt`: the agent's command for its own session windows
 - [CHANGELOG.md](CHANGELOG.md) — what changed between versions
 
 ## Related
