@@ -72,6 +72,30 @@ def test_leading_junk_before_the_name_is_dropped():
     assert list(got) == ["beta-prepare"], got
 
 
+def test_a_leading_dot_is_part_of_the_name():
+    # Точкой начинаются имена дочерних сессий head (`.cli-sessions`): это
+    # часть имени, `title` у сессии такой же. Сняв её, подпункт не совпал бы
+    # ни с одной сессией. Мусор перед точкой снимается как прежде.
+    got = parse("- [ ] Задача\n\t- Сессия .dot-child\n\t- Сессия └.tree-child\n")
+    assert set(got) == {".dot-child", ".tree-child"}, got
+
+
+def test_state_matches_a_dotted_title():
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        # Заголовок `t0` из build_home переписывается на имя с точкой.
+        d = os.path.join(tmp, ".claude", "projects")
+        path = [os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs if f.endswith(".jsonl")][0]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "custom-title", "customTitle": ".dot-child"}) + "\n")
+        vault = os.path.join(tmp, "vault")
+        write(os.path.join(vault, "tasks.md"), "- [ ] Открытая\n\t- Сессия .dot-child\n")
+        write(os.path.join(tmp, ".claude", "vaults-config.md"), config_text(("x", vault)))
+        s = run_state(tmp, "")["sessions"][0]
+        assert s["title"] == ".dot-child", s
+        assert s["task"]["text"] == "Открытая", s
+
+
 def test_a_closed_task_is_done():
     got = parse("- [x] Сделано ✅ 2026-01-03\n\t- Сессия gamma\n")
     assert got["gamma"][0]["done"] is True, got
