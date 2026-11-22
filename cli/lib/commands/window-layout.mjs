@@ -19,16 +19,23 @@ export default async function windowLayout(args, opts, env) {
   const host = head.window.host;
   const created = new Map(pic.children.map((c) => [c.sessionId, Number(c.createdAt) || 0]));
   const byId = new Map(pic.sessions.map((s) => [s.id, s]));
-  const kids = [...descendants(head.id, pic.p.childrenDir, pic.children)]
-    .filter((id) => byId.get(id)?.window?.host === host)
-    .sort((a, b) => created.get(a) - created.get(b));
+  // Кого не взяли и почему: агент должен видеть, что ребёнок выпал, а не гадать.
+  const lc = (x) => String(x ?? '').toLowerCase();
+  const kids = [];
+  const skipped = [];
+  for (const id of [...descendants(head.id, pic.p.childrenDir, pic.children)].sort((a, b) => (created.get(a) ?? 0) - (created.get(b) ?? 0))) {
+    const w = byId.get(id)?.window;
+    if (!w) skipped.push({ id, why: 'no window' });
+    else if (lc(w.host) !== lc(host)) skipped.push({ id, why: 'other machine' });
+    else kids.push(id);
+  }
   const group = [head.id, ...kids];
-  if (group.length < 2) return { ...base, group, code: EXIT.REFUSED, error: 'nothing to lay out' };
+  if (group.length < 2) return { ...base, group, skipped, code: EXIT.REFUSED, error: 'nothing to lay out' };
   const mg = manager(host, ctx.trackers(), opts);
-  if (mg.fail) return { ...base, group, ...mg.fail };
+  if (mg.fail) return { ...base, group, skipped, ...mg.fail };
   const body = { mode: 'group', groups: [group], selected: head.id };
   const res = answer(await post(mg.m.url, '/claude-wt/place', body, { timeoutMs: timeoutMs(env) }));
-  const out = { ...base, group, host: mg.m.host, url: mg.m.url };
+  const out = { ...base, group, skipped, host: mg.m.host, url: mg.m.url };
   if (res.code !== EXIT.OK) return { ...out, code: res.code, error: res.error };
   const placed = Number.isInteger(res.body.placed) ? res.body.placed : null;
   const warnings = placed === null ? ['manager did not report how many windows it placed (old manager?)'] : undefined;

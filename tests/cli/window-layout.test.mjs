@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runCliAsync, world, mockManager, now } from './helpers.mjs';
-import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, GRAND, OTHER } from './fixtures.mjs';
+import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, CHILD2, GRAND, OTHER } from './fixtures.mjs';
 
 async function layout(target, reply, { caller = HEAD, state = loadState() } = {}) {
   const m = await mockManager(reply);
@@ -35,9 +35,10 @@ test('placed:0 — успех: группа уже разложена', async ()
   assert.equal(r.o.warnings, undefined);
 });
 
-test('дети без окна не входят', async () => {
+test('дети без окна не входят и названы в skipped', async () => {
   const r = await layout(HEAD, placed(3));
-  assert.ok(!r.requests[0].body.groups[0].includes('aaaaaaaa-0000-4000-8000-000000000003'));
+  assert.ok(!r.requests[0].body.groups[0].includes(CHILD2));
+  assert.deepEqual(r.o.skipped, [{ id: CHILD2, why: 'no window' }]);
 });
 
 test('окна на другой машине не входят', async () => {
@@ -46,6 +47,7 @@ test('окна на другой машине не входят', async () => {
   const r = await layout(HEAD, placed(2), { state: st });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.requests[0].body.groups, [[HEAD, CHILD1]]);
+  assert.deepEqual(r.o.skipped, [{ id: CHILD2, why: 'no window' }, { id: GRAND, why: 'other machine' }]);
 });
 
 test('чужой head — отказ', async () => {
@@ -69,6 +71,7 @@ test('одно окно — nothing to lay out без запроса', async () 
   const r = await layout(GRAND, placed(1));
   assert.equal(r.status, 1);
   assert.equal(r.o.error, 'nothing to lay out');
+  assert.deepEqual(r.o.skipped, []);
   assert.equal(r.requests.length, 0);
 });
 
