@@ -76,6 +76,11 @@ WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 # Пустая строка выключает и чтение, и запись.
 COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
 
+# Вольты Obsidian этой машины: секции с `vault` и `tasks`. Из их tasks.md
+# --state берёт задачу сессии — подпункт `- Сессия <имя>`, который пишет скилл
+# sess2task. Нет файла — поля нет; пустая строка выключает чтение.
+VAULTS_CONFIG="${CCFZF_VAULTS_CONFIG-$HOME/.claude/vaults-config.md}"
+
 # Записи claude-wt-new о дочерних сессиях, по файлу на сессию: из них --state
 # ставит строке `head`/`headId` — кто её открыл. Пустая строка выключает чтение.
 CHILDREN_DIR="${CCFZF_CHILDREN_DIR-$HOME/.ccfzf/children}"
@@ -1797,6 +1802,25 @@ def vault_task_index(config_path):
         for name, entries in parse_vault_tasks(text, label).items():
             out.setdefault(name, []).extend(entries)
     return out
+
+
+def pick_task(entries):
+    """Одна задача сессии для строки: {text, done, vault, more?} или None.
+
+    Открытая важнее закрытой (закрытые живут в `tasks.md` до недельного отчёта,
+    и их больше половины), среди равных — свежая по `added`. Остальные
+    уходят числом `more`, и только когда они есть.
+    """
+    if not entries:
+        return None
+    best = max(entries, key=lambda e: (not e.get("done"), e.get("added") or ""))
+    if not best.get("text"):
+        return None
+    got = {"text": best["text"], "done": bool(best.get("done")),
+           "vault": best.get("vault", "")}
+    if len(entries) > 1:
+        got["more"] = len(entries) - 1
+    return got
 
 
 def count_prompts(path, start, prev):
@@ -4113,6 +4137,18 @@ def state_defaults(limit=""):
     ]
 
 
+def vaults_config_default():
+    """Умолчание CCFZF_VAULTS_CONFIG для дороги без bash — как в шапке скрипта.
+
+    Отдельно от `state_defaults`, а не восьмым её элементом: тот кладёт свои
+    семь перед `--if-changed`, а этот аргумент режим читает после него.
+    """
+    value = os.environ.get("CCFZF_VAULTS_CONFIG")
+    if value is not None:
+        return value
+    return os.path.join(os.path.expanduser("~"), ".claude", "vaults-config.md")
+
+
 def session_target(sid, live, procs, registry):
     """Чем открыть сессию по id: {how, pid, tmux, zellij, cwd}.
 
@@ -4249,7 +4285,7 @@ def session_by_name(name, live, cache=None, title_of=None):
 if len(sys.argv) > 1 and sys.argv[1] == "--state":
     _opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
     sys.argv = ([sys.argv[0], "state"] + state_defaults(_opts.get("--limit", ""))
-                + [_opts.get("--if-changed", "")])
+                + [_opts.get("--if-changed", ""), vaults_config_default()])
 
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -4464,6 +4500,9 @@ elif mode == "state":
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
     children_dir = sys.argv[8] if len(sys.argv) > 8 else ""
     if_changed = sys.argv[9] if len(sys.argv) > 9 else ""
+    # Задачи вольтов — один раз на ответ, ключом по имени сессии (sess2task
+    # пишет имя, а не id).
+    vault_tasks = vault_task_index(sys.argv[10] if len(sys.argv) > 10 else "")
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
@@ -4563,6 +4602,7 @@ elif mode == "state":
                         mtime)
         shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
                                             (hook or {}).get("state", ""))
+        task = pick_task(vault_tasks.get(f.get("title") or ""))
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
@@ -4590,6 +4630,9 @@ elif mode == "state":
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
+            # Задача вольта, под которой сессию записал sess2task: по имени,
+            # точно. Ключа нет, когда задачи нет.
+            **({"task": task} if task else {}),
             # Кто открыл эту сессию через claude-wt-new: `head` — имя
             # сессии-руководителя, `headId` — её id. Ключей нет у обычной
             # сессии. Не `parent`: тот у фоновых форков, см. read_children.
@@ -4831,7 +4874,7 @@ fi
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
   py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE" \
-    "$CHILDREN_DIR" "$if_changed"
+    "$CHILDREN_DIR" "$if_changed" "$VAULTS_CONFIG"
   exit 0
 fi
 

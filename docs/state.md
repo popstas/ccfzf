@@ -7,7 +7,7 @@ and `snapshots`.
 The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
-`todo`, `comment`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
+`todo`, `comment`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
 `shell`/`shellCmd`, `disconnected`, and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
@@ -53,6 +53,22 @@ a client that may be long gone, while the session is fine), sessions without
 by `reptyr -T` is judged by the connection of the reptyr that holds it, not by
 the stale one in the agent's own environment. Linux only; an agent that writes
 nothing leaves no trace in the queue. The dump does not carry the flag.
+
+`task` is the Obsidian vault task the session was recorded under:
+`{text, done, vault, more?}`. The link is a `- Сессия <name>` sub-item in a
+task's block of a vault's `tasks.md` (the `sess2task` skill writes it), and the
+vaults are the sections of `CCFZF_VAULTS_CONFIG` (`~/.claude/vaults-config.md`)
+that name both `` `vault` `` and `` `tasks` ``. The sub-item belongs to the
+nearest line above with a checkbox and a smaller indent, so one under a nested
+`- [ ]` belongs to that task. The name is the first word after `Сессия `,
+leading non-alphanumerics dropped, and is matched exactly against the session's
+`title` — a session renamed after it was recorded gets no task. With several
+tasks under one name an open one wins over a done one, then the freshest by its
+`➕` date; the rest are counted in `more`, present only when non-zero. `text` is
+cleaned of Tasks plugin marks (`➕ 📅 ✅ ⏳ 🛫` with their dates, priority marks)
+and link markup (`[[a|b]]` → `b`, `[t](u)` → `t`) and cut to 120 characters;
+`vault` is the vault directory's name. The files are read whole on every
+answer, about 2 ms for two vaults of 70 and 100 KB.
 
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).

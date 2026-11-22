@@ -5,12 +5,15 @@
 
 Запуск: python3 tests/test_vault_tasks.py
 """
+import json
 import os
+import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
+from test_state_mode import A, B, _facts_env, build_home, run_state
 
 CC = harness.load()
 
@@ -137,6 +140,84 @@ def test_the_index_joins_vaults_by_name():
         got = CC["vault_task_index"](p)
         assert [(e["vault"], e["text"]) for e in got["same"]] == [
             ("one", "Первая"), ("two", "Вторая")], got
+
+
+# --- Task 2: выбор и поле в --state -----------------------------------------
+
+def test_an_open_task_wins_then_the_freshest():
+    entries = [
+        {"text": "старая", "done": False, "added": "2026-01-01", "vault": "v"},
+        {"text": "закрытая", "done": True, "added": "2026-03-01", "vault": "v"},
+        {"text": "свежая", "done": False, "added": "2026-02-01", "vault": "v"},
+    ]
+    got = CC["pick_task"](entries)
+    assert got == {"text": "свежая", "done": False, "vault": "v", "more": 2}, got
+
+
+def test_only_a_closed_task_is_shown_done():
+    got = CC["pick_task"]([{"text": "x", "done": True, "added": "", "vault": "v"}])
+    assert got == {"text": "x", "done": True, "vault": "v"}, got
+    assert CC["pick_task"]([]) is None
+    assert CC["pick_task"](None) is None
+
+
+def test_state_carries_the_task():
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A, B])  # заголовки t0 и t1
+        vault = os.path.join(tmp, "vault")
+        write(os.path.join(vault, "tasks.md"),
+              "- [ ] Открытая задача ➕ 2026-01-01\n\t- Сессия t0\n")
+        # Умолчание — ~/.claude/vaults-config.md, HOME подставной.
+        write(os.path.join(tmp, ".claude", "vaults-config.md"), config_text(("x", vault)))
+        got = {s["id"]: s for s in run_state(tmp, "")["sessions"]}
+        assert got[A]["task"] == {"text": "Открытая задача", "done": False,
+                                  "vault": "vault"}, got[A]
+        # Имя без задачи — ключа нет вовсе.
+        assert "task" not in got[B], got[B]
+
+
+def test_a_renamed_session_gets_no_task():
+    # Сессию переименовали после sess2task: в вольте старое имя.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        vault = os.path.join(tmp, "vault")
+        write(os.path.join(vault, "tasks.md"), "- [ ] Задача\n\t- Сессия old-name\n")
+        write(os.path.join(tmp, ".claude", "vaults-config.md"), config_text(("x", vault)))
+        assert "task" not in run_state(tmp, "")["sessions"][0]
+
+
+def test_the_config_is_configurable_and_can_be_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        vault = os.path.join(tmp, "vault")
+        write(os.path.join(vault, "tasks.md"), "- [ ] Задача\n\t- Сессия t0\n")
+        other = os.path.join(tmp, "elsewhere.md")
+        write(other, config_text(("x", vault)))
+        got = run_state(tmp, "", env_extra={"CCFZF_VAULTS_CONFIG": other})
+        assert got["sessions"][0]["task"]["text"] == "Задача", got["sessions"][0]
+        got = run_state(tmp, "", env_extra={"CCFZF_VAULTS_CONFIG": os.path.join(tmp, "нет.md")})
+        assert "task" not in got["sessions"][0]
+        got = run_state(tmp, "", env_extra={"CCFZF_VAULTS_CONFIG": ""})
+        assert "task" not in got["sessions"][0]
+
+
+def test_the_python_block_finds_the_default_config_itself():
+    """Пикер на Windows зовёт блок без bash — умолчание обязано совпасть."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        vault = os.path.join(tmp, "vault")
+        write(os.path.join(vault, "tasks.md"), "- [x] Закрытая\n\t- Сессия t0\n")
+        write(os.path.join(tmp, ".claude", "vaults-config.md"), config_text(("x", vault)))
+        py = os.path.join(tmp, "ccfzf.py")
+        with open(py, "w", encoding="utf-8") as fh:
+            fh.write(harness.block())
+        env = dict(os.environ)
+        env.update(_facts_env(tmp, ""))
+        r = subprocess.run([sys.executable, py, "--state"],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        task = json.loads(r.stdout)["sessions"][0]["task"]
+        assert task == {"text": "Закрытая", "done": True, "vault": "vault"}, task
 
 
 if __name__ == "__main__":
