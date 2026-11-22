@@ -93,8 +93,15 @@ test('менеджер открыл окно вместо подъёма — о�
 });
 
 test('ok:false от менеджера — код 1 с его reason', async () => {
-  const r = await focus(CHILD1, ok({ ok: false, reason: 'no window' }));
+  const r = await focus(CHILD1, ok({ ok: false, reason: 'unknown session x' }));
   assert.equal(r.status, 1);
+  assert.equal(r.o.error, 'unknown session x');
+});
+
+test('«no window» от менеджера — код 2, как своя проверка', async () => {
+  // --state отстал: окно уже закрыто, а в картине ещё стоит.
+  const r = await focus(CHILD1, ok({ ok: false, reason: 'no window' }));
+  assert.equal(r.status, 2);
   assert.equal(r.o.error, 'no window');
 });
 

@@ -38,6 +38,8 @@ export default async function windowFocus(args, opts, env) {
   const { url, host } = mg.m;
   const res = answer(await post(url, '/claude-wt/focus', { id: s.id, raiseOnly: true }, { timeoutMs: timeoutMs(env) }));
   const out = { ...base, host, url };
+  // Менеджер не нашёл окна (--state отстал) — то же «не найдено», что и своя проверка.
+  if (res.code === EXIT.REFUSED && res.body?.reason === 'no window') return { ...out, code: EXIT.NOT_FOUND, error: 'no window' };
   if (res.code !== EXIT.OK) return { ...out, ...res, body: undefined };
   const b = res.body;
   // Менеджер не поднял, а открыл окно заново: это не то, о чём просили.
