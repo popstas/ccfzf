@@ -174,20 +174,55 @@ def test_agent_of_returns_nothing_when_the_hook_never_ran():
         assert _agent_of(d, UUID_A) is None
 
 
-if __name__ == "__main__":
-    fails = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_") or not callable(fn):
-            continue
-        try:
-            fn()
-            print("ok   " + name)
-        except AssertionError as e:
-            fails += 1
-            print("FAIL " + name + ": " + str(e))
-    total = len([n for n in globals() if n.startswith("test_")])
-    print("%d/%d passed" % (total - fails, total))
-    sys.exit(1 if fails else 0)
+# ── Залипшая `active`: хук перестал писать посреди хода ─────────────────────
+
+def _stale(d, state, age, **extra):
+    _write(d, UUID_A, ".state.json", dict({"state": state, "updated": NOW - age}, **extra))
+    CC["STATUS_DIR"] = d
+    return CC["agent_of"](UUID_A, now=NOW)
+
+
+def test_an_active_record_silent_longer_than_the_threshold_is_idle():
+    # Хук молчит сутки, а строка утверждает «работает». Честный вызов
+    # инструмента столько не длится — см. STALE_ACTIVE_AGE.
+    with tempfile.TemporaryDirectory() as d:
+        got = _stale(d, "active", 86400, event="tool-start", turnAt=NOW - 86400)
+        assert got["state"] == "idle", got
+        # Время и событие остаются как были: «когда агент последний раз что-то
+        # сделал» не меняется оттого, что мы перестали ему верить.
+        assert got["updated"] == NOW - 86400, got
+        assert got["event"] == "tool-start", got
+
+
+def test_an_active_record_within_the_threshold_stays_active():
+    with tempfile.TemporaryDirectory() as d:
+        age = CC["STALE_ACTIVE_AGE"] - 60
+        assert _stale(d, "active", age)["state"] == "active"
+
+
+def test_a_question_is_never_stale():
+    # Вопрос ждёт человека, и ждать он может часами — это не залипание.
+    with tempfile.TemporaryDirectory() as d:
+        assert _stale(d, "question", 86400)["state"] == "question"
+
+
+def test_an_active_record_of_unknown_age_is_left_alone():
+    # updated == 0 — «не знаем когда», а не «давно»: доказательства залипания нет.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "active"})
+        CC["STATUS_DIR"] = d
+        assert CC["agent_of"](UUID_A, now=NOW)["state"] == "active"
+
+
+def test_an_active_state_from_the_tail_goes_stale_too():
+    # Без хука запись собирает хвост транскрипта, датирует её mtime файла.
+    # Процесс убит посреди хода — хвост навсегда кончается незакрытым вызовом.
+    with tempfile.TemporaryDirectory() as d:
+        CC["STATUS_DIR"] = d
+        got = CC["agent_of"](UUID_A, "", 0, {"state": "active"}, NOW - 86400, now=NOW)
+        assert got["state"] == "idle", got
+        fresh = CC["agent_of"](UUID_A, "", 0, {"state": "active"}, NOW - 60, now=NOW)
+        assert fresh["state"] == "active", fresh
 
 
 # ── Начало хода считается по транскрипту, а не по отметке хука ─────────────
@@ -230,3 +265,19 @@ def test_a_spoiled_transcript_stamp_falls_back_to_the_hook():
                {"state": "active", "updated": NOW, "turnAt": TURN})
         assert _agent_of(d, UUID_A, turn_at="позавчера")["turnAt"] == TURN
         assert _agent_of(d, UUID_A, turn_at=-5)["turnAt"] == TURN
+
+
+if __name__ == "__main__":
+    fails = 0
+    for name, fn in sorted(globals().items()):
+        if not name.startswith("test_") or not callable(fn):
+            continue
+        try:
+            fn()
+            print("ok   " + name)
+        except AssertionError as e:
+            fails += 1
+            print("FAIL " + name + ": " + str(e))
+    total = len([n for n in globals() if n.startswith("test_")])
+    print("%d/%d passed" % (total - fails, total))
+    sys.exit(1 if fails else 0)
