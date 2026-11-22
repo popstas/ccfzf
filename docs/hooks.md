@@ -10,7 +10,7 @@ context fill. Most of that is written by Claude Code hooks into
 | Hook | Events | Writes |
 |---|---|---|
 | [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start; `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction. Also sets the terminal progress bar (OSC 9;4) |
-| [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output |
+| [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output. With `--hook` it writes nothing and prints nothing: it only passes the hook input to `ccstatusline --hook` |
 | [`claude-wt-agent-state.sh`](../hooks/claude-wt-agent-state.sh) | SessionStart, PostCompact | `<id>.meta.json` — id, cwd, transcript, source, the claude pid and its start time. The pid is what ties a process to the session it writes after `/clear` or compaction — see [live-detection.md](live-detection.md) |
 | [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, on every SessionStart: startup, resume, clear, compact) |
 

@@ -183,6 +183,25 @@ def test_statusline_numbers_reach_state():
         h.close()
 
 
+def test_statusline_hook_mode_keeps_numbers():
+    """--hook со входом хука (без cost и context_window) не обнуляет status.json."""
+    h = Home()
+    try:
+        h.state_dir.mkdir(parents=True)
+        status = h.state_dir / (SID + ".status.json")
+        status.write_text(json.dumps({"sessionId": SID, "costUsd": 7, "contextPct": 42,
+                                      "updated": 1}))
+        old = time.time() - 60
+        os.utime(str(status), (old, old))
+        res = h.run("claude-wt-statusline.sh", "--hook",
+                    stdin=h.stdin(hook_event_name="UserPromptSubmit", prompt="дальше"))
+        assert res.returncode == 0, res.stderr
+        assert res.stdout == "", "в --hook stdout уходит в контекст модели"
+        kept = json.loads(status.read_text())
+        assert kept["costUsd"] == 7 and kept["contextPct"] == 42, kept
+    finally:
+        h.close()
+
 def test_agent_state_writes_meta():
     """SessionStart: meta.json с id, каталогом, транскриптом и источником."""
     h = Home()
