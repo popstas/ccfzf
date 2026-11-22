@@ -44,10 +44,15 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   `POST /claude-wt/focus {id, raiseOnly: true}`; `foreground: false` in the
   answer is a refusal ("window did not come to front"). A manager that does not
   report `foreground` gets code 0, `foreground: null` and a warning on stderr.
+  A manager answering `no window` (`--state` lagged behind) is code 2 as well.
+  `--machine` or `--url` that lead anywhere but the window's own machine are
+  refused: that machine has no such window, and an older manager would open one.
 - **`window layout <head>`** sends one group — the head and its descendants
   with a window on the head's machine, in the order they were started — as
   `POST /claude-wt/place {mode: "group", groups: [[...]], selected: <head>}`.
-  Fewer than two windows is refused without a request.
+  Fewer than two windows is refused without a request. Descendants left out
+  are listed in `skipped: [{id, why}]`, `why` being `no window` or
+  `other machine`.
 - **`snapshot list`** lists snapshots of machines whose tracker has an http
   manager, newest first.
 - **`snapshot restore <id|last>`** restores a snapshot whose sessions are all
