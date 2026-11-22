@@ -4,6 +4,24 @@ import { EXIT } from '../out.mjs';
 import { context, ownTarget, manager } from '../act.mjs';
 import { post, answer, timeoutMs } from '../manager.mjs';
 
+// --machine/--url, ведущие не на машину окна: там этого окна нет, и менеджер
+// без raiseOnly открыл бы новое — а focus окон не открывает (решение Стаса).
+// Адрес машины окна — её имя или http.host из её трекера; иначе не проверить — отказ.
+function offMachine(host, trackers, opts) {
+  const lc = (x) => String(x ?? '').toLowerCase();
+  if (opts.machine !== undefined && lc(opts.machine) !== lc(host)) {
+    return `--machine ${opts.machine} is not the window's machine (${host})`;
+  }
+  if (opts.url !== undefined) {
+    let name = null;
+    try { name = lc(new URL(opts.url).hostname); } catch { return null; } // кривой --url отвергнет managerFor
+    const known = new Set([lc(host)]);
+    for (const t of trackers) if (lc(t.host) === lc(host) && t.http?.host) known.add(lc(t.http.host));
+    if (!known.has(name)) return `--url ${opts.url} does not point to the window's machine (${host}); known addresses: ${[...known].join(', ')}`;
+  }
+  return null;
+}
+
 export default async function windowFocus(args, opts, env) {
   const ctx = context(env);
   if (ctx.fail) return ctx.fail;
@@ -12,7 +30,10 @@ export default async function windowFocus(args, opts, env) {
   const s = t.session;
   const base = { id: s.id, title: s.title };
   if (!s.window) return { ...base, code: EXIT.NOT_FOUND, error: 'no window' };
-  const mg = manager(s.window.host, ctx.trackers(), opts);
+  const trackers = ctx.trackers();
+  const off = offMachine(s.window.host, trackers, opts);
+  if (off) return { ...base, code: EXIT.REFUSED, error: off };
+  const mg = manager(s.window.host, trackers, opts);
   if (mg.fail) return { ...base, ...mg.fail };
   const { url, host } = mg.m;
   const res = answer(await post(url, '/claude-wt/focus', { id: s.id, raiseOnly: true }, { timeoutMs: timeoutMs(env) }));

@@ -164,6 +164,31 @@ test('кривой --url — отказ 1, а не «исход неизвест
   }
 });
 
+test('--machine не машины окна — отказ 1, запроса нет', async () => {
+  const r = await focus(CHILD1, ok({ ok: true, action: 'focus', foreground: true }), { extra: ['--machine', 'box-m'] });
+  assert.equal(r.status, 1);
+  assert.match(r.o.error, /not the window's machine \(box-a\)/);
+  assert.equal(r.requests.length, 0);
+  const same = await focus(CHILD1, ok({ ok: true, action: 'focus', foreground: true }), { extra: ['--machine', 'BOX-A'] });
+  assert.equal(same.status, 0, same.stderr);
+});
+
+test('--url не на машину окна — отказ 1, запроса нет', async () => {
+  // Мок слушает 127.0.0.1; трекер box-a знает только этот адрес — localhost не он.
+  const m = await mockManager(ok({ ok: true, action: 'focus', foreground: true }));
+  try {
+    const r = await focus(CHILD1, ok({}), { extra: ['--url', `http://localhost:${m.port}`] });
+    assert.equal(r.status, 1);
+    assert.match(r.o.error, /does not point to the window's machine \(box-a\)/);
+    assert.equal(m.requests.length, 0, 'старый менеджер чужой машины открыл бы окно');
+    // Адрес по имени машины окна — её же.
+    const named = await focus(CHILD1, ok({}), { extra: ['--url', `http://box-a:${m.port}`] });
+    assert.doesNotMatch(named.o.error ?? '', /does not point/, 'имя box-a не резолвится, но проверку машины проходит');
+  } finally {
+    await m.close();
+  }
+});
+
 test('managerFor: нет трекера — 2, нет http — 1, --machine', () => {
   const t = [
     { file: 'box-a.json', host: 'box-a', http: { host: 'a.lan', port: 1 }, fresh: true },
