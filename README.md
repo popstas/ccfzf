@@ -222,6 +222,8 @@ Optional, degrades quietly when absent:
 
 A session belongs to its own `cwd`. It additionally shows up under the nearest ancestor **mark**, so a session started in a config subrepo or a git worktree is visible from the project root. The restriction to marks is deliberate: without it, a mark on `~` would swallow the sessions of every project below it.
 
+For `--state` a session also names one owning project, `projectCwd`, and its `projectType` (`work`, `home`, …): the nearest ancestor among the window tracker's projects, else the nearest mark, else its own `cwd`. The type comes from the tracker's project list (`claudeWt.projects` in windows11-manager). → [docs/state.md](docs/state.md).
+
 ## Documentation
 
 - [docs/kiosk.md](docs/kiosk.md) — kiosk mode in full

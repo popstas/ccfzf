@@ -544,6 +544,41 @@ def owners_of(cwd, marks):
     return owners
 
 
+def project_owner(cwd, projects, marks):
+    """Проект, которому принадлежит сессия из `cwd`, — для типа проекта.
+
+    Ближайший предок `cwd` (включая его самого) среди проектов трекера
+    (`projects[].cwd`, то есть `claudeWt.projects` менеджера) — по границе
+    сегментов пути: `/a/bc` не потомок `/a/b`. Нет такого — ближайшая
+    закладка-предок из `owners_of`; нет и её — сам `cwd`.
+
+    Не `owners_of` целиком: тот знает только закладки `~/.fzf-marks`, а тип
+    живёт у проектов менеджера, и сессия из worktree лежит в подкаталоге
+    проекта, у которого закладки может и не быть.
+    """
+    best = ""
+    for p in projects or []:
+        root = p.get("cwd") if isinstance(p, dict) else None
+        if not isinstance(root, str):
+            continue
+        root = root.rstrip("/")
+        if root and (cwd == root or cwd.startswith(root + "/")) and len(root) > len(best):
+            best = root
+    if best:
+        return best
+    others = owners_of(cwd, marks) - {cwd}
+    return max(others, key=len) if others else cwd
+
+
+def project_type_of(owner, projects):
+    """Тип проекта трекера с этим `cwd`, или `""`."""
+    for p in projects or []:
+        root = p.get("cwd") if isinstance(p, dict) else None
+        if isinstance(root, str) and root.rstrip("/") == owner and p.get("type"):
+            return p["type"]
+    return ""
+
+
 def text_of(content):
     if isinstance(content, str):
         return content
@@ -871,6 +906,12 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0, now=None):
     return settle_stale(out, now)
 
 
+def project_type_value(v):
+    """Тип проекта из файла трекера: строка, обрезанная, в нижнем регистре;
+    мусор и пустота — `""`, то есть типа нет."""
+    return v.strip().lower() if isinstance(v, str) else ""
+
+
 def read_windows(path, now):
     """Файл оконного трекера: у какой сессии открыто окно, на чьей машине и
     какие раскладки он помнит.
@@ -986,19 +1027,25 @@ def read_windows(path, now):
             # строкам без окна (история, проекты). Запись держится на хоткее
             # или на иконке: проект с одной иконкой трекер шлёт без `hotkey`.
             icon = p.get("icon")
+            # Тип проекта (`work`, `home`, свой) — группы активных сессий в
+            # пикере. Проект с одним типом трекер шлёт без `hotkey` и `icon`.
+            # Приводится к общему виду и здесь: файл с другой машины, и
+            # ` Work ` трекера прошлой версии не должен стать третьим типом.
+            ptype = project_type_value(p.get("type"))
             if not isinstance(cwd, str) or not cwd:
                 continue
             hotkey = hotkey if isinstance(hotkey, str) and hotkey else ""
             icon = icon if isinstance(icon, str) and icon else ""
-            if not hotkey and not icon:
+            if not hotkey and not icon and not ptype:
                 continue
             # Ключа нет, когда значения нет: у читателя «нет клавиши» и
-            # «клавиша пустая» — разные вещи, у иконки так же.
+            # «клавиша пустая» — разные вещи, у иконки и типа так же.
             projects.append({
                 "cwd": cwd,
                 "name": p.get("name") if isinstance(p.get("name"), str) else "",
                 **({"hotkey": hotkey} if hotkey else {}),
                 **({"icon": icon} if icon else {}),
+                **({"type": ptype} if ptype else {}),
             })
 
     # Умеет ли этот трекер поднимать окно по просьбе. Отсутствие поля — «умеет»:
@@ -3677,6 +3724,7 @@ def merge_project_hotkeys(rows, projects):
 
     Тем же путём клеится иконка проекта (`icon`, путь на диске трекера):
     пикер рисует её строкам без окна. Строку иконка не заводит — только хоткей.
+    Тип проекта (`type`) — так же: клеится к строке, строку не заводит.
     """
     # `cwd` здесь перепроверяется, а `hotkey` и `icon` — нет: `read_windows`
     # отдаёт их либо непустыми строками, либо без ключа, отсюда `.get()`.
@@ -3697,6 +3745,8 @@ def merge_project_hotkeys(rows, projects):
             row["hotkey"] = hit["hotkey"]
         if hit and hit.get("icon"):
             row["icon"] = hit["icon"]
+        if hit and hit.get("type"):
+            row["type"] = hit["type"]
         seen.add(row["path"])
         out.append(row)
 
@@ -3707,7 +3757,8 @@ def merge_project_hotkeys(rows, projects):
             continue
         out.append({"path": cwd, "name": p.get("name") or os.path.basename(cwd) or cwd,
                     "mark": False, "n": 0, "live": 0, "mtime": 0.0,
-                    "hotkey": p["hotkey"], **({"icon": p["icon"]} if p.get("icon") else {})})
+                    "hotkey": p["hotkey"], **({"icon": p["icon"]} if p.get("icon") else {}),
+                    **({"type": p["type"]} if p.get("type") else {})})
     # Синтетические строки дописаны после сортировки project_rows — без
     # пересортировки они всегда падали бы в хвост, даже когда по её же ключу
     # (mtime, потом имя) им место среди других мёртвых закладок наверху.
@@ -4606,9 +4657,17 @@ elif mode == "state":
         shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
                                             (hook or {}).get("state", ""))
         task = pick_task(vault_tasks.get(f.get("title") or ""))
+        owner = project_owner(cwd, window_projects, marks)
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
+            # Проект-владелец и его тип — для группировки по типу и пункта
+            # `Type` в ^K пикера: у пикера есть только точное совпадение cwd,
+            # а сессия из worktree лежит в подкаталоге проекта (project_owner).
+            # `projectCwd` есть всегда, `projectType` — только когда тип есть
+            # (пустое state_record выбрасывает).
+            "projectCwd": owner,
+            "projectType": project_type_of(owner, window_projects),
             # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
             # этой машине, а открывает его читатель у себя, переведя путь через
             # свой pathMap. Абсолютный путь той стороне пришлось бы разбирать
@@ -4740,7 +4799,9 @@ elif mode == "state":
                              **({"hotkey": r["hotkey"]} if r.get("hotkey") else {}),
                              # Путь на диске машины трекера (`windowHost`):
                              # читать его может только пикер с той же машины.
-                             **({"icon": r["icon"]} if r.get("icon") else {})}
+                             **({"icon": r["icon"]} if r.get("icon") else {}),
+                             # Тип проекта из claudeWt.projects менеджера.
+                             **({"type": r["type"]} if r.get("type") else {})}
                             for r in merge_project_hotkeys(
                                 project_rows(dirs, live, marks, todo_at=todo_at),
                                 window_projects)],
