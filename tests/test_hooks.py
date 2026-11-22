@@ -330,7 +330,14 @@ def plain_clone(root):
     (clone / "hooks").mkdir(parents=True)
     for f in HOOK_FILES + ["install.sh"]:
         (clone / "hooks" / f).write_bytes((HOOKS / f).read_bytes())
+    copy_cli(clone)
     return clone
+
+
+def copy_cli(clone):
+    """CLI claude-wt ставится тем же установщиком: его точка входа нужна в копии."""
+    (clone / "cli").mkdir(parents=True, exist_ok=True)
+    (clone / "cli" / "claude-wt.mjs").write_bytes((ROOT / "cli" / "claude-wt.mjs").read_bytes())
 
 
 def install(h, clone, *args):
@@ -409,6 +416,40 @@ def test_install_backs_up_a_different_file():
         h.close()
 
 
+def test_install_links_claude_wt_cli():
+    """~/bin/claude-wt — симлинк на cli/claude-wt.mjs клона; повтор — без изменений."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        res = install(h, clone)
+        assert res.returncode == 0, res.stderr
+        link = h.home / "bin" / "claude-wt"
+        assert link.is_symlink()
+        assert os.path.realpath(link) == str((clone / "cli" / "claude-wt.mjs").resolve())
+        res = install(h, clone)
+        assert res.returncode == 0, res.stderr
+        assert "ok       %s" % link in res.stdout
+        assert sorted(p.name for p in (h.home / "bin").iterdir()) == ["claude-wt"]
+    finally:
+        h.close()
+
+
+def test_install_backs_up_a_different_claude_wt():
+    """Чужой ~/bin/claude-wt уходит в .bak-<дата>, на его место — симлинк."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        bindir = h.home / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "claude-wt").write_text("#!/bin/sh\necho old\n")
+        assert install(h, clone).returncode == 0
+        day = time.strftime("%Y-%m-%d")
+        assert (bindir / ("claude-wt.bak-" + day)).read_text() == "#!/bin/sh\necho old\n"
+        assert (bindir / "claude-wt").is_symlink()
+    finally:
+        h.close()
+
+
 def test_install_dry_run_changes_nothing():
     """--dry-run говорит, что сделал бы, и ничего не создаёт."""
     h = Home()
@@ -417,7 +458,9 @@ def test_install_dry_run_changes_nothing():
         res = install(h, clone, "--dry-run")
         assert res.returncode == 0, res.stderr
         assert "wt-progress.sh" in res.stdout
+        assert "claude-wt" in res.stdout
         assert not (h.home / ".claude").exists()
+        assert not (h.home / "bin").exists()
     finally:
         h.close()
 
@@ -434,6 +477,7 @@ def test_install_refuses_from_a_worktree():
         (main / "hooks").mkdir()
         for f in HOOK_FILES + ["install.sh"]:
             (main / "hooks" / f).write_bytes((HOOKS / f).read_bytes())
+        copy_cli(main)
         subprocess.run(git + ["-C", str(main), "add", "."], check=True, env=env)
         subprocess.run(git + ["-C", str(main), "commit", "-qm", "init"], check=True, env=env)
         wt = h.root / "wt"
@@ -444,6 +488,7 @@ def test_install_refuses_from_a_worktree():
         assert "worktree" in res.stderr
         assert str(main) in res.stderr, "в отказе назван основной клон"
         assert not (h.home / ".claude" / "hooks").exists()
+        assert not (h.home / "bin" / "claude-wt").exists(), "и CLI из worktree не ставит"
         assert install(h, main).returncode == 0, "из основного клона ставит"
     finally:
         h.close()
