@@ -2,6 +2,7 @@
 // claude-wt — one tool for an agent to read and arrange its Claude Code session windows.
 // Точка входа: разбор argv, диспетчер команд, код выхода. Сами команды — cli/lib/commands/.
 import { EXIT, emit } from './lib/out.mjs';
+import { runLegacy, emitLegacy } from './lib/legacy.mjs';
 
 const USAGE = `usage: claude-wt <group> <action> [args] [--json] [--url URL] [--machine HOST]
 
@@ -62,7 +63,24 @@ const COMMANDS = {
   'snapshot restore': cmd('snapshot', 'restore'),
 };
 
+// Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего
+// разбора; вывод — JSON скрипта всегда (cli/lib/legacy.mjs).
+const LEGACY = {
+  'head mark': cmd('head-mark'),
+};
+
+async function legacy(argv) {
+  const key = `${argv[0]} ${argv[1]}`;
+  if (argv.slice(2).some((a) => a === '-h' || a === '--help')) {
+    process.stdout.write(USAGE);
+    return EXIT.OK;
+  }
+  const run = await LEGACY[key]();
+  return emitLegacy(await runLegacy(run, argv.slice(2), process.env));
+}
+
 async function main(argv) {
+  if (argv.length >= 2 && Object.hasOwn(LEGACY, `${argv[0]} ${argv[1]}`)) return legacy(argv);
   const parsed = parseArgs(argv);
   if (parsed.error) {
     process.stderr.write(`claude-wt: ${parsed.error}\n${USAGE}`);
