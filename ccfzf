@@ -2155,6 +2155,120 @@ def proc_env(pid):
         return []
 
 
+# ---- разорванная связь: застрявшая очередь ssh-сокета ----------------------
+#
+# Агент пережил свой терминал: ssh-клиент на той стороне уснул вместе с
+# машиной или потерял сеть, sshd жив и перекладывает вывод агента в TCP, а
+# подтверждать некому — байты копятся в очереди отправки и не уходят. У
+# здоровой сессии очередь мигает (0 → 108 → 0), у разорванной стоит или
+# растёт. Отсюда правило «не пуста и не убыла» и две пробы, а не одна.
+#
+# Пробы — два соседних опроса `--state`, а не `sleep` внутри одного: ответ
+# идёт раз в секунду, и пауза в нём удвоила бы его время. Прошлый замер
+# лежит в файле (SENDQ_FILE).
+#
+# Сокет ищется через `SSH_CONNECTION` агента, а не через fd sshd: у sshd
+# после setuid `dumpable=0`, и `/proc/<sshd>/fd` не читается даже под своим
+# uid. Очередь — поле `tx_queue` в `/proc/net/tcp{,6}`, без `ss` и без root.
+
+# Сколько очередь обязана простоять неубывающей, чтобы сессия считалась
+# разорванной. Две пробы подряд от двух пикеров приходят с разницей в доли
+# секунды — без зазора они ничего не доказывали бы.
+SENDQ_STUCK_SECS = 8
+# Старше этого прошлый замер не сравнивается, а заменяется: скрытый пикер
+# опрашивает раз в несколько минут, и два всплеска вывода с разницей в восемь
+# минут выглядели бы застрявшей очередью.
+SENDQ_MAX_GAP = 60
+
+
+def _norm_ip(text):
+    """Адрес в каноническом виде; у IPv4-mapped снимается `::ffff:`."""
+    import ipaddress
+    ip = ipaddress.ip_address(text)
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return str(mapped or ip)
+
+
+def ssh_peer(environ):
+    """(client_ip, client_port, server_ip, server_port) из `SSH_CONNECTION`, или None.
+
+    `environ` — сырые байты `/proc/<pid>/environ`. Нет переменной или она не
+    из четырёх полей — None: догадка о сокете хуже, чем отсутствие улики.
+    """
+    for item in environ.decode("utf-8", "ignore").split("\0"):
+        if not item.startswith("SSH_CONNECTION="):
+            continue
+        parts = item.split("=", 1)[1].split()
+        if len(parts) != 4:
+            return None
+        try:
+            return (_norm_ip(parts[0]), int(parts[1]), _norm_ip(parts[2]), int(parts[3]))
+        except ValueError:
+            return None
+    return None
+
+
+def _kernel_ip(hexaddr):
+    """Адрес из `/proc/net/tcp{,6}`: 32-битные слова, каждое в порядке хоста (little-endian)."""
+    import ipaddress
+    raw = bytes.fromhex(hexaddr)
+    if len(raw) not in (4, 16):
+        raise ValueError(hexaddr)
+    flipped = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    return _norm_ip(str(ipaddress.ip_address(flipped)))
+
+
+def tcp_queues(text):
+    """{(local_ip, local_port, remote_ip, remote_port): tx_queue} установленных соединений.
+
+    `text` — содержимое `/proc/net/tcp` или `tcp6` (или обоих подряд).
+    Берутся только строки в состоянии 01 (ESTABLISHED); строка, которая не
+    разбирается, пропускается молча — шапка и мусор тоже.
+    """
+    out = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 5 or f[3] != "01":
+            continue
+        try:
+            lip, lport = f[1].split(":")
+            rip, rport = f[2].split(":")
+            key = (_kernel_ip(lip), int(lport, 16), _kernel_ip(rip), int(rport, 16))
+            out[key] = int(f[4].split(":")[0], 16)
+        except ValueError:
+            continue
+    return out
+
+
+def sendq_verdicts(samples, prev, now):
+    """(разорванные ключи, новое состояние) по замеру `samples` и прошлому `prev`.
+
+    `samples` — {ключ замера: tx_queue}; ключ несёт pid, момент запуска и оба
+    конца сокета, чтобы ни переиспользованный pid, ни переиспользованный порт
+    не унаследовали чужую историю. Состояние — {ключ: {q, since, seen}}:
+    `q` — первый замер неубывающей серии (не растёт, поэтому любое убывание
+    ниже него сбрасывает счёт), `since` — её начало, `seen` — последний замер.
+    Ключи, которых нет в `samples`, в новое состояние не переходят.
+
+    Вердикт держится, пока очередь не убыла: признак не мигает и не ломает
+    отпечаток `--if-changed`.
+    """
+    disc, state = set(), {}
+    for key, q in samples.items():
+        if q <= 0:
+            continue
+        old = prev.get(key) if isinstance(prev, dict) else None
+        fresh = {"q": q, "since": now, "seen": now}
+        if (not isinstance(old, dict) or now - old.get("seen", 0) > SENDQ_MAX_GAP
+                or q < old.get("q", 0)):
+            state[key] = fresh
+            continue
+        state[key] = {"q": old["q"], "since": old.get("since", now), "seen": now}
+        if now - state[key]["since"] >= SENDQ_STUCK_SECS:
+            disc.add(key)
+    return disc, state
+
+
 def proc_args(pid):
     if DARWIN:
         return list(ps_field(pid, "args", []))
