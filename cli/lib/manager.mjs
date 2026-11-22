@@ -12,7 +12,12 @@ export const timeoutMs = (env = process.env) => {
 
 // --url перебивает всё; иначе трекер машины окна (или --machine).
 export function managerFor({ host, trackers, url, machine }) {
-  if (typeof url === 'string' && url) return { url: url.replace(/\/+$/, ''), host: machine ?? host ?? null, source: '--url' };
+  if (typeof url === 'string' && url) {
+    let ok = false;
+    try { ok = ['http:', 'https:'].includes(new URL(url).protocol); } catch {}
+    if (!ok) return { error: `bad --url: ${url} (need http://host:port)`, code: EXIT.REFUSED };
+    return { url: url.replace(/\/+$/, ''), host: machine ?? host ?? null, source: '--url' };
+  }
   const want = machine ?? host;
   if (!want) return { error: 'no machine: the window does not name its host (pass --machine or --url)', code: EXIT.NOT_FOUND };
   const mine = trackers.filter((t) => t.host === want).sort((a, b) => (b.generated ?? 0) - (a.generated ?? 0));
@@ -27,7 +32,7 @@ export function managerFor({ host, trackers, url, machine }) {
 // Ошибка без сетевого кода (плохой адрес или порт) — тоже до отправки.
 // Остальные коды (сброс, обрыв сокета) и обрыв на чтении ответа — запрос мог
 // уже исполняться: исход неизвестен, повторять restore нельзя.
-const NOT_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'UND_ERR_CONNECT_TIMEOUT']);
+const NOT_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'UND_ERR_CONNECT_TIMEOUT', 'ERR_INVALID_URL']);
 
 // {status, body} | {timeout: true} | {error} (соединение не случилось) |
 // {lost} (соединение было, ответа нет — исход неизвестен).

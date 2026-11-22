@@ -156,6 +156,14 @@ test('--url перебивает трекер, даже протухший', asy
   }
 });
 
+test('кривой --url — отказ 1, а не «исход неизвестен»', async () => {
+  for (const url of ['garbage', 'ftp://']) {
+    const r = await focus(CHILD1, ok({ ok: true, foreground: true }), { extra: ['--url', url] });
+    assert.equal(r.status, 1, url);
+    assert.match(r.o.error, /bad --url|unreachable/, url);
+  }
+});
+
 test('managerFor: нет трекера — 2, нет http — 1, --machine', () => {
   const t = [
     { file: 'box-a.json', host: 'box-a', http: { host: 'a.lan', port: 1 }, fresh: true },

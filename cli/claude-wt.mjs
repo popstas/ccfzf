@@ -26,7 +26,7 @@ Exit codes:
   0  done (or accepted, when "pending": true)
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
-  3  outcome unknown (timeout); retry only focus/layout
+  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
