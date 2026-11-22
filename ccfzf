@@ -76,6 +76,11 @@ WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 # Пустая строка выключает и чтение, и запись.
 COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
 
+# Вольты Obsidian этой машины: секции с `vault` и `tasks`. Из их tasks.md
+# --state берёт задачу сессии — подпункт `- Сессия <имя>`, который пишет скилл
+# sess2task. Нет файла — поля нет; пустая строка выключает чтение.
+VAULTS_CONFIG="${CCFZF_VAULTS_CONFIG-$HOME/.claude/vaults-config.md}"
+
 # Записи claude-wt-new о дочерних сессиях, по файлу на сессию: из них --state
 # ставит строке `head`/`headId` — кто её открыл. Пустая строка выключает чтение.
 CHILDREN_DIR="${CCFZF_CHILDREN_DIR-$HOME/.ccfzf/children}"
@@ -1637,6 +1642,185 @@ def set_comment(path, sid, text, now, host):
         all_.pop(sid, None)
     write_json(os.path.expanduser(path), all_)
     return True
+
+
+# Задача вольта у сессии. Связь пишет скилл sess2task: подпункт
+# `- Сессия <имя>` в блок задачи `tasks.md`. Подпись приезжает в строку списка
+# на каждой машине, поэтому длина у неё та же, что у видимой строки, а не у
+# файла.
+VAULT_TASK_LIMIT = 120
+_VAULT_FIELD_RE = re.compile(r"^\s*-\s*`(\w+)`\s*:\s*`([^`]*)`")
+_TASK_LINE_RE = re.compile(r"^(\s*)- \[(.)\]\s+(.*)$")
+_SESSION_LINE_RE = re.compile(r"^(\s*)- Сессия\s+(.*)$")
+_TASK_ADDED_RE = re.compile(r"➕\s*(\d{4}-\d{2}-\d{2})")
+# Метки плагина Tasks: дата у значков сроков, отдельные значки приоритета.
+_TASK_DATE_MARK_RE = re.compile(r"[➕📅✅⏳🛫❌]️?\s*\d{4}-\d{2}-\d{2}")
+_TASK_MARK_RE = re.compile(r"[⚡⏫🔼🔽🔺⏬]️?")
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]*)(?:\|([^\]]*))?\]\]")
+_MDLINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def read_vaults_config(path):
+    """Вольты этой машины из `~/.claude/vaults-config.md`: [{vault, tasks}].
+
+    Файл человеческий, а не машинный: секция `## <скилл>` на вольт, поля
+    строками `` - `vault`: `/abs/path` ``. Берутся только секции, где есть оба
+    поля: `sync-conflicts` называет `vault`, но задач в нём нет. Порядок —
+    порядок секций, путь `tasks` — относительно `vault`.
+
+    Нет файла — пустой список, без ошибки: вольтов на машине может не быть
+    вовсе, и `--state` от этого не должен ни падать, ни ругаться.
+    """
+    if not path:
+        return []
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    out, cur = [], None
+
+    def flush():
+        if cur and cur.get("vault") and cur.get("tasks"):
+            out.append({"vault": cur["vault"], "tasks": cur["tasks"]})
+
+    for line in lines:
+        if line.startswith("## "):
+            flush()
+            cur = {}
+            continue
+        m = _VAULT_FIELD_RE.match(line)
+        if m and cur is not None and m.group(1) in ("vault", "tasks"):
+            cur.setdefault(m.group(1), m.group(2).strip())
+    flush()
+    return out
+
+
+def clean_task_text(text):
+    """Текст задачи для подписи: без меток плагина Tasks и разметки ссылок.
+
+    `[[a|b]]` → `b`, `[[a]]` → `a`, `[t](u)` → `t`. Пробелы сводятся, длинное
+    режется до VAULT_TASK_LIMIT с `…` — подпись стоит в строке списка, а не в
+    карточке.
+    """
+    text = _TASK_DATE_MARK_RE.sub(" ", text)
+    text = _TASK_MARK_RE.sub(" ", text)
+    text = _WIKILINK_RE.sub(lambda m: m.group(2) if m.group(2) is not None else m.group(1), text)
+    text = _MDLINK_RE.sub(lambda m: m.group(1), text)
+    text = " ".join(text.split())
+    if len(text) > VAULT_TASK_LIMIT:
+        text = text[:VAULT_TASK_LIMIT - 1].rstrip() + "…"
+    return text
+
+
+def vault_session_name(rest):
+    """Имя сессии из хвоста подпункта `- Сессия …`, или пустая строка.
+
+    Имя — первое слово: после него sess2task дописывает что угодно (`alpha-head
+    (demo-repo); #12`). Ведущее не-буквенное снимается: копия из дерева сессий
+    приносит `└beta-prepare`. Хвостовая пунктуация — тоже, чтобы `name;` и
+    `name,` совпадали с заголовком.
+    """
+    words = rest.split()
+    word = words[0] if words else ""
+    i = 0
+    while i < len(word) and not word[i].isalnum():
+        i += 1
+    return word[i:].rstrip(";,.:)")
+
+
+def parse_vault_tasks(text, vault_label):
+    """Карта имя сессии → [{text, done, added, vault}] по тексту `tasks.md`.
+
+    Подпункт `- Сессия <имя>` относится к ближайшей строке выше с чекбоксом и
+    меньшим отступом: так подпункт под вложенной `\\t- [ ]` достаётся ей, а
+    стоящий на её уровне — родителю. Строка с отступом не больше, чем у
+    задачи, закрывает её блок; заголовок и любая строка без отступа — все
+    блоки сразу. Подпункт вне задачи ничего не значит и пропускается.
+
+    `added` — дата `➕` (создание задачи по плагину Tasks), по ней выбирается
+    свежая среди равных (`pick_task`); у старых задач её нет — пустая строка.
+    """
+    out = {}
+    stack = []  # (отступ, запись задачи)
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        lead = line[:len(line) - len(line.lstrip())]
+        width = len(lead.expandtabs(4))
+        while stack and stack[-1][0] >= width:
+            stack.pop()
+        m = _TASK_LINE_RE.match(line)
+        if m:
+            body = m.group(3)
+            added = _TASK_ADDED_RE.search(body)
+            stack.append((width, {
+                "text": clean_task_text(body),
+                "done": m.group(2).lower() == "x",
+                "added": added.group(1) if added else "",
+                "vault": vault_label,
+            }))
+            continue
+        m = _SESSION_LINE_RE.match(line)
+        if not m or not stack:
+            continue
+        name = vault_session_name(m.group(2))
+        if not name:
+            continue
+        task = stack[-1][1]
+        entries = out.setdefault(name, [])
+        # Одна и та же сессия дважды под одной задачей — одна задача.
+        if not any(e is task for e in entries):
+            entries.append(task)
+    return out
+
+
+def vault_task_index(config_path):
+    """Задачи всех вольтов машины: имя сессии → [записи], один раз на ответ.
+
+    Каждый `tasks.md` читается целиком, без памятки: человек отмечает задачи
+    прямо во время работы, и подпись, застрявшая на прошлом состоянии, врала
+    бы ровно тому, кто галочку и поставил. Тот же выбор, что у `project_todo`.
+    Замер на машине агрегатора 22.11.2026 (два вольта, 71 и 104 КБ): сам
+    разбор — 2.0–2.1 мс, `--state` целиком — 0.14–0.17 с до поля и
+    0.14–0.15 с после, то есть в пределах шума. Памятка по mtime стоила бы
+    дороже самой работы.
+
+    Вольт, чей файл не читается, пропускается; нет конфига — пустая карта.
+    Подпись вольта — имя его каталога.
+    """
+    out = {}
+    for v in read_vaults_config(config_path):
+        vault = os.path.expanduser(v["vault"])
+        path = v["tasks"] if os.path.isabs(v["tasks"]) else os.path.join(vault, v["tasks"])
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        label = os.path.basename(vault.rstrip("/")) or vault
+        for name, entries in parse_vault_tasks(text, label).items():
+            out.setdefault(name, []).extend(entries)
+    return out
+
+
+def pick_task(entries):
+    """Одна задача сессии для строки: {text, done, vault, more?} или None.
+
+    Открытая важнее закрытой (закрытые живут в `tasks.md` до недельного отчёта,
+    и их больше половины), среди равных — свежая по `added`. Остальные
+    уходят числом `more`, и только когда они есть.
+    """
+    if not entries:
+        return None
+    best = max(entries, key=lambda e: (not e.get("done"), e.get("added") or ""))
+    if not best.get("text"):
+        return None
+    got = {"text": best["text"], "done": bool(best.get("done")),
+           "vault": best.get("vault", "")}
+    if len(entries) > 1:
+        got["more"] = len(entries) - 1
+    return got
 
 
 def count_prompts(path, start, prev):
@@ -3953,6 +4137,18 @@ def state_defaults(limit=""):
     ]
 
 
+def vaults_config_default():
+    """Умолчание CCFZF_VAULTS_CONFIG для дороги без bash — как в шапке скрипта.
+
+    Отдельно от `state_defaults`, а не восьмым её элементом: тот кладёт свои
+    семь перед `--if-changed`, а этот аргумент режим читает после него.
+    """
+    value = os.environ.get("CCFZF_VAULTS_CONFIG")
+    if value is not None:
+        return value
+    return os.path.join(os.path.expanduser("~"), ".claude", "vaults-config.md")
+
+
 def session_target(sid, live, procs, registry):
     """Чем открыть сессию по id: {how, pid, tmux, zellij, cwd}.
 
@@ -4089,7 +4285,7 @@ def session_by_name(name, live, cache=None, title_of=None):
 if len(sys.argv) > 1 and sys.argv[1] == "--state":
     _opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
     sys.argv = ([sys.argv[0], "state"] + state_defaults(_opts.get("--limit", ""))
-                + [_opts.get("--if-changed", "")])
+                + [_opts.get("--if-changed", ""), vaults_config_default()])
 
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -4304,6 +4500,9 @@ elif mode == "state":
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
     children_dir = sys.argv[8] if len(sys.argv) > 8 else ""
     if_changed = sys.argv[9] if len(sys.argv) > 9 else ""
+    # Задачи вольтов — один раз на ответ, ключом по имени сессии (sess2task
+    # пишет имя, а не id).
+    vault_tasks = vault_task_index(sys.argv[10] if len(sys.argv) > 10 else "")
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
@@ -4403,6 +4602,7 @@ elif mode == "state":
                         mtime)
         shell, shell_cmd = background_shell(procs.get(sid) if sid in live else None,
                                             (hook or {}).get("state", ""))
+        task = pick_task(vault_tasks.get(f.get("title") or ""))
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
             "projects": sorted(owners_of(cwd, marks)),
@@ -4430,6 +4630,9 @@ elif mode == "state":
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
+            # Задача вольта, под которой сессию записал sess2task: по имени,
+            # точно. Ключа нет, когда задачи нет.
+            **({"task": task} if task else {}),
             # Кто открыл эту сессию через claude-wt-new: `head` — имя
             # сессии-руководителя, `headId` — её id. Ключей нет у обычной
             # сессии. Не `parent`: тот у фоновых форков, см. read_children.
@@ -4671,7 +4874,7 @@ fi
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
   py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE" \
-    "$CHILDREN_DIR" "$if_changed"
+    "$CHILDREN_DIR" "$if_changed" "$VAULTS_CONFIG"
   exit 0
 fi
 
