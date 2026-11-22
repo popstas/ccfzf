@@ -1,6 +1,19 @@
 # Changelog
 
 
+## v0.12.0 - 2026-11-22
+
+### Features
+
+- claude-wt-new: Форк-ребёнок по файлу <sid>.fork
+- cli: --session принимает имя сессии, не только UUID (#25)
+- claude-wt-new: Mcp config and dev channels from side files
+
+### Bug Fixes
+
+- state: Автосжатие посреди хода не считается простоем
+- state: Граница сжатия закрывает кеш, ход и состояние агента
+
 ## v0.11.0 - 2026-11-16
 
 ### Features
