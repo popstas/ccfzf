@@ -194,3 +194,88 @@ def test_agent_state_compact_source():
         assert meta["source"] == "compact"
     finally:
         h.close()
+
+
+# Подставной ccfzf: медленный, чтобы было видно, что хук его не ждёт, и
+# пишущий свой argv в файл, чтобы было видно, что он вообще вызван.
+FAKE_CCFZF = """#!/bin/sh
+sleep "${FAKE_SLEEP:-0}"
+printf '%s\\n' "$*" > "$FAKE_OUT"
+"""
+
+
+def fake_clone(root):
+    """Клон в миниатюре: hooks/ccfzf-dump.sh и подставной ccfzf рядом."""
+    clone = root / "clone"
+    (clone / "hooks").mkdir(parents=True)
+    (clone / "hooks" / "ccfzf-dump.sh").write_bytes((HOOKS / "ccfzf-dump.sh").read_bytes())
+    fake = clone / "ccfzf"
+    fake.write_text(FAKE_CCFZF)
+    fake.chmod(0o755)
+    return clone
+
+
+def wait_for(path, seconds=5):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if path.exists() and path.read_text():
+            return path.read_text()
+        time.sleep(0.05)
+    raise AssertionError("%s так и не появился" % path)
+
+
+def test_dump_hook_runs_sibling_ccfzf_in_background():
+    """Через симлинк в ~/.claude/hooks хук находит ccfzf своего клона и не ждёт его."""
+    h = Home()
+    try:
+        clone = fake_clone(h.root)
+        link_dir = h.home / ".claude" / "hooks"
+        link_dir.mkdir(parents=True)
+        link = link_dir / "ccfzf-dump.sh"
+        link.symlink_to(clone / "hooks" / "ccfzf-dump.sh")
+        out = h.root / "argv.txt"
+        t0 = time.time()
+        res = subprocess.run(["bash", str(link)], input=h.stdin(hook_event_name="SessionStart"),
+                             capture_output=True, text=True, timeout=10,
+                             env={"HOME": str(h.home), "PATH": PATH,
+                                  "FAKE_SLEEP": "2", "FAKE_OUT": str(out)})
+        took = time.time() - t0
+        assert res.returncode == 0, res.stderr
+        assert res.stdout == "", "вывод SessionStart уходит в контекст модели"
+        assert took < 1.0, "хук ждал ccfzf или держал его пайп (%.2f с)" % took
+        assert wait_for(out).strip() == "--dump"
+    finally:
+        h.close()
+
+
+def test_dump_hook_env_override():
+    """CCFZF_BIN перебивает ccfzf клона."""
+    h = Home()
+    try:
+        fake = h.root / "my-ccfzf"
+        fake.write_text(FAKE_CCFZF)
+        fake.chmod(0o755)
+        out = h.root / "argv.txt"
+        res = h.run("ccfzf-dump.sh", stdin=h.stdin(),
+                    env={"CCFZF_BIN": str(fake), "FAKE_OUT": str(out)})
+        assert res.returncode == 0, res.stderr
+        assert wait_for(out).strip() == "--dump"
+    finally:
+        h.close()
+
+
+def test_dump_hook_without_ccfzf_is_quiet():
+    """ccfzf не нашёлся нигде — хук молча выходит с нулём."""
+    h = Home()
+    try:
+        clone = h.root / "bare" / "hooks"
+        clone.mkdir(parents=True)
+        script = clone / "ccfzf-dump.sh"
+        script.write_bytes((HOOKS / "ccfzf-dump.sh").read_bytes())
+        res = subprocess.run(["bash", str(script)], input="{}", capture_output=True,
+                             text=True, timeout=10,
+                             env={"HOME": str(h.home), "PATH": PATH})
+        assert res.returncode == 0
+        assert res.stdout == "" and res.stderr == ""
+    finally:
+        h.close()
