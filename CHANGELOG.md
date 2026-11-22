@@ -1,6 +1,69 @@
 # Changelog
 
 
+## v0.13.0 - 2026-11-22
+
+### Features
+
+- cli: Вступление ребёнку зовёт claude-wt session find, а не скрипт скилла
+- state: Поле task в --state — задача сессии из вольта
+- state: Разбор задач вольтов (sess2task)
+- cli: Session open — открыть окно своей сессии
+- cli: Session spawn
+- cli: Session close и head adopt
+- cli: Session rename
+- cli: Session find
+- cli: Head mark
+- state: Поле disconnected — застрявшая очередь ssh-сокета
+- state: Разбор SSH_CONNECTION, очередей /proc/net/tcp и вердикт по двум опросам
+- cli: Layout отдаёт skipped — кто выпал из группы и почему
+- cli: Snapshot list и restore своих сессий
+- cli: Window layout — раскладка своей группы
+- cli: Window focus — только поднять своё окно
+- cli: Разрешение сессии по id, префиксу и имени
+- cli: Tree — сессии, окна, head и свои
+- cli: Каркас claude-wt и установка симлинком
+- hooks: Хуки состояния сессии и SessionStart-дамп в репозитории (#28)
+- state: Условный ответ --state --if-changed <fp>
+
+### Bug Fixes
+
+- cli: Session open отказывает живой сессии без окна — второй claude на ту же сессию нельзя
+- cli: После ревизии — машина окна у session open, -h как значение, обрыв тела 200 у spawn = 3
+- state: Пробы нулевого окна — тоже застой связи
+- state: Разрыв требует повторов передачи — очередь сама по себе мигает у пишущей сессии
+- state: Серию разрыва сбрасывает убывание против прошлого замера, а не первого
+- cli: Candidates в --json и у неоднозначного --sessions
+- cli: «no window» от менеджера — код 2, как своя проверка
+- cli: Focus не шлёт на чужую машину по --machine/--url
+- cli: --machine без учёта регистра, как в spawn.mjs
+- cli: Результат без кода выходит отказом 1
+- cli: Отказ без caller называет и snapshot list
+- cli: Диспетчер не путает команды с именами прототипа
+- cli: Кривой --url — отказ до отправки, справка про код 3
+- cli: Restore не шлёт пустой sessionIds, обрыв после отправки — исход неизвестен, успех только с ok:true
+- state: Залипшая active старше получаса отдаётся как idle
+- liveness: Файл оконного трекера учитывает и интерактивный список
+- liveness: Запись не может быть старше запуска процесса
+- liveness: Last_message_at декодирует строку хвоста до json.loads
+
+### Documentation
+
+- cli: Группы session и head в --help и README, вывод совместим со скриптами скиллов
+- state: Поле disconnected и CCFZF_SENDQ_FILE
+- cli: Focus только на машину окна, no window — 2, skipped у layout
+- cli: Успех только с ok:true, обрыв после отправки — код 3
+- cli: Claude-wt — команды, свои сессии, коды выхода, установка
+- state: Порог залипшей active обоснован по запускам хука
+
+### Refactor
+
+- cli: Lineage и разбор аргументов скриптов
+
+### Performance
+
+- state: Без повторов передачи проба не обходит /proc — 3,8 мс вместо ~20
+
 ## v0.12.0 - 2026-11-22
 
 ### Features
