@@ -222,6 +222,23 @@ def test_disconnected_ids_streaming_healthy_socket():
         assert CC["disconnected_ids"](rec, root, state, 9) == set()
 
 
+def test_disconnected_ids_skips_proc_walk_without_retransmits():
+    # Обычный опрос: повторов нет ни у одного сокета — обходить /proc в
+    # поисках reptyr и читать environ незачем, вердикт и так пуст.
+    calls = []
+    real = CC["_reptyr_holders"]
+    CC["_reptyr_holders"] = lambda root: calls.append(root) or {}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "proc")
+            fake_proc(root, {100: (["claude"], STUCK_ENV)}, "\n".join([HEADER, TCP_STREAMING]))
+            rec = {SID: {"pid": 100, "tmux": None, "zellij": None}}
+            assert CC["disconnected_ids"](rec, root, os.path.join(tmp, "q.json"), 0) == set()
+    finally:
+        CC["_reptyr_holders"] = real
+    assert calls == [], calls
+
+
 def test_disconnected_ids_idle_socket():
     _, second, _ = probe_twice(
         {SID: {"pid": 100, "tmux": None, "zellij": None}},

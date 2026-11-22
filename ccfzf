@@ -2348,13 +2348,19 @@ def disconnected_ids(procs, proc_root="/proc", state_path=None, now=None):
     now = time.time() if now is None else now
     cand = {sid: p for sid, p in procs.items()
             if (p or {}).get("pid") and not p.get("tmux") and not p.get("zellij")}
-    # Обход /proc и чтение таблиц — только когда есть кого проверять.
+    # Таблицы сокетов — только когда есть кого проверять; обход /proc в
+    # поисках reptyr и environ — только когда хоть у одного сокета идут
+    # повторы передачи. У обычного опроса их нет, и вердикт пуст без всякого
+    # чтения процессов: это и держит цену пробы в паре миллисекунд.
     holders, queues = {}, {}
     if cand:
-        holders = _reptyr_holders(proc_root)
         queues = tcp_queues(
             _read_bytes(os.path.join(proc_root, "net", "tcp")).decode("ascii", "ignore") + "\n"
             + _read_bytes(os.path.join(proc_root, "net", "tcp6")).decode("ascii", "ignore"))
+    if not any(q > 0 and r > 0 for q, r in queues.values()):
+        cand = {}
+    if cand:
+        holders = _reptyr_holders(proc_root)
     samples, owner = {}, {}
     for sid, p in cand.items():
         pid = int(p["pid"])
