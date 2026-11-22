@@ -73,8 +73,9 @@ async function main(argv) {
     process.stdout.write(USAGE);
     return EXIT.OK;
   }
-  const key = COMMANDS[pos[0]] ? pos[0] : `${pos[0]} ${pos[1] ?? ''}`.trim();
-  const load = COMMANDS[key];
+  const has = (k) => Object.hasOwn(COMMANDS, k);
+  const key = has(pos[0]) ? pos[0] : `${pos[0]} ${pos[1] ?? ''}`.trim();
+  const load = has(key) ? COMMANDS[key] : null;
   if (!load) {
     process.stderr.write(`claude-wt: unknown command: ${pos.join(' ')}\n${USAGE}`);
     return EXIT.REFUSED;

@@ -73,3 +73,12 @@ test('неизвестная команда — код 1 и справка', () 
   assert.match(r.stderr, /unknown command/);
   assert.match(r.stderr, /usage: claude-wt/);
 });
+
+test('имена из прототипа — неизвестная команда, без трассы', () => {
+  for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    const r = runCli([name]);
+    assert.equal(r.status, 1, name);
+    assert.match(r.stderr, /unknown command/, name);
+    assert.doesNotMatch(r.stderr, /TypeError|is not a function/, name);
+  }
+});
