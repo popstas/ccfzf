@@ -66,7 +66,13 @@ so is one without `http`. `--machine HOST` picks another tracker, `--url URL`
 skips trackers altogether. The timeout is 5 seconds (`CLAUDE_WT_TIMEOUT_MS`).
 
 A manager refusal is an `ok: false` body with a `reason`, whatever the status
-code; a non-2xx answer without one is a refusal with `HTTP <status>`.
+code; a non-2xx answer without one is a refusal with `HTTP <status>`. Success
+is a 2xx answer with `ok: true` only — anything else on that port (a proxy
+page, an empty body) is a refusal, not a silent success. A connection that
+never happened is a refusal (`manager unreachable`); a connection lost after
+the request was sent is code 3, since the manager may already be acting on it.
+A snapshot that lists no sessions by id is refused: an empty list means
+"every session of the snapshot" to the manager.
 
 ## Exit codes
 
@@ -75,7 +81,7 @@ code; a non-2xx answer without one is a refusal with `HTTP <status>`.
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout). `focus` and `layout` are safe to retry; `snapshot restore` is not — it could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus` and `layout` are safe to retry; `snapshot restore` is not — it could open a second window |
 
 ## Environment
 
