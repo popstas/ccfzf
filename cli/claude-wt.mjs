@@ -56,6 +56,7 @@ function parseArgs(argv) {
 const cmd = (file) => async () => (await import(`./lib/commands/${file}.mjs`)).default;
 const COMMANDS = {
   tree: cmd('tree'),
+  'window focus': cmd('window-focus'),
 };
 
 async function main(argv) {
