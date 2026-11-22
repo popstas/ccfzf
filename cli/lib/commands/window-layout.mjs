@@ -4,7 +4,7 @@
 // нужна раскладка своей группы, а не совпадение с горячей клавишей до порядка.
 import { EXIT } from '../out.mjs';
 import { context, ownTarget, manager } from '../act.mjs';
-import { descendants } from '../own.mjs';
+import { descendants } from '../lineage.mjs';
 import { post, answer, timeoutMs } from '../manager.mjs';
 
 export default async function windowLayout(args, opts, env) {
