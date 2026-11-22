@@ -71,6 +71,7 @@ const LEGACY = {
   'session rename': cmd('session-rename'),
   'session close': cmd('session-close'),
   'head adopt': cmd('head-adopt'),
+  'session spawn': cmd('session-spawn'),
 };
 
 async function legacy(argv) {

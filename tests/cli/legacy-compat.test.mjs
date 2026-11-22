@@ -111,3 +111,29 @@ test('head adopt: как head-adopt.mjs', { skip }, async () => {
   const u = await both(w0, ADOPT_OLD, A, () => [], ['error']);
   assert.match(u.neu.json.error, /^usage: claude-wt head adopt /);
 });
+
+const SPAWN_OLD = 'session-spawn/spawn.mjs';
+const CHILD = 'cccccccc-0000-4000-8000-0000000000c1';
+const spawnWorld = (w) => {
+  w.mark();
+  w.tracker('nb', { projects: ['/p/demo'], httpHost: 'nb.test' });
+  w.write('task.md', 'задание');
+  w.write('mcp.json', { mcpServers: {} });
+  w.write(`.ccfzf/children/${SID}.json`, { headId: 'P' });
+  w.write('.ccfzf/heads/P.json', { sessionId: 'P', cwd: '/p/demo' });
+  w.write(`.claude/sessions/${w.me.pid}.json`, { pid: w.me.pid, sessionId: SID, name: 'boss', cwd: '/p/side' });
+};
+
+test('session spawn --dry-run: как spawn.mjs', { skip }, async () => {
+  const S = ['session', 'spawn'];
+  const base = (w) => ['--task', 'Wide 2/3', '--prompt-file', `${w.home}/task.md`, '--cwd', '/p/demo', '--session-id', CHILD, '--dry-run'];
+  await both(spawnWorld, SPAWN_OLD, S, base);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--mcp-config', `${w.home}/mcp.json`, '--dev-channels', 'server:a,server:b', '--zone', '2:1', '--terminal', 'wt']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--url', 'http://nb:9722/']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--name', 'exact']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--permission-mode', 'bypassPermissions']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--machine', 'ghost']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--zone', '0:1']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--fork', 'yes']);
+  await both((w) => { spawnWorld(w); w.write(`.ccfzf/heads/${SID}.json`, ''); }, SPAWN_OLD, S, base);
+});
