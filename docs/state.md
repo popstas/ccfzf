@@ -61,7 +61,7 @@ vaults are the sections of `CCFZF_VAULTS_CONFIG` (`~/.claude/vaults-config.md`)
 that name both `` `vault` `` and `` `tasks` ``. The sub-item belongs to the
 nearest line above with a checkbox and a smaller indent, so one under a nested
 `- [ ]` belongs to that task. The name is the first word after `Сессия `,
-leading non-alphanumerics dropped, and is matched exactly against the session's
+leading junk such as `└` dropped (a leading `.` or `_` stays: child sessions of a head are named `.child`), and is matched exactly against the session's
 `title` — a session renamed after it was recorded gets no task. With several
 tasks under one name an open one wins over a done one, then the freshest by its
 `➕` date; the rest are counted in `more`, present only when non-zero. `text` is
