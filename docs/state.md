@@ -22,7 +22,8 @@ as `idle`, with `updated` and `event` left as they were. The hook marks every
 tool call, so a working agent is never silent that long; a record frozen on
 `active` means the end of the turn never arrived (an interrupted turn, a killed
 process). This applies to records from the hook and from the transcript tail
-alike, and in the dump as well.
+alike. The dump carries no agent record, but its `shell` flag reads the same
+settled state.
 
 `shell` is `true` on a live session whose turn is over while a background
 command still runs — the same flag as in [the dump](dumps.md), where its rules
