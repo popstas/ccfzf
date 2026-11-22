@@ -17,6 +17,14 @@ open window makes it live), and an `agent` record always carries `updated`.
 Inside `agent` the same rule applies, and `lastSummary` is left out whenever
 `summary` is set, since the reader only falls back to it on an empty `summary`.
 
+An `agent.state` of `active` whose `updated` is more than 30 minutes old is sent
+as `idle`, with `updated` and `event` left as they were. The hook marks every
+tool call, so a working agent is never silent that long; a record frozen on
+`active` means the end of the turn never arrived (an interrupted turn, a killed
+process). This applies to records from the hook and from the transcript tail
+alike. The dump carries no agent record, but its `shell` flag reads the same
+settled state.
+
 `shell` is `true` on a live session whose turn is over while a background
 command still runs — the same flag as in [the dump](dumps.md), where its rules
 are. `shellCmd` is the start of that command, whitespace collapsed, cut to 80

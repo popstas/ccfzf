@@ -390,6 +390,40 @@ def test_last_message_at_gives_zero_after_a_fruitless_second_pass():
         assert CC["last_message_at"](path) == 0.0
 
 
+def test_last_message_at_does_not_hand_bytes_to_json():
+    """До 3.6 `json.loads` на bytes бросал `TypeError`, а хвост читается байтами.
+
+    Расширить `except` было бы хуже бага: на такой версии каждая строка
+    пропускалась бы молча, и функция отдавала бы ноль у любого файла —
+    «возраст неизвестен» вместо падения. Поэтому строка декодируется до
+    разбора, а проверяется это подменой `json.loads`, которая bytes не
+    принимает, как не принимал старый питон.
+    """
+    real = CC["json"]
+
+    class StrictJson:
+        @staticmethod
+        def loads(s, *a, **kw):
+            if isinstance(s, (bytes, bytearray)):
+                raise TypeError("the JSON object must be str, not 'bytes'")
+            return real.loads(s, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    with tempfile.TemporaryDirectory() as d:
+        path = _jsonl(d, "a.jsonl", [
+            {"type": "user", "timestamp": "2026-08-05T19:00:00.000Z"},
+            {"type": "assistant", "timestamp": "2026-08-05T19:51:00.000Z"},
+        ])
+        CC["json"] = StrictJson()
+        try:
+            got = CC["last_message_at"](path)
+        finally:
+            CC["json"] = real
+        assert got == 1785959460.0, got
+
+
 def test_fresh_ids_takes_the_newest_transcript_by_content():
     # Файл со свежим mtime, но старым содержимым, проигрывает файлу, чьё
     # содержимое новее. Сортировка идёт по содержимому, mtime не спрашивается.
@@ -439,6 +473,97 @@ def test_fresh_ids_does_not_take_a_file_someone_already_owns():
     CC["fresh_ids"](["/p"], live, now,
                     files_in=lambda cwd: sorted(ages), age_of=ages.get)
     assert live == {UUID_A, UUID_B}, live
+
+
+def test_fresh_ids_keeps_a_cold_transcript_written_after_the_process_started():
+    """Живой процесс с остывшим транскриптом — живой.
+
+    Сессия, простоявшая полдня на приглашении, молчит дольше FRESH_MAX_AGE, но
+    её последняя запись сделана уже этим процессом: он запущен раньше. Возраст
+    сам по себе тут ничего не доказывает — доказывает порядок «запуск, потом
+    запись».
+    """
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 6 * 3600}
+    CC["fresh_ids"]([("/p", now - 8 * 3600)], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A}, live
+
+
+def test_fresh_ids_does_not_give_a_process_a_file_finished_before_it_started():
+    """Файл, чья последняя запись старше запуска процесса, ему не принадлежит.
+
+    Два процесса в одном каталоге: первый разговаривает, второй стоит на
+    пустом приглашении. Прежде второму доставался соседний свежий файл —
+    чужая сессия, закрытая за полчаса до запуска обоих.
+    """
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 60, "/p/" + UUID_B + ".jsonl": now - 1800}
+    CC["fresh_ids"]([("/p", now - 600), ("/p", now - 300)], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A}, live
+
+
+def test_fresh_ids_serves_the_latest_started_process_first():
+    """Тот, кому подходит меньше файлов, выбирает первым.
+
+    Позднему процессу годится только файл новее его запуска, раннему — оба.
+    Начни раздачу с раннего, он забрал бы новейший, и поздний остался бы ни
+    с чем, хотя честное распределение есть.
+    """
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 60, "/p/" + UUID_B + ".jsonl": now - 1800}
+    CC["fresh_ids"]([("/p", now - 3600), ("/p", now - 300)], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == {UUID_A, UUID_B}, live
+
+
+def test_fresh_ids_without_a_start_time_falls_back_to_the_age_cutoff():
+    # Момент запуска не прочитался (0) — остаётся прежняя отсечка по возрасту.
+    now = time.time()
+    live = set()
+    ages = {"/p/" + UUID_A + ".jsonl": now - 3 * 3600}
+    CC["fresh_ids"]([("/p", 0)], live, now,
+                    files_in=lambda cwd: sorted(ages), age_of=ages.get)
+    assert live == set(), live
+
+
+def test_fresh_ids_never_takes_an_undated_file_even_with_a_start_time():
+    now = time.time()
+    live = set()
+    CC["fresh_ids"]([("/p", now - 3600)], live, now,
+                    files_in=lambda cwd: ["/p/" + UUID_A + ".jsonl"],
+                    age_of=lambda path: 0.0)
+    assert live == set(), live
+
+
+def test_proc_start_epoch_of_this_process_is_a_moment_just_past():
+    """btime + starttime / SC_CLK_TCK даёт настоящее время запуска.
+
+    Своему процессу тест верит: он запущен только что, и ответ обязан лечь
+    между «немного назад» и «сейчас». Тики без btime дали бы число порядка
+    аптайма — десятки тысяч, а не секунды эпохи.
+    """
+    if CC["DARWIN"] or CC["WINDOWS"]:
+        return
+    now = time.time()
+    got = CC["proc_start_epoch"](os.getpid())
+    assert 0 <= now - got < 600, (now, got)
+
+
+def test_proc_start_epoch_of_a_missing_process_is_zero():
+    if CC["DARWIN"] or CC["WINDOWS"]:
+        return
+    assert CC["proc_start_epoch"](2 ** 30) == 0
+
+
+def test_boot_time_reads_btime():
+    text = "cpu  1 2 3\nintr 5\nbtime 1795300000\nprocesses 42\n"
+    assert CC["boot_time"](text) == 1795300000
+    assert CC["boot_time"]("cpu 1 2 3\n") == 0
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

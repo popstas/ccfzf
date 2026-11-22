@@ -7,9 +7,13 @@ evidence, applied in this order.
    session outright. A process carrying neither flag claims the newest transcript
    in its directory — newest **by content**, not by mtime: the age is taken from
    the last record with a `timestamp`, because bookkeeping records bump the mtime
-   days after the conversation ended. Transcripts older than two hours are not
-   candidates at all, and `K` processes in one directory take the `K` newest
-   files between them.
+   days after the conversation ended. A transcript whose last record is older
+   than the process itself was not written by it and is never a candidate; one
+   written after the process started is a candidate however long it has been
+   silent since. `K` processes in one directory take the `K` newest files
+   between them, the latest-started process choosing first. When the start
+   time cannot be read, the old rule applies: transcripts silent for more than
+   two hours are not candidates.
 
 2. **The pid from the hook.** Claude Code can change the id inside a live process
    (`/clear`, compaction), and the argv then points at a transcript nobody writes
@@ -31,10 +35,12 @@ evidence, applied in this order.
 
 5. **An open window.** A session named in `CCFZF_WINDOWS_FILE` is live whatever
    its transcript says: a window on screen is an observation, not a guess, and
-   the two-hour cutoff of the first piece of evidence does not apply to it. This
-   one acts only in `--state` and `--dump`; the `projects` and `sessions` modes
-   and the interactive list never read the windows file, and `●` there follows
-   the first four.
+   no cutoff of the first piece of evidence applies to it. It acts the same in
+   `--state`, `--dump` and the interactive list (`projects`, and through its
+   index `sessions`), so a session is never live in one view and dead in
+   another. The one exception is direct entry by id (`--session`): there
+   "live" means a local process holds the session, and a session that only
+   has a window on another machine is still resumed.
 
 The fourth and fifth pieces of evidence only ever add. A session waiting on a
 human sends no hooks and is recognised by the first one — by its live process.

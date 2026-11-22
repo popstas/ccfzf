@@ -183,7 +183,6 @@ title (custom-title/ai-title) and the latest activity sit in the tail, and the
 first prompt is looked up from the start of the file under a size cap.
 """
 import datetime, glob, hashlib, json, os, re, subprocess, sys, time
-from collections import Counter
 
 # Ответ — UTF-8, какой бы ни была кодовая страница у того, кто нас позвал.
 # На Windows у python при перенаправленном stdout кодировка берётся от системы
@@ -413,6 +412,17 @@ STATE_DUMP_MAX_AGE = 30
 # не доказывает — сессия, ждущая ответа человека, не шлёт хуков часами и при
 # этом жива.
 HOOK_LIVE_TTL = 120
+# Сколько запись агента может молчать в состоянии `active`, прежде чем ей
+# перестанут верить (settle_stale). Хук стучит на каждый вызов инструмента,
+# так что молчание работающего агента — это один вызов или одна генерация.
+# Замерено 2026-11-22 по транскриптам за 30 дней: Claude Code кладёт в них
+# каждый запуск хука (вложение `hook_success`), и промежутки между запусками
+# wt-progress.sh — это ровно молчание `updated`. 639 файлов, 110 тыс.
+# промежутков после tool-start/tool-done: 99.99% не длиннее 600 с, дюжина
+# 600–612 с — Bash, упёршийся в свой таймаут (потолок по умолчанию 600 с).
+# Два промежутка длиннее — ожидание разрешения и открытый AskUserQuestion,
+# то есть человек, а не работа. Полчаса — втрое выше потолка Bash.
+STALE_ACTIVE_AGE = 1800
 
 # Памятка фактов о транскриптах. Нужна оттого, что `--state` запускается новым
 # процессом на каждый опрос пикера — раз в секунду, через ssh, — и кэшу в
@@ -461,9 +471,14 @@ if FACTS_FILE is None:
         "ccfzf", "facts.json")
 
 # Сколько может молчать транскрипт, чтобы процесс без имени сессии в argv всё
-# ещё считался его хозяином. Это не про возраст сессии, а про правдоподобие
-# догадки: свежий запуск пишет сейчас, а не сутки назад.
+# ещё считался его хозяином, — только когда момент запуска процесса не
+# прочитался; иначе отсекает сам запуск (fresh_ids). Это не про возраст
+# сессии, а про правдоподобие догадки: свежий запуск пишет сейчас, а не сутки
+# назад.
 FRESH_MAX_AGE = 2 * 3600
+# Запас на сверку «запись не старше запуска процесса» (fresh_ids): btime в
+# /proc/stat целый, и момент запуска на Linux известен с точностью до секунды.
+START_SLACK = 2
 
 DIM, GREEN, YELLOW, CYAN, RESET = "\033[2m", "\033[32m", "\033[33m", "\033[36m", "\033[0m"
 
@@ -711,7 +726,36 @@ def compact_of(tail):
     return {"compactAt": at} if at else {}
 
 
-def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
+def settle_stale(agent, now):
+    """`active`, молчащая дольше STALE_ACTIVE_AGE, отдаётся как `idle`.
+
+    Хук пишет `active` на каждый вызов инструмента и снимает его на конце хода,
+    но конец хода приходит не всегда: Esc посреди хода и убитый процесс Stop не
+    шлют, и запись застывает «работает» — замерено 2026-08-07, сутки при
+    пятичасовой сессии. То же у записи из хвоста транскрипта: процесс убит
+    посреди хода, и хвост навсегда кончается незакрытым вызовом.
+
+    `idle`, а не новое состояние: читатель (пикер, менеджер) знает его как
+    «ничего не делает» и иначе ничего не рисует; отдельная пометка требовала
+    бы правки у всех читателей, а сказать ей больше нечего — чем сессия занята
+    на самом деле, отсюда всё равно не видно. `updated` и `event` остаются как
+    были: когда агент последний раз что-то сделал, не меняется оттого, что мы
+    перестали ему верить.
+
+    Правило на чтении, а не в памятке фактов: возраст считается от `now`, и
+    закэшированное «active» стареет само, без новой версии памятки.
+
+    Возраст неизвестен (`updated` 0) — запись остаётся: доказательства
+    залипания нет. `question` не трогается: вопрос ждёт человека часами.
+    """
+    if agent and agent.get("state") == "active":
+        at = num(agent.get("updated"))
+        if at and now - at > STALE_ACTIVE_AGE:
+            agent["state"] = "idle"
+    return agent
+
+
+def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0, now=None):
     """Склеенные <id>.state.json, <id>.status.json и <id>.meta.json, или None.
 
     Склейка живёт здесь, а не у читателя: файлы локальные, а читатель —
@@ -738,7 +782,11 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
     Собирает запись `from_tail`; отличить её от хуковой читатель обязан по полю
     `source`, потому что прежнее правило «запись есть — значит хук хоть раз
     сработал» с этого места неверно.
+
+    `now` — шов для тестов: от него считается залипание (`settle_stale`).
     """
+    now = time.time() if now is None else now
+
     def load(suffix):
         try:
             with open(os.path.join(STATUS_DIR, sid + suffix), encoding="utf-8") as fh:
@@ -750,7 +798,7 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
     state = load(".state.json")
     status = load(".status.json")
     if not state and not status:
-        return from_tail(tail, turn_at, mtime)
+        return settle_stale(from_tail(tail, turn_at, mtime), now)
     meta = meta_all(STATUS_DIR).get(sid) or {}
 
     out = {
@@ -815,7 +863,7 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0):
         # Сжата и не продолжена — см. `compact_of`.
         **compact_of(tail),
     }
-    return out
+    return settle_stale(out, now)
 
 
 def read_windows(path, now):
@@ -1670,7 +1718,11 @@ def last_message_at(path):
             return 0.0
         for raw in reversed(lines):
             try:
-                o = json.loads(raw)  # обрезанная первая строка хвоста отсеется здесь
+                # Декодирование до разбора: до 3.6 `json.loads` не принимал
+                # bytes вовсе и бросал `TypeError` мимо этого except. Обрезанная
+                # первая строка хвоста отсеется здесь же — `replace` не даст ей
+                # упасть на разрезанном посреди символа UTF-8.
+                o = json.loads(raw.decode("utf-8", "replace"))
             except ValueError:
                 continue
             ts = o.get("timestamp") if isinstance(o, dict) else None
@@ -2238,6 +2290,51 @@ def proc_started(pid):
         return 0
 
 
+def boot_time(text=None):
+    """Момент загрузки в секундах эпохи (`btime` из /proc/stat), 0 — не прочиталось.
+
+    Текст передаётся тестом; без него читается настоящий /proc/stat.
+    """
+    if text is None:
+        try:
+            with open("/proc/stat") as fh:
+                text = fh.read()
+        except OSError:
+            return 0
+    m = re.search(r"^btime\s+(\d+)", text, re.M)
+    return int(m.group(1)) if m else 0
+
+
+def proc_start_epoch(pid):
+    """Момент запуска процесса в секундах эпохи, 0 — не прочиталось.
+
+    Нужен `fresh_ids`: файл, чья последняя запись старше запуска процесса,
+    этому процессу принадлежать не может. На Linux это `btime` плюс
+    `starttime` из /proc/<pid>/stat в тиках (`SC_CLK_TCK`); `proc_started`
+    отдаёт те же тики без перевода, потому что сверяется с записью хука в тех
+    же единицах.
+
+    `proc_created` для этого не годится, хоть и выглядит так же: mtime
+    каталога /proc/<pid> — момент, когда ядро завело его inode, то есть
+    первого обращения, и у процесса, о котором долго никто не спрашивал, он
+    позже настоящего запуска. Позднее «начало» отбросило бы файл, который
+    процесс честно писал.
+
+    На маке `proc_started` уже в секундах эпохи (`lstart` у `ps`).
+    """
+    if DARWIN:
+        return float(ps_field(pid, "started", 0))
+    ticks = proc_started(pid)
+    boot = boot_time() if ticks else 0
+    if not boot:
+        return 0
+    try:
+        hz = os.sysconf("SC_CLK_TCK")
+    except (AttributeError, ValueError, OSError):
+        return 0
+    return boot + ticks / float(hz) if hz > 0 else 0
+
+
 def proc_created(pid):
     """Момент запуска процесса в секундах эпохи, 0 — не прочиталось.
 
@@ -2606,7 +2703,7 @@ def live_by_hook(live, stamps, now, skip=None, ttl=HOOK_LIVE_TTL):
             live.add(sid)
 
 
-def fresh_ids(cwds, live, now, files_in=None, age_of=None):
+def fresh_ids(procs, live, now, files_in=None, age_of=None):
     """K процессов в одном каталоге забирают K новейших транскриптов этого каталога.
 
     Последняя и самая слабая из трёх догадок о том, какую сессию пишет процесс:
@@ -2614,11 +2711,26 @@ def fresh_ids(cwds, live, now, files_in=None, age_of=None):
     кроме рабочего каталога. Так выглядит обычный `claude` без аргументов — то
     есть большинство.
 
+    `procs` — пары (cwd, момент запуска в секундах эпохи); голая строка cwd
+    читается как пара с неизвестным запуском.
+
     Возраст кандидата берётся у содержимого (`last_message_at`), а не у mtime.
     Причина — в самой last_message_at: mtime обновляют служебные записи, и по
     нему неделю не открывавшийся файл выглядит получасовым. По той же причине
     и сортировка идёт по содержимому: иначе «новейшим» оказался бы файл, чей
     mtime переписали последним.
+
+    Отсечка — запуск процесса: файл, чья последняя запись старше запуска, этот
+    процесс не писал, а писавшийся после запуска не отсекается одним возрастом.
+    Отсюда две починки сразу. Сессия, полдня простоявшая на приглашении, живая,
+    пока жив её процесс, хоть и молчит дольше FRESH_MAX_AGE. И процесс на
+    пустом приглашении не забирает соседний файл, закрытый до его запуска, —
+    прежде второй процесс в каталоге брал второй по свежести, то есть чужой.
+    Запуск не прочитался — остаётся прежняя отсечка FRESH_MAX_AGE.
+
+    Первым выбирает процесс с самой поздней отсечкой: годные ему файлы годны и
+    всем остальным, а не наоборот, и раздача с раннего оставляла бы позднего
+    ни с чем при честном распределении.
 
     Швы `files_in` / `age_of` — для тестов, как `ids_in=` у reattribute:
     настоящие /proc и ~/.claude/projects в тесте не подделать.
@@ -2626,18 +2738,23 @@ def fresh_ids(cwds, live, now, files_in=None, age_of=None):
     files_in = files_in or (lambda cwd: glob.glob(
         os.path.join(PROJECTS_DIR, mangle(cwd), "*.jsonl")))
     age_of = age_of or last_message_at
-    cutoff = now - FRESH_MAX_AGE
-    for cwd, k in Counter(cwds).items():
+    by_cwd = {}
+    for p in procs:
+        cwd, started = (p, 0) if isinstance(p, str) else p
+        cutoff = started - START_SLACK if started else now - FRESH_MAX_AGE
+        by_cwd.setdefault(cwd, []).append(cutoff)
+    for cwd, cutoffs in by_cwd.items():
         # Пара (возраст, путь), а не просто возраст: у двух файлов с одинаковым
         # временем порядок иначе зависел бы от того, что вернул glob.
         candidates = sorted(((age_of(f), f) for f in files_in(cwd)), reverse=True)
-        for age, f in candidates:
-            if k <= 0 or age < cutoff:
-                break
-            sid = os.path.basename(f)[:-6]
-            if sid not in live:
-                live.add(sid)
-                k -= 1
+        for cutoff in sorted(cutoffs, reverse=True):
+            for age, f in candidates:
+                if not age or age < cutoff:
+                    break
+                sid = os.path.basename(f)[:-6]
+                if sid not in live:
+                    live.add(sid)
+                    break
 
 
 def running_sessions():
@@ -2720,7 +2837,7 @@ def running_sessions():
             sid = registry_claim(pid, cwd, registry_by_pid())
             if not sid:
                 if cwd:
-                    fresh.append(cwd)
+                    fresh.append((cwd, proc_start_epoch(pid)))
                 continue
 
         live.add(sid)
@@ -3728,6 +3845,11 @@ if mode == "projects":
 
     dirs = scan_dirs()
     live, _, _, _ = running_sessions()
+    # Открытое окно — довод о жизни здесь так же, как в `state` и `dump` (там
+    # и обоснование): иначе одна сессия была бы живой в пикере и мёртвой в
+    # этом списке. Индекс несёт результат дальше — в `sessions` и `newname`.
+    live |= set(read_window_sources(sys.argv[4] if len(sys.argv) > 4 else "",
+                                    sys.argv[5] if len(sys.argv) > 5 else "", now)[0])
 
     with open(index_path, "w", encoding="utf-8") as fh:
         json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
@@ -3950,7 +4072,7 @@ elif mode == "state":
         read_window_sources(sys.argv[3] if len(sys.argv) > 3 else "",
                             sys.argv[6] if len(sys.argv) > 6 else "", now)
     # Открытое окно — наблюдение, а не догадка по транскрипту, и оно перебивает
-    # fresh_ids с её двухчасовой отсечкой: сессия, которой полдня не писали, но
+    # fresh_ids с её отсечкой по запуску процесса: сессия, которой полдня не писали, но
     # чей терминал открыт на экране, жива. Протухший файл трекера read_windows
     # уже отбросил сама (WINDOWS_TTL), так что умерший демон никого не оживит
     # навечно; а на машине без трекера windows пуст, и здесь ничего не меняется.
@@ -4290,7 +4412,7 @@ if ((state_only)); then
 fi
 
 index="$tmp/index.json"
-rows=$(py projects "$MARKS" "$index")
+rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
 [[ -n $rows ]] || { echo "ccfzf: no marks and no sessions found" >&2; exit 1; }
 
 # Border, height and layout are left to FZF_DEFAULT_OPTS.
@@ -4519,7 +4641,7 @@ sys.exit(os.waitstatus_to_exitcode(status))'
       exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
     fi
   fi
-  rows=$(py projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
   all_rows=$rows
   dump_state
   picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
@@ -4658,7 +4780,7 @@ while :; do
   else
     (cd "$dir" && exec "$SHELL") || true
   fi
-  rows=$(py projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
   all_rows=$rows
   dump_state                                  # sessions changed under us
   picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")

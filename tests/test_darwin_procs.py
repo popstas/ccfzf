@@ -136,6 +136,9 @@ def test_process_fields_come_from_the_table():
         assert CC["parent_pid"]("404") == ""
         assert CC["proc_started"]("99228") == int(CC["ps_table"]()["99228"]["started"])
         assert CC["proc_created"]("99228") == CC["proc_started"]("99228")
+        # Отсечке fresh_ids нужны секунды эпохи, и на маке это то же `lstart`.
+        assert CC["proc_start_epoch"]("99228") == CC["ps_table"]()["99228"]["started"]
+        assert CC["proc_start_epoch"]("404") == 0
         assert sorted(CC["all_pids"]()) == ["71308", "77533", "84235", "99228"]
 
 
