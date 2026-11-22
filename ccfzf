@@ -3735,6 +3735,11 @@ if mode == "projects":
 
     dirs = scan_dirs()
     live, _, _, _ = running_sessions()
+    # Открытое окно — довод о жизни здесь так же, как в `state` и `dump` (там
+    # и обоснование): иначе одна сессия была бы живой в пикере и мёртвой в
+    # этом списке. Индекс несёт результат дальше — в `sessions` и `newname`.
+    live |= set(read_window_sources(sys.argv[4] if len(sys.argv) > 4 else "",
+                                    sys.argv[5] if len(sys.argv) > 5 else "", now)[0])
 
     with open(index_path, "w", encoding="utf-8") as fh:
         json.dump({"dirs": [{"cwd": e["cwd"], "files": e["files"]} for e in dirs],
@@ -4283,7 +4288,7 @@ if ((state_only)); then
 fi
 
 index="$tmp/index.json"
-rows=$(py projects "$MARKS" "$index")
+rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
 [[ -n $rows ]] || { echo "ccfzf: no marks and no sessions found" >&2; exit 1; }
 
 # Border, height and layout are left to FZF_DEFAULT_OPTS.
@@ -4512,7 +4517,7 @@ sys.exit(os.waitstatus_to_exitcode(status))'
       exec "$SHELL" -ic "$(in_dir "$dir" "$cmd")"
     fi
   fi
-  rows=$(py projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
   all_rows=$rows
   dump_state
   picked=$(awk -F'\t' -v p="$dir" '$1 == p { print; exit }' <<<"$rows")
@@ -4651,7 +4656,7 @@ while :; do
   else
     (cd "$dir" && exec "$SHELL") || true
   fi
-  rows=$(py projects "$MARKS" "$index")
+  rows=$(py projects "$MARKS" "$index" "$WINDOWS_FILE" "$WINDOWS_DIR")
   all_rows=$rows
   dump_state                                  # sessions changed under us
   picked=$(awk -F'\t' -v p="$proj_path" '$1 == p { print; exit }' <<<"$rows")

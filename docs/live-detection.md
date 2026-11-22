@@ -35,10 +35,12 @@ evidence, applied in this order.
 
 5. **An open window.** A session named in `CCFZF_WINDOWS_FILE` is live whatever
    its transcript says: a window on screen is an observation, not a guess, and
-   the two-hour cutoff of the first piece of evidence does not apply to it. This
-   one acts only in `--state` and `--dump`; the `projects` and `sessions` modes
-   and the interactive list never read the windows file, and `●` there follows
-   the first four.
+   no cutoff of the first piece of evidence applies to it. It acts the same in
+   `--state`, `--dump` and the interactive list (`projects`, and through its
+   index `sessions`), so a session is never live in one view and dead in
+   another. The one exception is direct entry by id (`--session`): there
+   "live" means a local process holds the session, and a session that only
+   has a window on another machine is still resumed.
 
 The fourth and fifth pieces of evidence only ever add. A session waiting on a
 human sends no hooks and is recognised by the first one — by its live process.
