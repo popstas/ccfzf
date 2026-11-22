@@ -1639,6 +1639,166 @@ def set_comment(path, sid, text, now, host):
     return True
 
 
+# Задача вольта у сессии. Связь пишет скилл sess2task: подпункт
+# `- Сессия <имя>` в блок задачи `tasks.md`. Подпись приезжает в строку списка
+# на каждой машине, поэтому длина у неё та же, что у видимой строки, а не у
+# файла.
+VAULT_TASK_LIMIT = 120
+_VAULT_FIELD_RE = re.compile(r"^\s*-\s*`(\w+)`\s*:\s*`([^`]*)`")
+_TASK_LINE_RE = re.compile(r"^(\s*)- \[(.)\]\s+(.*)$")
+_SESSION_LINE_RE = re.compile(r"^(\s*)- Сессия\s+(.*)$")
+_TASK_ADDED_RE = re.compile(r"➕\s*(\d{4}-\d{2}-\d{2})")
+# Метки плагина Tasks: дата у значков сроков, отдельные значки приоритета.
+_TASK_DATE_MARK_RE = re.compile(r"[➕📅✅⏳🛫❌]️?\s*\d{4}-\d{2}-\d{2}")
+_TASK_MARK_RE = re.compile(r"[⚡⏫🔼🔽🔺⏬]️?")
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]*)(?:\|([^\]]*))?\]\]")
+_MDLINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def read_vaults_config(path):
+    """Вольты этой машины из `~/.claude/vaults-config.md`: [{vault, tasks}].
+
+    Файл человеческий, а не машинный: секция `## <скилл>` на вольт, поля
+    строками `` - `vault`: `/abs/path` ``. Берутся только секции, где есть оба
+    поля: `sync-conflicts` называет `vault`, но задач в нём нет. Порядок —
+    порядок секций, путь `tasks` — относительно `vault`.
+
+    Нет файла — пустой список, без ошибки: вольтов на машине может не быть
+    вовсе, и `--state` от этого не должен ни падать, ни ругаться.
+    """
+    if not path:
+        return []
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    out, cur = [], None
+
+    def flush():
+        if cur and cur.get("vault") and cur.get("tasks"):
+            out.append({"vault": cur["vault"], "tasks": cur["tasks"]})
+
+    for line in lines:
+        if line.startswith("## "):
+            flush()
+            cur = {}
+            continue
+        m = _VAULT_FIELD_RE.match(line)
+        if m and cur is not None and m.group(1) in ("vault", "tasks"):
+            cur.setdefault(m.group(1), m.group(2).strip())
+    flush()
+    return out
+
+
+def clean_task_text(text):
+    """Текст задачи для подписи: без меток плагина Tasks и разметки ссылок.
+
+    `[[a|b]]` → `b`, `[[a]]` → `a`, `[t](u)` → `t`. Пробелы сводятся, длинное
+    режется до VAULT_TASK_LIMIT с `…` — подпись стоит в строке списка, а не в
+    карточке.
+    """
+    text = _TASK_DATE_MARK_RE.sub(" ", text)
+    text = _TASK_MARK_RE.sub(" ", text)
+    text = _WIKILINK_RE.sub(lambda m: m.group(2) if m.group(2) is not None else m.group(1), text)
+    text = _MDLINK_RE.sub(lambda m: m.group(1), text)
+    text = " ".join(text.split())
+    if len(text) > VAULT_TASK_LIMIT:
+        text = text[:VAULT_TASK_LIMIT - 1].rstrip() + "…"
+    return text
+
+
+def vault_session_name(rest):
+    """Имя сессии из хвоста подпункта `- Сессия …`, или пустая строка.
+
+    Имя — первое слово: после него sess2task дописывает что угодно (`alpha-head
+    (demo-repo); #12`). Ведущее не-буквенное снимается: копия из дерева сессий
+    приносит `└beta-prepare`. Хвостовая пунктуация — тоже, чтобы `name;` и
+    `name,` совпадали с заголовком.
+    """
+    words = rest.split()
+    word = words[0] if words else ""
+    i = 0
+    while i < len(word) and not word[i].isalnum():
+        i += 1
+    return word[i:].rstrip(";,.:)")
+
+
+def parse_vault_tasks(text, vault_label):
+    """Карта имя сессии → [{text, done, added, vault}] по тексту `tasks.md`.
+
+    Подпункт `- Сессия <имя>` относится к ближайшей строке выше с чекбоксом и
+    меньшим отступом: так подпункт под вложенной `\\t- [ ]` достаётся ей, а
+    стоящий на её уровне — родителю. Строка с отступом не больше, чем у
+    задачи, закрывает её блок; заголовок и любая строка без отступа — все
+    блоки сразу. Подпункт вне задачи ничего не значит и пропускается.
+
+    `added` — дата `➕` (создание задачи по плагину Tasks), по ней выбирается
+    свежая среди равных (`pick_task`); у старых задач её нет — пустая строка.
+    """
+    out = {}
+    stack = []  # (отступ, запись задачи)
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        lead = line[:len(line) - len(line.lstrip())]
+        width = len(lead.expandtabs(4))
+        while stack and stack[-1][0] >= width:
+            stack.pop()
+        m = _TASK_LINE_RE.match(line)
+        if m:
+            body = m.group(3)
+            added = _TASK_ADDED_RE.search(body)
+            stack.append((width, {
+                "text": clean_task_text(body),
+                "done": m.group(2).lower() == "x",
+                "added": added.group(1) if added else "",
+                "vault": vault_label,
+            }))
+            continue
+        m = _SESSION_LINE_RE.match(line)
+        if not m or not stack:
+            continue
+        name = vault_session_name(m.group(2))
+        if not name:
+            continue
+        task = stack[-1][1]
+        entries = out.setdefault(name, [])
+        # Одна и та же сессия дважды под одной задачей — одна задача.
+        if not any(e is task for e in entries):
+            entries.append(task)
+    return out
+
+
+def vault_task_index(config_path):
+    """Задачи всех вольтов машины: имя сессии → [записи], один раз на ответ.
+
+    Каждый `tasks.md` читается целиком, без памятки: человек отмечает задачи
+    прямо во время работы, и подпись, застрявшая на прошлом состоянии, врала
+    бы ровно тому, кто галочку и поставил. Тот же выбор, что у `project_todo`.
+    Замер на машине агрегатора 22.11.2026 (два вольта, 71 и 104 КБ): сам
+    разбор — 2.0–2.1 мс, `--state` целиком — 0.14–0.17 с до поля и
+    0.14–0.15 с после, то есть в пределах шума. Памятка по mtime стоила бы
+    дороже самой работы.
+
+    Вольт, чей файл не читается, пропускается; нет конфига — пустая карта.
+    Подпись вольта — имя его каталога.
+    """
+    out = {}
+    for v in read_vaults_config(config_path):
+        vault = os.path.expanduser(v["vault"])
+        path = v["tasks"] if os.path.isabs(v["tasks"]) else os.path.join(vault, v["tasks"])
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        label = os.path.basename(vault.rstrip("/")) or vault
+        for name, entries in parse_vault_tasks(text, label).items():
+            out.setdefault(name, []).extend(entries)
+    return out
+
+
 def count_prompts(path, start, prev):
     """Сколько раз человек писал в этой сессии — досчитывая, а не пересчитывая.
 
