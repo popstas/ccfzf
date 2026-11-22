@@ -1,8 +1,8 @@
 # `--state`, and the one file that comes the other way
 
 `ccfzf --state` prints the whole answer as JSON on stdout, for a reader on
-another machine: `generated`, `sessions`, `projects`, `windowHost`, `windowPid`
-and `snapshots`.
+another machine: `generated`, `sessions`, `projects`, `projectOwners`,
+`windowHost`, `windowPid` and `snapshots`.
 
 The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
@@ -75,9 +75,14 @@ answer, about 2 ms for two vaults of 70 and 100 KB.
 the nearest ancestor of `cwd` (or `cwd` itself) among the window tracker's
 `projects[].cwd`, matched on whole path segments (`/a/bc` is not under `/a/b`);
 failing that, the nearest ancestor bookmark; failing that, `cwd` itself. It is
-always set. `projectType` is the `type` of that tracker project, absent when it
-has none — so a session in a project's worktree gets the project's type. The
-reader has only exact `cwd` matches, hence the field.
+sent only when it differs from `cwd` — for about 4 sessions in 500; on every
+row it would add 30 KB to an answer polled once a second. The top-level
+`projectOwners: true` says this aggregator computes owners, so a reader seeing
+the flag and no `projectCwd` takes `cwd` as the owner, and a reader seeing no
+flag is talking to an older aggregator that knows no owners at all.
+`projectType` is the `type` of the owning tracker project, absent when it has
+none — so a session in a project's worktree gets the project's type. The reader
+has only exact `cwd` matches, hence the fields.
 
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).

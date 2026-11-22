@@ -171,14 +171,42 @@ def test_state_glues_the_ancestor_project_and_its_type_to_the_session():
         assert prow["type"] == "work", prow
 
 
-def test_state_without_a_tracker_still_names_the_owner():
-    # Старый менеджер или его нет вовсе: типа нет, а владелец — сам cwd.
+def test_owner_equal_to_cwd_is_not_written_but_the_flag_says_it_is_known():
+    # Старый менеджер или его нет вовсе: типа нет, владелец — сам cwd. Поле
+    # тогда не пишется (у 497 сессий из 501 оно равно cwd), а верхний флаг
+    # говорит пикеру, что агрегатор владельцев считает.
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.path.join(tmp, "alone")
         _session_in(tmp, cwd)
         out = _state(tmp, os.path.join(tmp, "no-windows"))
+        assert out["projectOwners"] is True, sorted(out)
         row = [s for s in out["sessions"] if s["id"] == SID][0]
-        assert row["projectCwd"] == cwd and "projectType" not in row, row
+        assert "projectCwd" not in row and "projectType" not in row, row
+
+
+def test_a_session_in_the_project_root_gets_the_type_without_project_cwd():
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = os.path.join(tmp, "proj")
+        _session_in(tmp, proj)
+        wdir = os.path.join(tmp, "windows")
+        os.makedirs(wdir)
+        with open(os.path.join(wdir, "box.json"), "w", encoding="utf-8") as fh:
+            json.dump({"generated": int(time.time()), "host": "box", "pid": 7, "windows": {},
+                       "projects": [{"cwd": proj, "name": "proj", "type": "home"}]}, fh)
+        out = _state(tmp, wdir)
+        row = [s for s in out["sessions"] if s["id"] == SID][0]
+        assert "projectCwd" not in row and row["projectType"] == "home", row
+
+
+def test_the_fingerprint_sees_the_owners_flag_and_it_is_stable():
+    # Флаг — часть ответа, и `--if-changed` обязан его видеть: пикер, у
+    # которого агрегатор обновился под ним, должен получить полный ответ.
+    # Постоянный флаг при этом отпечаток двух соседних ответов не дёргает.
+    base = {"generated": 1, "sessions": [], "projects": []}
+    with_flag = dict(base, projectOwners=True)
+    fp = CC["state_fingerprint"]
+    assert fp(with_flag) != fp(base)
+    assert fp(with_flag) == fp(dict(with_flag, generated=2))
 
 
 if __name__ == "__main__":

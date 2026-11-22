@@ -4664,9 +4664,13 @@ elif mode == "state":
             # Проект-владелец и его тип — для группировки по типу и пункта
             # `Type` в ^K пикера: у пикера есть только точное совпадение cwd,
             # а сессия из worktree лежит в подкаталоге проекта (project_owner).
-            # `projectCwd` есть всегда, `projectType` — только когда тип есть
-            # (пустое state_record выбрасывает).
-            "projectCwd": owner,
+            # `projectCwd` — только когда владелец не сам `cwd`: так у 497
+            # сессий из 501, и поле на каждой стоило бы +30 КБ ответа раз в
+            # секунду по ssh. Что агрегатор владельца считает, говорит верхний
+            # `projectOwners`: флаг есть, поля нет — владелец равен `cwd`.
+            # `projectType` — только когда тип есть (пустое state_record
+            # выбрасывает).
+            "projectCwd": owner if owner != cwd else "",
             "projectType": project_type_of(owner, window_projects),
             # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
             # этой машине, а открывает его читатель у себя, переведя путь через
@@ -4805,6 +4809,11 @@ elif mode == "state":
                             for r in merge_project_hotkeys(
                                 project_rows(dirs, live, marks, todo_at=todo_at),
                                 window_projects)],
+               # Агрегатор считает проект-владельца сессии (`projectCwd`,
+               # project_owner). Нужен, потому что `projectCwd` пишется только
+               # при отличии от `cwd`: без флага пикер не отличил бы «владелец
+               # — сам cwd» от агрегатора прошлой версии, который поля не знает.
+               "projectOwners": True,
                "windowHost": window_host, "windowPid": window_pid,
                # Живые трекеры поимённо. Пикеру нужно отличать «моей машины
                # среди трекеров нет» от «есть, но окон у неё сейчас нет»: по
