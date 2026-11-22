@@ -1,0 +1,29 @@
+{
+  "generated": 1000,
+  "windowHosts": [{"host": "box-a", "http": {"port": 9722}}],
+  "sessions": [
+    {"id": "aaaaaaaa-0000-4000-8000-000000000001", "title": "demo-head", "live": true, "cwd": "/work/demo",
+     "window": {"host": "box-a", "title": "demo-head", "desktop": 1}},
+    {"id": "aaaaaaaa-0000-4000-8000-000000000002", "title": "└child-one", "live": true, "cwd": "/work/demo",
+     "headId": "aaaaaaaa-0000-4000-8000-000000000001",
+     "window": {"host": "box-a", "title": "└child-one", "desktop": 2}},
+    {"id": "aaaaaaaa-0000-4000-8000-000000000003", "title": "└child-two", "live": true, "cwd": "/work/demo",
+     "headId": "aaaaaaaa-0000-4000-8000-000000000001", "window": null},
+    {"id": "aaaaaaaa-0000-4000-8000-000000000004", "title": "└grandchild", "live": false, "cwd": "/work/other",
+     "window": {"host": "box-a", "title": "└grandchild"}},
+    {"id": "bbbbbbbb-0000-4000-8000-000000000001", "title": "someone-else", "live": true, "cwd": "/work/else",
+     "window": {"host": "box-a", "title": "someone-else"}},
+    {"id": "bbbbbbbb-0000-4000-8000-000000000002", "title": "old-closed", "live": false, "cwd": "/work/else",
+     "window": null}
+  ],
+  "snapshots": [
+    {"id": "2026-01-01T10-00-00", "created": 200, "host": "box-a",
+     "sessions": [{"id": "aaaaaaaa-0000-4000-8000-000000000001", "title": "demo-head"},
+                  {"id": "aaaaaaaa-0000-4000-8000-000000000002", "title": "└child-one"}]},
+    {"id": "2026-01-01T11-00-00", "created": 300, "host": "box-a",
+     "sessions": [{"id": "aaaaaaaa-0000-4000-8000-000000000001", "title": "demo-head"},
+                  {"id": "bbbbbbbb-0000-4000-8000-000000000001", "title": "someone-else"}]},
+    {"id": "2026-01-01T12-00-00", "created": 400, "host": "box-m",
+     "sessions": [{"id": "aaaaaaaa-0000-4000-8000-000000000001", "title": "demo-head"}]}
+  ]
+}

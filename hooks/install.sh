@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Поставить хуки claude-wt симлинками: ~/.claude/hooks/<файл> → <клон>/hooks/<файл>.
+# Поставить хуки claude-wt симлинками: ~/.claude/hooks/<файл> → <клон>/hooks/<файл>,
+# и CLI агента: ~/bin/claude-wt → <клон>/cli/claude-wt.mjs.
 #
 # Симлинк, а не копия, по той же причине, что и ~/bin/ccfzf: `git pull` в
 # клоне обновляет хуки сразу, и разъехаться живой копии с репозиторием нечем.
@@ -58,14 +59,14 @@ backup_name() {
   printf '%s' "$name"
 }
 
-run mkdir -p "$dst_dir"
-for f in $FILES; do
-  src="$src_dir/$f"
-  dst="$dst_dir/$f"
+# Симлинк dst → src: правильный не трогает, одинаковый файл заменяет молча,
+# остальное уводит в бэкап.
+link_one() {
+  local src="$1" dst="$2" bak
   [ -f "$src" ] || { echo "install.sh: missing $src" >&2; exit 1; }
   if [ -L "$dst" ] && [ "$(readlink -f "$dst")" = "$src" ]; then
     say "ok       $dst"
-    continue
+    return
   fi
   if [ -L "$dst" ] || [ -e "$dst" ]; then
     if [ ! -L "$dst" ] && [ -f "$dst" ] && cmp -s "$dst" "$src"; then
@@ -79,7 +80,15 @@ for f in $FILES; do
   fi
   say "link     $dst -> $src"
   run ln -s -- "$src" "$dst"
+}
+
+run mkdir -p "$dst_dir"
+for f in $FILES; do
+  link_one "$src_dir/$f" "$dst_dir/$f"
 done
+
+run mkdir -p "$HOME/bin"
+link_one "$root/cli/claude-wt.mjs" "$HOME/bin/claude-wt"
 
 cat <<'EOF'
 
