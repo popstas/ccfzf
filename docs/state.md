@@ -8,7 +8,7 @@ The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
 `todo`, `comment`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
-`shell`/`shellCmd`, and the `head`/`headId` of a session started by
+`shell`/`shellCmd`, `disconnected`, and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
 the reader treats a missing key exactly as it treated the empty one. Two
@@ -30,6 +30,29 @@ command still runs — the same flag as in [the dump](dumps.md), where its rules
 are. `shellCmd` is the start of that command, whitespace collapsed, cut to 80
 characters, for the card; empty, and so absent, when the command line could not
 be read (always on Windows, where the registry answers but no process list does).
+
+`disconnected` is `true` on a live session whose ssh link is gone while the
+agent lives on: the client side slept or lost the network, sshd still moves
+the agent's output into TCP, and nobody acknowledges it. The sign is the send
+queue of that ssh socket — non-empty, not shrinking between samples, and
+stalled, for at least 8 seconds. Stalled means the kernel is retrying: the
+retransmission timer fires (`retrnsmt` > 0 in `/proc/net/tcp`, nobody ACKs)
+or zero-window probes go out (the ninth field, `icsk_probes_out`: the data
+cannot leave at all). The queue alone is not enough: a healthy session that
+writes all the time (a status line, a spinner) always has a packet in flight,
+but its ACK comes back within a round trip and neither counter moves.
+The socket is found through `SSH_CONNECTION` in `/proc/<pid>/environ` and
+matched on all four of its fields against `/proc/net/tcp{,6}`, which takes
+neither `ss` nor root. The two samples are two neighbouring `--state` calls,
+not a sleep inside one: the previous sample lives in `CCFZF_SENDQ_FILE`
+(`$XDG_CACHE_HOME/ccfzf/sendq.json`), and one older than 60 seconds is replaced
+rather than compared, so a reader polling every few minutes never sees the
+flag. Skipped: sessions inside tmux or zellij (their `SSH_CONNECTION` belongs to
+a client that may be long gone, while the session is fine), sessions without
+`SSH_CONNECTION`, and sessions whose socket is already closed. A session moved
+by `reptyr -T` is judged by the connection of the reptyr that holds it, not by
+the stale one in the agent's own environment. Linux only; an agent that writes
+nothing leaves no trace in the queue. The dump does not carry the flag.
 
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).

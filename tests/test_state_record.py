@@ -82,6 +82,18 @@ def test_non_empty_optional_fields_survive():
         assert got[key] == row[key], (key, got)
 
 
+def test_disconnected_only_when_true():
+    # Ложь уходит, как и прочие пустоты: пикер сводит отсутствие к false.
+    row = dict(HISTORY, live=True, pid=7)
+    assert "disconnected" not in CC["state_record"](dict(row, disconnected=False))
+    assert CC["state_record"](dict(row, disconnected=True))["disconnected"] is True
+
+
+def test_disconnected_not_in_dump():
+    # Читателям дампа (windows11-manager, панель) поднимать сессию нечем.
+    assert "disconnected" not in CC["DUMP_KEEP"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
