@@ -186,6 +186,12 @@ without a `cwd` is dropped. They are joined into the answer's `projects` list by
 and no bookmark at all — an icon or a type alone does not add a row. `type` is
 trimmed and lower-cased on read.
 
+A window's `focusedAt` is when the human last brought that window to the front,
+and `unreadAt` is when somebody explicitly marked the session unseen again
+(the picker's Mark unread, `claude-wt session unread`) — both epoch seconds, `0`
+when absent or junk. A reader that keeps its own "seen" mark treats the session
+as unseen while `unreadAt` is newer than both its own mark and `focusedAt`.
+
 A window's `minimized` says the window is folded into the taskbar or the Dock —
 something only the tracker can see, and something a reader needs to dim that row
 or leave it out of a tiling layout. Only a real `true` counts: a tracker of an

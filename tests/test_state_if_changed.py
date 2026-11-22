@@ -125,7 +125,7 @@ def test_what_the_picker_reads_from_a_window_is_inside_the_fingerprint():
         build_home(tmp, [A])
         dump = os.path.join(tmp, "dump.json")
         fp = run_state(tmp, dump, env_extra=write_window(tmp, A))["fingerprint"]
-        for change in ({"focusedAt": 123}, {"title": "other"}, {"minimized": True}):
+        for change in ({"focusedAt": 123}, {"unreadAt": 456}, {"title": "other"}, {"minimized": True}):
             out = run_state(tmp, dump, "--if-changed", fp, env_extra=write_window(tmp, A, **change))
             assert "unchanged" not in out, (change, out.get("unchanged"))
 

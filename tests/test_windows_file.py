@@ -60,6 +60,23 @@ def test_focus_stamp_missing_is_zero_not_absent():
     assert windows[UUID_A]["focusedAt"] == 0, windows[UUID_A]
 
 
+def test_unread_mark_reaches_the_reader():
+    # Отметку «вернули в непросмотренное» ставит трекер (session-unread), а
+    # read_windows разбирает запись белым списком: без этой строки поле
+    # терялось бы молча, и точка в пикере не появлялась бы.
+    windows, _, _, _ = _read(_payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW,
+                                       "focusedAt": NOW - 9, "unreadAt": NOW - 3}))
+    assert windows[UUID_A]["unreadAt"] == NOW - 3, windows[UUID_A]
+
+
+def test_unread_mark_missing_or_junk_is_zero():
+    for win in ({"title": "ccfzf", "desktop": 1, "lastSeen": NOW},
+                {"title": "ccfzf", "desktop": 1, "lastSeen": NOW, "unreadAt": "вчера"}):
+        windows, _, _, _ = _read(_payload(win))
+        assert windows[UUID_A]["unreadAt"] == 0, windows[UUID_A]
+        assert windows[UUID_A]["title"] == "ccfzf", windows[UUID_A]
+
+
 def test_junk_focus_stamp_does_not_cost_the_window():
     # Пометка об окне дороже отметки о просмотре: мусор в одном поле не повод
     # терять запись целиком.
