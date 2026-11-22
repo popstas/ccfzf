@@ -17,6 +17,8 @@ claude-wt window place <session> --zone M:P   move your session's existing windo
 claude-wt snapshot list [--json]         snapshots of trackers that have an http manager
 claude-wt snapshot restore <id|last> [--sessions a,b]
 claude-wt session open <session>         open a window for your session that has none
+claude-wt session unread <session>       mark your session unseen for the picker (no window is raised)
+claude-wt session seen <session>         mark your session seen: clears unread, puts the taskbar light out
 
 claude-wt session find --session-id <id> [--timeout s] [--interval s] | --name <n> | --list [--cwd c]
 claude-wt session rename --session-id <id> --to <name> | --cancel [--settings f]
@@ -110,6 +112,25 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   code 3, `outcome unknown — do not retry; check with tree in 30 s`: a repeat
   could open a second window. The timeout is 20 seconds unless
   `CLAUDE_WT_TIMEOUT_MS` is set.
+- **`session unread <session>`** and **`session seen <session>`** set the
+  "seen" marks of your session at the trackers of **all** its windows — no
+  window is raised and focus stays where it is, only marks (head's decision,
+  2026-11-22). The picker has two "seen" marks and takes the later one: its own
+  (`seen.json`) and the tracker's `focusedAt`; rolling back `focusedAt` alone
+  never beat the picker's own mark. So `unread` (`POST
+  /claude-wt/session-unread {id}`) makes the tracker roll back `focusedAt` and
+  set `unreadAt` to now, and the picker shows the session unseen while
+  `unreadAt` is newer than both marks — the next focus of the window clears it
+  by itself. `seen` (`POST /claude-wt/session-seen {id}`) sets `focusedAt` to
+  now, clears `unreadAt` and puts out the window's taskbar light. Every machine
+  gets its own attempt whatever the others answered; the result lists them in
+  `results`. A session without a window is code 2 `no window` — the mark lives
+  in the window's tracker record. `unknown session` from a manager (it holds no
+  slot for the session) is code 2 too, `no agent record yet` is code 1.
+  `pending: true` — the manager handed the mark to its daemon, it lands on the
+  next tick (a second). A manager that answers `ok` without `unreadAt`
+  (`focusedAt` for `seen`) is an old one: code 0 with a warning. Both are
+  idempotent, so code 3 is safe to retry.
 
 ## Session and head commands
 
@@ -159,7 +180,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout` and `place` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread` and `session seen` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
 
 ## Environment
 

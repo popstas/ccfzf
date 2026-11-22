@@ -15,6 +15,8 @@ Commands:
   snapshot restore <id|last> [--sessions a,b]
                                          restore a snapshot of your own sessions
   session open <session>                 open a window for your session that has none (never a second one)
+  session unread <session>               mark your session unseen for the picker (no window is raised)
+  session seen <session>                 mark your session seen: clears unread, puts the taskbar light out
 
 Session and head commands (moved from the skill scripts; arguments, JSON and exit
 codes are compatible with the skill scripts: one JSON line on stdout, always):
@@ -42,8 +44,8 @@ Exit codes:
   0  done (or accepted, when "pending": true)
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
-  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place,
-     never session open or session spawn (a second window)
+  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place
+     and session unread/seen, never session open or session spawn (a second window)
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
@@ -79,6 +81,8 @@ const COMMANDS = {
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
   'session open': cmd('session-open'),
+  'session unread': cmd('session-mark', 'unread'),
+  'session seen': cmd('session-mark', 'seen'),
 };
 
 // Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего

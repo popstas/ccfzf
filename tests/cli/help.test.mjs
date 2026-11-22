@@ -6,7 +6,7 @@ import { runCli } from './helpers.mjs';
 test('--help называет команды сессий и head', () => {
   const r = runCli(['--help']);
   assert.equal(r.status, 0);
-  for (const c of ['session open <session>', 'session find', 'session rename', 'session close', 'session spawn', 'head mark', 'head adopt']) {
+  for (const c of ['session open <session>', 'session unread <session>', 'session seen <session>', 'session find', 'session rename', 'session close', 'session spawn', 'head mark', 'head adopt']) {
     assert.ok(r.stdout.includes(c), c);
   }
   assert.match(r.stdout, /compatible with the skill scripts/);
