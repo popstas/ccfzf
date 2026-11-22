@@ -10,6 +10,7 @@ Commands:
   tree [--json]                          sessions, windows, heads and children, snapshots; marks your own
   window focus <session>                 raise the existing window of your session (never opens one)
   window layout <head>                   lay out the windows of your head's group
+  window place <session> --zone M:P      move your session's existing window into FancyZones zone P of monitor M
   snapshot list [--json]                 snapshots of trackers that have an http manager
   snapshot restore <id|last> [--sessions a,b]
                                          restore a snapshot of your own sessions
@@ -41,12 +42,12 @@ Exit codes:
   0  done (or accepted, when "pending": true)
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
-  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout,
+  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place,
      never session open or session spawn (a second window)
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
-const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions']);
+const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions', '--zone']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -74,6 +75,7 @@ const COMMANDS = {
   tree: cmd('tree'),
   'window focus': cmd('window-focus'),
   'window layout': cmd('window-layout'),
+  'window place': cmd('window-place'),
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
   'session open': cmd('session-open'),

@@ -30,3 +30,22 @@ export function manager(host, trackers, opts) {
   const m = managerFor({ host, trackers, url: opts.url, machine: opts.machine });
   return m.error ? { fail: { code: m.code, error: m.error } } : { m };
 }
+
+// --machine/--url, ведущие не на машину окна: там этого окна нет. У focus
+// менеджер без raiseOnly открыл бы новое (а focus окон не открывает, решение
+// Стаса), у place — ответил бы про чужое окно или ни про какое.
+// Адрес машины окна — её имя или http.host из её трекера; иначе не проверить — отказ.
+export function offMachine(host, trackers, opts) {
+  const lc = (x) => String(x ?? '').toLowerCase();
+  if (opts.machine !== undefined && lc(opts.machine) !== lc(host)) {
+    return `--machine ${opts.machine} is not the window's machine (${host})`;
+  }
+  if (opts.url !== undefined) {
+    let name = null;
+    try { name = lc(new URL(opts.url).hostname); } catch { return null; } // кривой --url отвергнет managerFor
+    const known = new Set([lc(host)]);
+    for (const t of trackers) if (lc(t.host) === lc(host) && t.http?.host) known.add(lc(t.http.host));
+    if (!known.has(name)) return `--url ${opts.url} does not point to the window's machine (${host}); known addresses: ${[...known].join(', ')}`;
+  }
+  return null;
+}
