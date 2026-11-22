@@ -48,6 +48,39 @@ out of the answer exactly when nobody has touched the project in a while. A
 marked project nobody has ever opened has no transcripts to date it, so its
 `mtime` is `0` — and those are precisely the rows the reader needs the list for.
 
+## `--if-changed <fp>`
+
+Every full answer carries a `fingerprint`: 16 hex characters of a hash over the
+answer itself, with sorted keys, minus what changes without meaning anything to
+the reader — `generated` at the top and `lastSeen` in each window record. The
+exclusions are named one by one rather than listing what goes in, so a field
+added later is covered by the fingerprint without anyone remembering to add it.
+
+`ccfzf --state --if-changed <fp>` builds the whole answer as usual and, when its
+fingerprint is still `<fp>`, prints only
+
+```json
+{"unchanged":true,"fingerprint":"<fp>","generated":1785460168.4}
+```
+
+instead of hundreds of kilobytes. Anything else in `<fp>` — stale, mistyped,
+from another `--limit` — just gets the full answer with the new fingerprint. The
+dump and the transcript memo are written before that fork, so the short answer
+changes nothing on disk.
+
+A reader holding a cached answer keeps that answer's `lastSeen`: it is out of the
+fingerprint precisely because it ticks every few seconds while nothing else
+moves, and nothing should rely on it being fresh.
+
+Compatibility goes both ways. A reader that never sends the key gets the full
+answer as before, with one extra top-level field. A version of `ccfzf` older than
+the key rejects it like any unknown argument (`--state takes no other mode
+flags`, exit 2) and has no `fingerprint` in its answer — so a reader should send
+back only a fingerprint it got from the same source, and drop it on any failure.
+The python block run directly (the Windows road, no bash wrapper) takes
+`--limit <n>` and `--if-changed <fp>` after `--state` in either order and ignores
+anything it does not know.
+
 The one file `--state` writes is the sessions dump, and only when that has gone
 stale (30 s) — the picker that used to keep it fresh is the one that now calls
 `--state`.
