@@ -11,7 +11,8 @@ function summary(result) {
 }
 
 export function emit(result, { json = false } = {}) {
-  const code = Number.isInteger(result.code) ? result.code : EXIT.UNKNOWN;
+  // Без целого code — ошибка программы: отказ, а не «исход неизвестен, повтори».
+  const code = Number.isInteger(result.code) ? result.code : EXIT.REFUSED;
   for (const w of result.warnings ?? []) process.stderr.write(`claude-wt: warning: ${w}\n`);
   if (result.error) process.stderr.write(`claude-wt: ${result.error}\n`);
   if (json) {

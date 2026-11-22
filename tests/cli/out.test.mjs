@@ -82,3 +82,11 @@ test('имена из прототипа — неизвестная команд
     assert.doesNotMatch(r.stderr, /TypeError|is not a function/, name);
   }
 });
+
+test('результат без целого code — отказ 1, не «исход неизвестен»', () => {
+  for (const code of [undefined, null, '0', 1.5]) {
+    const r = capture(() => emit({ code, text: 'x' }, { json: true }));
+    assert.equal(r.code, 1, String(code));
+    assert.equal(JSON.parse(r.out).code, 1);
+  }
+});
