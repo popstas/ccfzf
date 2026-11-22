@@ -67,6 +67,7 @@ const COMMANDS = {
 // разбора; вывод — JSON скрипта всегда (cli/lib/legacy.mjs).
 const LEGACY = {
   'head mark': cmd('head-mark'),
+  'session find': cmd('session-find'),
 };
 
 async function legacy(argv) {

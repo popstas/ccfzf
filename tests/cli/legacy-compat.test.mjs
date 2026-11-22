@@ -29,3 +29,26 @@ test('head mark: как head-mark.mjs', { skip }, async () => {
   await both((w) => { w.mark(); w.write(`.ccfzf/children/${SID}.json`, { headId: 'T', head: 'top' }); }, 'head-session/head-mark.mjs', ['head', 'mark'], () => []);
   await both((w) => { delete w.env.CLAUDE_PID; }, 'head-session/head-mark.mjs', ['head', 'mark'], () => []);
 });
+
+const FIND_OLD = 'session-find/find.mjs';
+const kids = (w) => {
+  w.agents([w.meAgent, { pid: 4242, cwd: '/p/x', kind: 'interactive', sessionId: X, name: 'kid', status: 'idle' },
+    { pid: 1, cwd: '/p/y', kind: 'interactive', sessionId: Y, name: 'kid', status: 'busy' }]);
+  w.write('.claude/sessions/4242.json', { pid: 4242, sessionId: X, name: 'kid', nameSource: 'rename', formerNames: [{ name: 'a' }] });
+  w.write('.ccfzf/windows/box-a.json', { host: 'box-a', generated: 100, windows: { [X]: { monitor: 2, zone: 3, slot: 1 } } });
+};
+const X = '11111111-1111-4111-8111-111111111111';
+const Y = '22222222-2222-4222-8222-222222222222';
+
+test('session find: как find.mjs', { skip }, async () => {
+  await both(kids, FIND_OLD, ['session', 'find'], () => ['--session-id', X]);
+  await both(kids, FIND_OLD, ['session', 'find'], () => ['--name', 'kid']);
+  await both(kids, FIND_OLD, ['session', 'find'], () => ['--name', 'nobody']);
+  await both(kids, FIND_OLD, ['session', 'find'], () => ['--list', '--cwd', '/p/y']);
+  // hint без машины агентов в тексте (публичный репозиторий) — ключ сверяется отдельно.
+  const { neu } = await both(kids, FIND_OLD, ['session', 'find'], () => ['--session-id', 'cccccccc-0000-4000-8000-00000000dead', '--timeout', '0'], ['hint']);
+  assert.equal(typeof neu.json.hint, 'string');
+  await both((w) => { kids(w); w.write('.ccfzf/children/cccccccc-0000-4000-8000-00000000dead.json', { headId: SID }); }, FIND_OLD, ['session', 'find'],
+    () => ['--session-id', 'cccccccc-0000-4000-8000-00000000dead', '--timeout', '0']);
+  await both(kids, FIND_OLD, ['session', 'find'], () => [], [], { noJson: true });
+});
