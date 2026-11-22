@@ -237,7 +237,9 @@ def test_a_hook_record_wins_over_the_tail():
         saved = CC["STATUS_DIR"]
         try:
             CC["STATUS_DIR"] = d
-            got = CC["agent_of"](sid, "", 0, {"state": "question", "question": "q?"}, 100)
+            # now рядом с updated: иначе запись из 1970-го залипшая (settle_stale).
+            got = CC["agent_of"](sid, "", 0, {"state": "question", "question": "q?"}, 100,
+                                 now=8)
         finally:
             CC["STATUS_DIR"] = saved
     assert got["state"] == "active", got
