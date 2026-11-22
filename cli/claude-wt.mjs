@@ -2,6 +2,7 @@
 // claude-wt — one tool for an agent to read and arrange its Claude Code session windows.
 // Точка входа: разбор argv, диспетчер команд, код выхода. Сами команды — cli/lib/commands/.
 import { EXIT, emit } from './lib/out.mjs';
+import { runLegacy, emitLegacy } from './lib/legacy.mjs';
 
 const USAGE = `usage: claude-wt <group> <action> [args] [--json] [--url URL] [--machine HOST]
 
@@ -12,6 +13,20 @@ Commands:
   snapshot list [--json]                 snapshots of trackers that have an http manager
   snapshot restore <id|last> [--sessions a,b]
                                          restore a snapshot of your own sessions
+  session open <session>                 open a window for your session that has none (never a second one)
+
+Session and head commands (moved from the skill scripts; arguments, JSON and exit
+codes are compatible with the skill scripts: one JSON line on stdout, always):
+  session find --session-id <id> [--timeout s] [--interval s] | --name <n> | --list [--cwd c]
+                                         a live session, its current name and window place (0 / 2 not found)
+  session rename --session-id <id> --to <name> | --cancel [--settings f]
+                                         queue a new name; it applies on the target's next prompt
+  session close --session-id <id> [--force] [--kill] [--wait s]
+                                         close a child of this head (SIGTERM, wait)
+  session spawn --task <slug> | --name <n> --prompt-file <f> [--cwd d] [--dry-run] [--fork] ...
+                                         open a child session; 3 = outcome unknown, never resend
+  head mark                              mark this session as a head
+  head adopt [--release] <name|id>...    take live sessions in as children (or let them go)
 
 <session> is a sessionId, a unique prefix of it (6+ chars) or a name.
 Only your own sessions can be acted on: this session and its descendants.
@@ -26,7 +41,8 @@ Exit codes:
   0  done (or accepted, when "pending": true)
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
-  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout
+  3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout,
+     never session open or session spawn (a second window)
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
@@ -60,9 +76,33 @@ const COMMANDS = {
   'window layout': cmd('window-layout'),
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
+  'session open': cmd('session-open'),
 };
 
+// Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего
+// разбора; вывод — JSON скрипта всегда (cli/lib/legacy.mjs).
+const LEGACY = {
+  'head mark': cmd('head-mark'),
+  'session find': cmd('session-find'),
+  'session rename': cmd('session-rename'),
+  'session close': cmd('session-close'),
+  'head adopt': cmd('head-adopt'),
+  'session spawn': cmd('session-spawn'),
+};
+
+async function legacy(argv) {
+  const key = `${argv[0]} ${argv[1]}`;
+  // Справка — только первым словом после команды: дальше `-h` может быть значением (`--to -h`).
+  if (argv[2] === '-h' || argv[2] === '--help') {
+    process.stdout.write(USAGE);
+    return EXIT.OK;
+  }
+  const run = await LEGACY[key]();
+  return emitLegacy(await runLegacy(run, argv.slice(2), process.env));
+}
+
 async function main(argv) {
+  if (argv.length >= 2 && Object.hasOwn(LEGACY, `${argv[0]} ${argv[1]}`)) return legacy(argv);
   const parsed = parseArgs(argv);
   if (parsed.error) {
     process.stderr.write(`claude-wt: ${parsed.error}\n${USAGE}`);

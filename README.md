@@ -177,11 +177,14 @@ claude-wt tree --json                   # sessions, windows, heads and children,
 claude-wt window focus <session>        # raise an existing window; never opens one
 claude-wt window layout <head>          # lay out the head's group
 claude-wt snapshot restore last         # restore the newest snapshot of your own sessions
+claude-wt session open <session>        # open a window for your session that has none
 ```
+
+It also carries the session commands of the `session-*` and `head-session` skills — `session find`, `session rename`, `session close`, `session spawn`, `head mark`, `head adopt` — with the same arguments, JSON and exit codes as those skill scripts.
 
 Exit codes: `0` done (or accepted, `pending`), `1` refused, `2` not found, `3` outcome unknown. `hooks/install.sh` links it into `~/bin/`.
 
-→ Commands, ownership rules, where a command goes: [docs/claude-wt.md](docs/claude-wt.md).
+→ Commands, ownership rules, where a command goes, the session commands: [docs/claude-wt.md](docs/claude-wt.md).
 
 ## Why
 
