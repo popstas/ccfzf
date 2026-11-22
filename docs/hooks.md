@@ -12,7 +12,7 @@ context fill. Most of that is written by Claude Code hooks into
 | [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start; `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction. Also sets the terminal progress bar (OSC 9;4) |
 | [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output |
 | [`claude-wt-agent-state.sh`](../hooks/claude-wt-agent-state.sh) | SessionStart, PostCompact | `<id>.meta.json` — id, cwd, transcript, source, the claude pid and its start time. The pid is what ties a process to the session it writes after `/clear` or compaction — see [live-detection.md](live-detection.md) |
-| [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, once per session) |
+| [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, on every SessionStart: startup, resume, clear, compact) |
 
 `wt-progress.sh` folds the numbers from `status.json` into `state.json` on its
 next event, so a reader that only gets one file per session still has them.
@@ -51,7 +51,62 @@ It does **not** edit `~/.claude/settings.json`. It prints the fragment to merge
 by hand instead — every event above, the `statusLine` entry, and the
 SessionStart dump hook. Keep your own hooks next to these ones;
 `claude-wt-statusline.sh` replaces a `ccstatusline` status line, since it runs
-`ccstatusline` itself.
+`ccstatusline` itself. The `--hook` entries are there for `ccstatusline`'s
+skills widget, which fills its cache only from `ccstatusline --hook`.
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/hooks/claude-wt-statusline.sh",
+    "padding": 0,
+    "refreshInterval": 30
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "bash ~/.claude/hooks/claude-wt-agent-state.sh session" },
+        { "type": "command", "command": "bash ~/.claude/hooks/ccfzf-dump.sh" }
+      ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh start" },
+        { "type": "command", "command": "bash ~/.claude/hooks/claude-wt-statusline.sh --hook" }
+      ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [
+        { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh tool-start" }
+      ] },
+      { "matcher": "Skill", "hooks": [
+        { "type": "command", "command": "bash ~/.claude/hooks/claude-wt-statusline.sh --hook" }
+      ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh tool-done" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh attention" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh stop" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh fail" } ] }
+    ],
+    "PreCompact": [
+      { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh compact" } ] }
+    ],
+    "PostCompact": [
+      { "hooks": [
+        { "type": "command", "command": "bash ~/.claude/hooks/wt-progress.sh compact" },
+        { "type": "command", "command": "bash ~/.claude/hooks/claude-wt-agent-state.sh session" }
+      ] }
+    ]
+  }
+}
+```
 
 ## Requirements
 
@@ -66,5 +121,7 @@ These hooks run where the sessions run, and only on Linux. On a Windows or
 macOS machine — and for sessions of the desktop app — there is no
 `~/.claude/claude-wt/` directory at all. `ccfzf` then builds the `agent` record
 from the transcript tail instead (`tail_facts` → `from_tail`), and marks it with
-`source` so a reader can tell the two apart. What that loses: cost and context
-%, which only the status line knows, and the text of a permission request.
+`source` so a reader can tell the two apart. That record carries only the
+state, the question and the turn start: no summary, prompt, branch or PR, and
+no cost or context % — those keys are absent rather than zero, since only the
+status line knows them.

@@ -6,14 +6,20 @@
 каталоге; финальный ответ в нём помечен `end_turn`, иначе stop выстаивал бы
 всё ожидание дописи (STOP_WAIT_MS).
 
-Запуск: pytest tests/test_hooks.py
+Запуск: python3 tests/test_hooks.py
 """
 import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import time
+
+try:
+    import pytest
+except ImportError:
+    pytest = None
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HOOKS = ROOT / "hooks"
@@ -64,6 +70,13 @@ class Home:
 
     def state(self):
         return json.loads((self.state_dir / (SID + ".state.json")).read_text(encoding="utf-8"))
+
+
+# Хуки — линуксовые: jq, GNU stat -c, /proc. Вне Linux или без jq их прогон
+# не про этот репозиторий, а про машину.
+SUPPORTED = sys.platform == "linux" and os.path.exists("/usr/bin/jq")
+if pytest is not None:
+    pytestmark = pytest.mark.skipif(not SUPPORTED, reason="hooks need Linux with jq in /usr/bin")
 
 
 def test_hooks_parse():
@@ -148,10 +161,15 @@ def test_statusline_numbers_reach_state():
                             context_window={"context_window_size": 200000,
                                             "total_input_tokens": 90000,
                                             "total_output_tokens": 10000})
-        # --hook: без рендера статуслайна, ccstatusline в урезанном PATH и нет.
-        res = h.run("claude-wt-statusline.sh", "--hook", stdin=status_in)
+        # Режим statusLine: вход уходит подставному ccstatusline, его вывод — наружу.
+        stub = h.root / "bin"
+        stub.mkdir()
+        (stub / "ccstatusline").write_text("#!/bin/sh\ncat >/dev/null\necho STATUS-LINE\n")
+        (stub / "ccstatusline").chmod(0o755)
+        res = h.run("claude-wt-statusline.sh", stdin=status_in,
+                    env={"PATH": "%s:%s" % (stub, PATH)})
         assert res.returncode == 0, res.stderr
-        assert res.stdout == "", "в --hook stdout уходит в контекст модели"
+        assert res.stdout.strip() == "STATUS-LINE"
         status = json.loads((h.state_dir / (SID + ".status.json")).read_text())
         assert status["costUsd"] == 4
         assert status["contextPct"] == 50
@@ -410,3 +428,26 @@ def test_install_refuses_from_a_worktree():
         assert install(h, main).returncode == 0, "из основного клона ставит"
     finally:
         h.close()
+
+
+def test_docs_fragment_matches_installer():
+    """Фрагмент settings.json в docs/hooks.md — тот же, что печатает установщик."""
+    h = Home()
+    try:
+        res = install(h, plain_clone(h.root), "--dry-run")
+        printed = json.loads(res.stdout[res.stdout.index("{"):res.stdout.rindex("}") + 1])
+        doc = (ROOT / "docs" / "hooks.md").read_text(encoding="utf-8")
+        block = doc.split("```json\n", 1)[1].split("```", 1)[0]
+        assert json.loads(block) == printed
+    finally:
+        h.close()
+
+
+if __name__ == "__main__":
+    if not SUPPORTED:
+        print("skip: hooks need Linux with jq in /usr/bin")
+        sys.exit(0)
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)
