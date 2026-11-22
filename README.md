@@ -153,6 +153,18 @@ Every run also writes down what it saw, so whatever else you script around Claud
 
 `claude-wt-new` sits next to `ccfzf`: it starts a new session with a fixed id and name for a session that opens others and writes to them, and `--state` then names that head on the new session's row. → [docs/children.md](docs/children.md).
 
+### Session state hooks
+
+The `agent` field of `--state` — what each agent is doing, its last answer, the question it waits on, cost and context — is filled by Claude Code hooks shipped in [`hooks/`](hooks). A fourth hook rewrites the dump on SessionStart, so a session started by hand in a terminal shows up without waiting for the next poll.
+
+```sh
+ccfzf/hooks/install.sh   # symlinks into ~/.claude/hooks/, prints the settings.json fragment
+```
+
+The installer never edits `~/.claude/settings.json`; merge the printed fragment by hand. The hooks are Linux-only: on Windows and macOS there is no `~/.claude/claude-wt/`, and `ccfzf` reads the agent's state from the transcript tail instead (`tail_facts`), without cost and context.
+
+→ What each hook writes, install details, requirements: [docs/hooks.md](docs/hooks.md).
+
 ## Why
 
 The obvious way to build this is to shell out to a session lister and format its output. That turned out to cost 2–3 seconds per launch, because listing sessions that way reads every `~/.claude/projects/**/*.jsonl` in full — 757 MB of history in my case.
@@ -194,6 +206,7 @@ A session belongs to its own `cwd`. It additionally shows up under the nearest a
 - [docs/dumps.md](docs/dumps.md) — the sessions and projects dumps, and the facts memo
 - [docs/state.md](docs/state.md) — the `--state` answer and the windows file it reads
 - [docs/live-detection.md](docs/live-detection.md) — how a running session is recognised
+- [docs/hooks.md](docs/hooks.md) — the session state hooks in `hooks/` and how to install them
 - [docs/children.md](docs/children.md) — `claude-wt-new`: a session started with a fixed id and name, and the `head` it reports in `--state`
 - [CHANGELOG.md](CHANGELOG.md) — what changed between versions
 
