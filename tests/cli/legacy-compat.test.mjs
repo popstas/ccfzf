@@ -52,3 +52,22 @@ test('session find: как find.mjs', { skip }, async () => {
     () => ['--session-id', 'cccccccc-0000-4000-8000-00000000dead', '--timeout', '0']);
   await both(kids, FIND_OLD, ['session', 'find'], () => [], [], { noJson: true });
 });
+
+const RENAME_OLD = 'session-rename/rename.mjs';
+const renameWorld = (w) => {
+  kids(w);
+  w.write('.claude/settings.json', { hooks: { UserPromptSubmit: [{ hooks: [{ command: 'pending-title-hook.sh' }] }] } });
+};
+
+test('session rename: как rename.mjs', { skip }, async () => {
+  const R = ['session', 'rename'];
+  await both(renameWorld, RENAME_OLD, R, () => ['--session-id', X, '--to', 'new']);
+  await both(renameWorld, RENAME_OLD, R, () => ['--session-id', X, '--cancel']);
+  await both(renameWorld, RENAME_OLD, R, () => ['--session-id', X, '--to', 'boss']);
+  await both(renameWorld, RENAME_OLD, R, () => ['--session-id', X, '--to', 'a\nb']);
+  // usage называет команду CLI, а не скрипт — сверяется всё, кроме текста.
+  const u = await both(renameWorld, RENAME_OLD, R, () => ['--to', 'x'], ['error']);
+  assert.match(u.neu.json.error, /^usage: claude-wt session rename /);
+  await both(renameWorld, RENAME_OLD, R, () => ['--session-id', 'cccccccc-0000-4000-8000-00000000dead', '--to', 'x']);
+  await both(kids, RENAME_OLD, R, () => ['--session-id', X, '--to', 'new']);
+});
