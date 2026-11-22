@@ -253,11 +253,13 @@ def test_project_hotkeys_reach_the_reader():
 
 def test_junk_projects_cost_the_field_not_the_list():
     # Правило то же, что у окон и снимков: порченая добавка не стоит списка
-    # сессий. Запись без cwd или без хоткея не значит ничего.
+    # сессий. Запись без cwd не значит ничего. Запись с одним cwd остаётся:
+    # по ней project_owner находит проект сессии из подкаталога.
     payload = _payload({"title": "ccfzf", "desktop": 1, "lastSeen": NOW - 5})
     payload["projects"] = ["not a dict", {"cwd": "/p/one"}, {"hotkey": "Ctrl+F1"},
-                           {"cwd": "/p/two", "hotkey": "Ctrl+F2"}]
+                           {"cwd": "/p/two", "hotkey": "Ctrl+F2"}, {"cwd": ""}]
     assert _read_projects(payload) == [
+        {"cwd": "/p/one", "name": ""},
         {"cwd": "/p/two", "name": "", "hotkey": "Ctrl+F2"}], _read_projects(payload)
 
 
@@ -374,7 +376,8 @@ def test_project_icon_reaches_the_reader():
     # Строкам без окна (история и проекты пикера) иконку брать больше неоткуда:
     # в записи окна она есть только у открытого. Проект с иконкой, но без
     # хоткея, тоже доезжает — без ключа `hotkey`, а не с пустым: у читателя
-    # «нет клавиши» и «клавиша пустая» — разные вещи.
+    # «нет клавиши» и «клавиша пустая» — разные вещи. Мусорная иконка стоит
+    # поля, а не записи.
     payload = _payload({"title": "ccfzf", "desktop": None, "lastSeen": 0})
     payload["projects"] = [
         {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "icon": "C:\\i\\home.ico"},
@@ -385,6 +388,8 @@ def test_project_icon_reaches_the_reader():
     assert _read_projects(payload) == [
         {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "icon": "C:\\i\\home.ico"},
         {"cwd": "/p/plain", "name": "plain", "icon": "C:\\i\\plain.ico"},
+        {"cwd": "/p/none", "name": "none"},
+        {"cwd": "/p/junk", "name": "junk"},
     ], _read_projects(payload)
 
 

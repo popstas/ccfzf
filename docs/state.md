@@ -1,13 +1,14 @@
 # `--state`, and the one file that comes the other way
 
 `ccfzf --state` prints the whole answer as JSON on stdout, for a reader on
-another machine: `generated`, `sessions`, `projects`, `windowHost`, `windowPid`
-and `snapshots`.
+another machine: `generated`, `sessions`, `projects`, `projectOwners`,
+`windowHost`, `windowPid` and `snapshots`.
 
 The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
 `todo`, `comment`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
+`projectCwd`/`projectType`,
 `shell`/`shellCmd`, `disconnected`, and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
@@ -70,6 +71,19 @@ and link markup (`[[a|b]]` → `b`, `[t](u)` → `t`) and cut to 120 characters;
 `vault` is the vault directory's name. The files are read whole on every
 answer, about 2 ms for two vaults of 70 and 100 KB.
 
+`projectCwd` is the project the session belongs to, for grouping by project type:
+the nearest ancestor of `cwd` (or `cwd` itself) among the window tracker's
+`projects[].cwd`, matched on whole path segments (`/a/bc` is not under `/a/b`);
+failing that, the nearest ancestor bookmark; failing that, `cwd` itself. It is
+sent only when it differs from `cwd` — for about 4 sessions in 500; on every
+row it would add 30 KB to an answer polled once a second. The top-level
+`projectOwners: true` says this aggregator computes owners, so a reader seeing
+the flag and no `projectCwd` takes `cwd` as the owner, and a reader seeing no
+flag is talking to an older aggregator that knows no owners at all.
+`projectType` is the `type` of the owning tracker project, absent when it has
+none — so a session in a project's worktree gets the project's type. The reader
+has only exact `cwd` matches, hence the fields.
+
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).
 The answer is compact JSON, without spaces after `,` and `:`. Together this
@@ -79,7 +93,9 @@ to 371 KB — it travels over ssh once a second while the picker is shown.
 `projects` is close to what the `projects` mode shows, minus the colouring —
 `{path, name, mark, sessions, live, mtime}`, no `age`, because a reader that
 formats the age itself would otherwise carry two answers that drift apart — plus
-an optional `hotkey` on any row a window tracker has registered a shortcut for.
+an optional `hotkey` on any row a window tracker has registered a shortcut for,
+an optional `icon`, and an optional `type` (`work`, `home` or another group name
+from the tracker's project list).
 
 A project with a hotkey but no sessions and no bookmark gets a synthetic row here
 that the `projects` mode itself would never show, so the shortcut does not drop
@@ -161,10 +177,14 @@ a window must first grant that right to the tracker by pid.
 
 `snapshots` is saved window layouts the tracker remembers, echoed into the
 answer's own `snapshots` field so a reader can offer "restore this layout"
-without asking anyone. `projects` is `cwd`/`name`/`hotkey` triples for whatever
-shortcuts the tracker has registered; joined into the answer's `projects` list by
-`cwd`, and the reason a project can show up there with no sessions and no
-bookmark at all.
+without asking anyone. `projects` is `cwd`/`name` plus an optional `hotkey`,
+`icon` and `type` for every project the tracker knows — windows11-manager sends
+all of `claudeWt.projects`, and an entry with none of the three is kept too, since
+it still owns the sessions in its subdirectories (`projectCwd`); only an entry
+without a `cwd` is dropped. They are joined into the answer's `projects` list by
+`cwd`, and a hotkey is the reason a project can show up there with no sessions
+and no bookmark at all — an icon or a type alone does not add a row. `type` is
+trimmed and lower-cased on read.
 
 A window's `minimized` says the window is folded into the taskbar or the Dock —
 something only the tracker can see, and something a reader needs to dim that row
