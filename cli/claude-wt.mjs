@@ -53,11 +53,13 @@ function parseArgs(argv) {
 }
 
 // "<group> <action>" → модуль команды; грузится лениво, чтобы справка не тянула остальное.
-const cmd = (file) => async () => (await import(`./lib/commands/${file}.mjs`)).default;
+const cmd = (file, name = 'default') => async () => (await import(`./lib/commands/${file}.mjs`))[name];
 const COMMANDS = {
   tree: cmd('tree'),
   'window focus': cmd('window-focus'),
   'window layout': cmd('window-layout'),
+  'snapshot list': cmd('snapshot', 'list'),
+  'snapshot restore': cmd('snapshot', 'restore'),
 };
 
 async function main(argv) {
