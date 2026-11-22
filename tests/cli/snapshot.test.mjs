@@ -117,6 +117,7 @@ test('без вызывающей сессии restore отказывает', as
   const r = await cli(['snapshot', 'restore', OWN_SNAP], { caller: null });
   assert.equal(r.status, 1);
   assert.match(r.o.error, /CLAUDE_CODE_SESSION_ID/);
+  assert.match(r.o.error, /only tree and snapshot list work/);
   assert.equal(r.requests.length, 0);
 });
 

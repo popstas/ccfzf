@@ -5,7 +5,7 @@ import { resolveSession, resolveError } from './resolve.mjs';
 import { picture } from './commands/tree.mjs';
 import { managerFor } from './manager.mjs';
 
-export const NO_CALLER = 'not inside a Claude Code session (CLAUDE_CODE_SESSION_ID is unset); only tree works here';
+export const NO_CALLER = 'not inside a Claude Code session (CLAUDE_CODE_SESSION_ID is unset); only tree and snapshot list work';
 
 // Картина + вызывающий; без вызывающего — отказ до чтения остального.
 export function context(env) {
