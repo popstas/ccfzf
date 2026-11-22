@@ -279,3 +279,134 @@ def test_dump_hook_without_ccfzf_is_quiet():
         assert res.stdout == "" and res.stderr == ""
     finally:
         h.close()
+
+
+# --- установщик ------------------------------------------------------------
+
+HOOK_FILES = ["wt-progress.sh", "claude-wt-statusline.sh",
+              "claude-wt-agent-state.sh", "ccfzf-dump.sh"]
+
+
+def plain_clone(root):
+    """Копия клона без git: так ставят из архива, и проверки worktree там нет."""
+    clone = root / "clone"
+    (clone / "hooks").mkdir(parents=True)
+    for f in HOOK_FILES + ["install.sh"]:
+        (clone / "hooks" / f).write_bytes((HOOKS / f).read_bytes())
+    return clone
+
+
+def install(h, clone, *args):
+    return subprocess.run(["bash", str(clone / "hooks" / "install.sh")] + list(args),
+                          capture_output=True, text=True, timeout=20,
+                          env={"HOME": str(h.home), "PATH": PATH, "LANG": "C.UTF-8"})
+
+
+def test_install_links_every_hook():
+    """Пустой ~/.claude: симлинк на каждый хук клона и фрагмент настроек в stdout."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        res = install(h, clone)
+        assert res.returncode == 0, res.stderr
+        for f in HOOK_FILES:
+            link = h.home / ".claude" / "hooks" / f
+            assert link.is_symlink(), f
+            assert os.path.realpath(link) == str((clone / "hooks" / f).resolve())
+        start = res.stdout.index("{")
+        fragment = json.loads(res.stdout[start:res.stdout.rindex("}") + 1])
+        commands = json.dumps(fragment)
+        for f in HOOK_FILES:
+            assert f in commands, "%s нет во фрагменте настроек" % f
+        assert fragment["statusLine"]["command"] == "bash ~/.claude/hooks/claude-wt-statusline.sh"
+        dump = [c["command"] for g in fragment["hooks"]["SessionStart"] for c in g["hooks"]]
+        assert "bash ~/.claude/hooks/ccfzf-dump.sh" in dump
+        assert not (h.home / ".claude" / "settings.json").exists(), "settings.json не трогаем"
+    finally:
+        h.close()
+
+
+def test_install_is_idempotent_and_keeps_settings():
+    """Повторный запуск ничего не меняет и бэкапов не плодит; settings.json цел."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        settings = h.home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"model": "x"}\n')
+        assert install(h, clone).returncode == 0
+        res = install(h, clone)
+        assert res.returncode == 0, res.stderr
+        hooks_dir = h.home / ".claude" / "hooks"
+        assert sorted(p.name for p in hooks_dir.iterdir()) == sorted(HOOK_FILES)
+        assert settings.read_text() == '{"model": "x"}\n'
+    finally:
+        h.close()
+
+
+def test_install_backs_up_a_different_file():
+    """Свой файл на месте хука уходит в .bak-<дата>, одинаковый — заменяется молча."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        hooks_dir = h.home / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "wt-progress.sh").write_text("# старая версия\n")
+        (hooks_dir / "ccfzf-dump.sh").write_bytes((HOOKS / "ccfzf-dump.sh").read_bytes())
+        res = install(h, clone)
+        assert res.returncode == 0, res.stderr
+        day = time.strftime("%Y-%m-%d")
+        bak = hooks_dir / ("wt-progress.sh.bak-" + day)
+        assert bak.read_text() == "# старая версия\n"
+        assert (hooks_dir / "wt-progress.sh").is_symlink()
+        assert (hooks_dir / "ccfzf-dump.sh").is_symlink()
+        assert not list(hooks_dir.glob("ccfzf-dump.sh.bak*")), "одинаковый файл без бэкапа"
+        # Второй чужой файл в тот же день не затирает первый бэкап.
+        (hooks_dir / "wt-progress.sh").unlink()
+        (hooks_dir / "wt-progress.sh").write_text("# ещё одна версия\n")
+        assert install(h, clone).returncode == 0
+        assert bak.read_text() == "# старая версия\n"
+        baks = sorted(p.read_text() for p in hooks_dir.glob("wt-progress.sh.bak-*"))
+        assert baks == ["# ещё одна версия\n", "# старая версия\n"]
+    finally:
+        h.close()
+
+
+def test_install_dry_run_changes_nothing():
+    """--dry-run говорит, что сделал бы, и ничего не создаёт."""
+    h = Home()
+    try:
+        clone = plain_clone(h.root)
+        res = install(h, clone, "--dry-run")
+        assert res.returncode == 0, res.stderr
+        assert "wt-progress.sh" in res.stdout
+        assert not (h.home / ".claude").exists()
+    finally:
+        h.close()
+
+
+def test_install_refuses_from_a_worktree():
+    """Из git worktree не ставит: симлинки смотрели бы в каталог, который удалят."""
+    h = Home()
+    try:
+        main = h.root / "main"
+        main.mkdir()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        env = {"HOME": str(h.home), "PATH": PATH}
+        subprocess.run(git + ["init", "-q", str(main)], check=True, env=env)
+        (main / "hooks").mkdir()
+        for f in HOOK_FILES + ["install.sh"]:
+            (main / "hooks" / f).write_bytes((HOOKS / f).read_bytes())
+        subprocess.run(git + ["-C", str(main), "add", "."], check=True, env=env)
+        subprocess.run(git + ["-C", str(main), "commit", "-qm", "init"], check=True, env=env)
+        wt = h.root / "wt"
+        subprocess.run(git + ["-C", str(main), "worktree", "add", "-q", str(wt)],
+                       check=True, env=env)
+        res = install(h, wt)
+        assert res.returncode != 0
+        assert "worktree" in res.stderr
+        assert str(main) in res.stderr, "в отказе назван основной клон"
+        assert not (h.home / ".claude" / "hooks").exists()
+        assert install(h, main).returncode == 0, "из основного клона ставит"
+    finally:
+        h.close()
