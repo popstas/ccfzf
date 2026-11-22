@@ -57,14 +57,15 @@ def test_ssh_peer_normalizes_mapped():
 
 
 def test_tcp_queues_ipv4():
+    # Значение — (tx_queue, retrnsmt): очередь и число неотвеченных повторов.
     got = CC["tcp_queues"]("\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
-    assert got[("192.0.2.14", 22, "192.0.2.15", 63374)] == 948, got
-    assert got[("192.0.2.14", 22, "192.0.2.15", 60372)] == 0, got
+    assert got[("192.0.2.14", 22, "192.0.2.15", 63374)] == (948, 5), got
+    assert got[("192.0.2.14", 22, "192.0.2.15", 60372)] == (0, 0), got
 
 
 def test_tcp_queues_ipv6_mapped():
     got = CC["tcp_queues"]("\n".join([HEADER, TCP6_MAPPED]))
-    assert got == {("192.0.2.14", 22, "192.0.2.15", 63374): 100}, got
+    assert got == {("192.0.2.14", 22, "192.0.2.15", 63374): (100, 0)}, got
 
 
 def test_tcp_queues_ipv6_native():
@@ -73,7 +74,7 @@ def test_tcp_queues_ipv6_native():
             "B80D0120000000000000000002000000:1F90 01 00000010:00000000 "
             "00:00000000 00000000  1000        0 1 1 0 27 4 30 10 48")
     got = CC["tcp_queues"](line)
-    assert got == {("2001:db8::1", 22, "2001:db8::2", 8080): 16}, got
+    assert got == {("2001:db8::1", 22, "2001:db8::2", 8080): (16, 0)}, got
 
 
 def test_tcp_queues_skips_listen_and_garbage():
@@ -199,6 +200,26 @@ def test_disconnected_ids_marks_stuck_socket():
         {100: (["claude", "-n", "api"], STUCK_ENV)},
         "\n".join([HEADER, TCP_STUCK, TCP_IDLE]))
     assert first == set() and second == {SID}, (first, second)
+
+
+# Здоровая сессия, которая пишет без передышки (статуслайн, спиннер): в
+# каждом замере в полёте пакет, очередь не пуста и случайно не убывает. Снято
+# живьём 2026-11-22: 3 ложные пометки за 132 опроса по одной очереди. У неё
+# ACK приходит через RTT, и таймер повтора не срабатывал ни разу — retrnsmt 0.
+TCP_STREAMING = ("   5: 0E0200C0:0016 0F0200C0:F78E 01 00000024:00000000 01:00000019 "
+                 "00000000  1000        0 23700 4 0000000000000000 27 4 30 10 48")
+TCP_STREAMING_MORE = TCP_STREAMING.replace("00000024:", "00000054:")
+
+
+def test_disconnected_ids_streaming_healthy_socket():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "proc")
+        rec = {SID: {"pid": 100, "tmux": None, "zellij": None}}
+        state = os.path.join(tmp, "sendq.json")
+        fake_proc(root, {100: (["claude"], STUCK_ENV)}, "\n".join([HEADER, TCP_STREAMING]))
+        assert CC["disconnected_ids"](rec, root, state, 0) == set()
+        fake_proc(root, {100: (["claude"], STUCK_ENV)}, "\n".join([HEADER, TCP_STREAMING_MORE]))
+        assert CC["disconnected_ids"](rec, root, state, 9) == set()
 
 
 def test_disconnected_ids_idle_socket():

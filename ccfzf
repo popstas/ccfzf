@@ -2161,7 +2161,8 @@ def proc_env(pid):
 # машиной или потерял сеть, sshd жив и перекладывает вывод агента в TCP, а
 # подтверждать некому — байты копятся в очереди отправки и не уходят. У
 # здоровой сессии очередь мигает (0 → 108 → 0), у разорванной стоит или
-# растёт. Отсюда правило «не пуста и не убыла» и две пробы, а не одна.
+# растёт, и таймер повтора передачи срабатывает раз за разом (retrnsmt).
+# Отсюда правило «повторяется, не пуста и не убыла» и две пробы, а не одна.
 #
 # Пробы — два соседних опроса `--state`, а не `sleep` внутри одного: ответ
 # идёт раз в секунду, и пауза в нём удвоила бы его время. Прошлый замер
@@ -2219,22 +2220,25 @@ def _kernel_ip(hexaddr):
 
 
 def tcp_queues(text):
-    """{(local_ip, local_port, remote_ip, remote_port): tx_queue} установленных соединений.
+    """{(local_ip, local_port, remote_ip, remote_port): (tx_queue, retrnsmt)} установленных соединений.
 
     `text` — содержимое `/proc/net/tcp` или `tcp6` (или обоих подряд).
     Берутся только строки в состоянии 01 (ESTABLISHED); строка, которая не
     разбирается, пропускается молча — шапка и мусор тоже.
+
+    `retrnsmt` — сколько раз подряд сработал таймер повтора, не дождавшись
+    ACK (icsk_retransmits); на первом же подтверждении он обнуляется.
     """
     out = {}
     for line in text.splitlines():
         f = line.split()
-        if len(f) < 5 or f[3] != "01":
+        if len(f) < 7 or f[3] != "01":
             continue
         try:
             lip, lport = f[1].split(":")
             rip, rport = f[2].split(":")
             key = (_kernel_ip(lip), int(lport, 16), _kernel_ip(rip), int(rport, 16))
-            out[key] = int(f[4].split(":")[0], 16)
+            out[key] = (int(f[4].split(":")[0], 16), int(f[6], 16))
         except ValueError:
             continue
     return out
@@ -2362,9 +2366,17 @@ def disconnected_ids(procs, proc_root="/proc", state_path=None, now=None):
         if not peer:
             continue
         cip, cport, sip, sport = peer
-        q = queues.get((sip, sport, cip, cport))
-        if q is None:
+        sock = queues.get((sip, sport, cip, cport))
+        if sock is None:
             continue
+        # Очередь сама по себе не улика: сессия, которая пишет без передышки
+        # (статуслайн, спиннер), в каждом замере держит пакет в полёте, и её
+        # очередь случайно не убывает — снято живьём 2026-11-22, три ложные
+        # пометки за 132 опроса. Разорванную отличает то, что ACK не приходит
+        # вовсе и таймер повтора срабатывает (retrnsmt > 0); у живой ACK
+        # приходит через RTT, и таймер до срабатывания не доживает. Без повтора
+        # замер считается пустым — серия сбрасывается.
+        q = sock[0] if sock[1] > 0 else 0
         key = "%d:%s:%s:%d:%s:%d" % (holder, _starttime(proc_root, holder), cip, cport, sip, sport)
         samples[key] = q
         owner[key] = sid

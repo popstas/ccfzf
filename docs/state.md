@@ -34,7 +34,11 @@ be read (always on Windows, where the registry answers but no process list does)
 `disconnected` is `true` on a live session whose ssh link is gone while the
 agent lives on: the client side slept or lost the network, sshd still moves
 the agent's output into TCP, and nobody acknowledges it. The sign is the send
-queue of that ssh socket — non-empty and not shrinking for at least 8 seconds.
+queue of that ssh socket — non-empty, not shrinking between samples and with
+the retransmission timer firing (`retrnsmt` > 0) for at least 8 seconds. The
+queue alone is not enough: a healthy session that writes all the time (a
+status line, a spinner) always has a packet in flight, but its ACK comes back
+within a round trip and the retransmission timer never fires.
 The socket is found through `SSH_CONNECTION` in `/proc/<pid>/environ` and
 matched on all four of its fields against `/proc/net/tcp{,6}`, which takes
 neither `ss` nor root. The two samples are two neighbouring `--state` calls,
