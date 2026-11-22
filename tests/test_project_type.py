@@ -30,9 +30,10 @@ def _read_projects(projects):
         return CC["read_windows"](path, NOW)[4]
 
 
-def test_a_tracker_entry_with_only_a_type_is_kept():
-    # Менеджер шлёт проект с одним типом — без hotkey и icon. Прежний фильтр
-    # `hotkey or icon` выбрасывал его молча, и тип терялся на этом звене.
+def test_every_tracker_entry_with_a_cwd_is_kept():
+    # Менеджер шлёт все записи claudeWt.projects — с одним типом и вовсе без
+    # полей. Прежний фильтр `hotkey or icon` выбрасывал их молча: тип терялся
+    # на этом звене, а project_owner не видел проект без полей.
     got = _read_projects([
         {"cwd": "/p/site", "name": "site", "type": "work"},
         {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "type": "home"},
@@ -43,7 +44,23 @@ def test_a_tracker_entry_with_only_a_type_is_kept():
     assert got == [
         {"cwd": "/p/site", "name": "site", "type": "work"},
         {"cwd": "/p/home", "name": "home", "hotkey": "Ctrl+F11", "type": "home"},
+        {"cwd": "/p/none", "name": "none"},
+        {"cwd": "/p/junk", "name": "junk"},
+        {"cwd": "/p/blank", "name": "blank"},
     ], got
+
+
+def test_a_bare_entry_owns_the_session_from_its_subdirectory():
+    # Ради этого фильтр и снят: запись без хоткея, иконки и типа — всё равно
+    # проект, и тип, поставленный из ^K сессии в его worktree, обязан лечь на
+    # него, а не новой записью на подкаталог.
+    bare = _read_projects([{"cwd": "/p/plain", "name": "plain"}])
+    assert CC["project_owner"]("/p/plain/.worktrees/x", bare, {}) == "/p/plain"
+
+
+def test_a_bare_entry_does_not_invent_a_project_row():
+    out = CC["merge_project_hotkeys"]([], [{"cwd": "/p/plain", "name": "plain"}])
+    assert out == [], out
 
 
 def test_type_is_normalized_on_read():

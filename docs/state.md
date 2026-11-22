@@ -178,8 +178,10 @@ a window must first grant that right to the tracker by pid.
 `snapshots` is saved window layouts the tracker remembers, echoed into the
 answer's own `snapshots` field so a reader can offer "restore this layout"
 without asking anyone. `projects` is `cwd`/`name` plus an optional `hotkey`,
-`icon` and `type` for whatever projects the tracker knows; an entry with none of
-the three is dropped. They are joined into the answer's `projects` list by
+`icon` and `type` for every project the tracker knows — windows11-manager sends
+all of `claudeWt.projects`, and an entry with none of the three is kept too, since
+it still owns the sessions in its subdirectories (`projectCwd`); only an entry
+without a `cwd` is dropped. They are joined into the answer's `projects` list by
 `cwd`, and a hotkey is the reason a project can show up there with no sessions
 and no bookmark at all — an icon or a type alone does not add a row. `type` is
 trimmed and lower-cased on read.
