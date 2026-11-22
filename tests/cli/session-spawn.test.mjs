@@ -477,3 +477,14 @@ test('200 с оборванным телом: исход неизвестен �
     assert.deepEqual(prompts(), [`${SID}.md`, `${SID}.task.md`]);
   } finally { srv.close(); }
 });
+
+test('вступление ребёнку зовёт CLI: claude-wt session find, а не путь скрипта скилла', () => {
+  wtNew();
+  for (const extra of [[], ['--fork']]) {
+    const r = dry('--session-id', SID, ...extra);
+    assert.equal(r.code, 0, r.stdout);
+    assert.ok(r.json.intro.includes(`claude-wt session find --session-id ${e.me.sessionId} --timeout 0, поле name`), r.json.intro);
+    assert.ok(!r.json.intro.includes('.mjs'), 'ни find.mjs, ни spawn.mjs');
+  }
+  assert.match(dry('--session-id', SID, '--fork').json.intro, /и вызов claude-wt session spawn, которым head открыл тебя/);
+});
