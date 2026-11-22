@@ -69,6 +69,8 @@ const LEGACY = {
   'head mark': cmd('head-mark'),
   'session find': cmd('session-find'),
   'session rename': cmd('session-rename'),
+  'session close': cmd('session-close'),
+  'head adopt': cmd('head-adopt'),
 };
 
 async function legacy(argv) {

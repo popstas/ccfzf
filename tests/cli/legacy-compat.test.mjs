@@ -71,3 +71,43 @@ test('session rename: как rename.mjs', { skip }, async () => {
   await both(renameWorld, RENAME_OLD, R, () => ['--session-id', 'cccccccc-0000-4000-8000-00000000dead', '--to', 'x']);
   await both(kids, RENAME_OLD, R, () => ['--session-id', X, '--to', 'new']);
 });
+
+const CLOSE_OLD = 'session-close/close.mjs';
+const ADOPT_OLD = 'head-session/head-adopt.mjs';
+// Ребёнок X в записях; живым в agents — тоже, но без настоящего процесса: сигналы не шлются.
+const closeWorld = (record, status = 'idle') => (w) => {
+  w.mark();
+  w.agents([w.meAgent, { pid: 4242, cwd: '/p/x', kind: 'interactive', sessionId: X, name: 'kid', status }]);
+  w.write(`.ccfzf/children/${X}.json`, { sessionId: X, name: 'kid', head: 'boss', headId: SID, ...record });
+};
+
+test('session close: отказы как у close.mjs', { skip }, async () => {
+  const C = ['session', 'close'];
+  await both(closeWorld({ headId: 'O', head: 'other' }), CLOSE_OLD, C, () => ['--session-id', X]);
+  await both(closeWorld({ adopted: true }, 'busy'), CLOSE_OLD, C, () => ['--session-id', X]);
+  await both(closeWorld({}), CLOSE_OLD, C, () => ['--session-id', X]); // pid 4242 без записи реестра
+  await both(closeWorld({}), CLOSE_OLD, C, () => ['--session-id', Y]);
+  await both(closeWorld({}), CLOSE_OLD, C, () => ['--session-id', SID]);
+  await both(() => {}, CLOSE_OLD, C, () => ['--session-id', X]);
+  const u = await both(() => {}, CLOSE_OLD, C, () => [], ['why']);
+  assert.match(u.neu.json.why, /^usage: claude-wt session close /);
+});
+
+test('head adopt: как head-adopt.mjs', { skip }, async () => {
+  const A = ['head', 'adopt'];
+  const w0 = (w) => {
+    w.mark();
+    w.agents([w.meAgent, { pid: 1, cwd: '/p/x', kind: 'interactive', sessionId: X, name: 'x', status: 'idle' },
+      { pid: 2, cwd: '/p/y', kind: 'interactive', sessionId: Y, name: 'y', status: 'idle' }]);
+  };
+  await both(w0, ADOPT_OLD, A, () => ['x', Y.toUpperCase(), 'ghost', SID]);
+  await both((w) => { w0(w); w.write(`.ccfzf/children/${X}.json`, { sessionId: X, name: 'x', head: 'a', headId: 'A' }); }, ADOPT_OLD, A, () => ['@x']);
+  await both((w) => { w0(w); w.write(`.ccfzf/children/${SID}.json`, { headId: X }); }, ADOPT_OLD, A, () => ['x']);
+  await both((w) => { w0(w); w.write(`.ccfzf/children/${X}.json`, { sessionId: X, name: 'x', head: 'boss', headId: SID, adopted: true }); },
+    ADOPT_OLD, A, () => ['--release', 'x', 'y', 'ghost']);
+  await both((w) => { w0(w); w.write(`.ccfzf/children/${Y}.json`, { sessionId: Y, name: 'y', head: 'boss', headId: SID }); }, ADOPT_OLD, A, () => ['--release', 'y']);
+  await both(() => {}, ADOPT_OLD, A, () => ['x']);
+  await both((w) => { w0(w); w.env.FAKE_AGENTS_FILE = '/nonexistent/agents.json'; }, ADOPT_OLD, A, () => ['x'], ['why']);
+  const u = await both(w0, ADOPT_OLD, A, () => [], ['error']);
+  assert.match(u.neu.json.error, /^usage: claude-wt head adopt /);
+});
