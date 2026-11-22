@@ -308,6 +308,13 @@ async function spawnChild(argv, env) {
   // claude-wt-new смотрит только на наличие; id head внутри — для человека, читающего каталог.
   if (forkFile) writeFileSync(forkFile, `${me.headId}\n`, { mode: 0o600 });
   const dropCopies = () => { for (const f of [promptFile, taskFile, mcpConfig, channelsFile, forkFile]) if (f) rmSync(f, { force: true }); };
+  const unknown = (code) => ({
+    code: 3,
+    out: {
+      ok: 'unknown', error: code, url, sessionId, name, taskFile, ...sideOut,
+      hint: 'outcome unknown - do NOT resend; run session-find --session-id with this sessionId',
+    },
+  });
 
   // Ровно одна попытка: путь не идемпотентен, повтор открывает второе окно. Свой fetch, не post():
   // error — сырой код (его читают вызывающие), а «не дошло» — только по этому короткому списку.
@@ -324,23 +331,20 @@ async function spawnChild(argv, env) {
     const code = e.cause?.code || e.name;
     const notSent = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH'].includes(code);
     if (notSent) dropCopies();
-    return {
-      code: notSent ? 1 : 3,
-      out: {
-        ok: notSent ? false : 'unknown',
-        error: code,
-        url,
-        sessionId,
-        name,
-        ...(!notSent && { taskFile, ...sideOut }),
-        hint: notSent
-          ? 'request did not reach the manager; safe to fix the address and spawn again'
-          : 'outcome unknown - do NOT resend; run session-find --session-id with this sessionId',
-      },
-    };
+    return notSent ? {
+      code: 1,
+      out: { ok: false, error: code, url, sessionId, name, hint: 'request did not reach the manager; safe to fix the address and spawn again' },
+    } : unknown(code);
+  }
+  // Тело 2xx не дочиталось (таймаут, обрыв посреди) — менеджер уже взялся за окно:
+  // исход неизвестен, копии нужны ребёнку, повтор открыл бы второе окно.
+  // (Скрипт отвечал здесь отказом 200 "OK" и стирал копии.) Тело не JSON — как раньше.
+  let raw;
+  try { raw = await res.text(); } catch (e) {
+    if (res.ok) return unknown(e.cause?.code || e.name);
   }
   let data = {};
-  try { data = await res.json(); } catch {}
+  try { data = JSON.parse(raw); } catch {}
   if (res.status === 200 && data.ok) {
     return {
       code: 0,

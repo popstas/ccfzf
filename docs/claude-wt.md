@@ -75,8 +75,9 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   none — it never opens a second one: a session with a window in `--state` is
   refused before anything is sent (`window exists, use window focus`). The
   request is `POST /claude-wt/session-open {id, action: "terminal", cwd}` to
-  the freshest tracker with an http manager that takes such requests
-  (`openSession` in its tracker file; absent means yes, `false` means no).
+  a tracker with an http manager that takes such requests (`openSession` in
+  its tracker file; absent means yes, `false` means no): the machine of the
+  caller's own window, or of its nearest ancestor's, else the freshest one.
   `--machine`/`--url` choose another one, but never a machine with
   `openSession: false`. The answer's `action` (`resume`, `restore`, …) comes
   back with code 0; `pending` — the same session is already opening — is code 0

@@ -92,7 +92,8 @@ const LEGACY = {
 
 async function legacy(argv) {
   const key = `${argv[0]} ${argv[1]}`;
-  if (argv.slice(2).some((a) => a === '-h' || a === '--help')) {
+  // Справка — только первым словом после команды: дальше `-h` может быть значением (`--to -h`).
+  if (argv[2] === '-h' || argv[2] === '--help') {
     process.stdout.write(USAGE);
     return EXIT.OK;
   }

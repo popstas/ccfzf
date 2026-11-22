@@ -14,7 +14,7 @@ let promptFile;
 beforeEach(() => {
   e = legacyWorld();
   e.mark();
-  e.tracker('nb', { projects: ['/p/demo'], httpHost: 'nb.test' });
+  e.tracker('box-a', { projects: ['/p/demo'], httpHost: 'box-a.test' });
   e.write('task.md', 'задание');
   promptFile = join(e.home, 'task.md');
 });
@@ -64,7 +64,7 @@ test('profileCwd: цикл в записях', () => {
 });
 
 test('--url: трекер по хосту', () => {
-  assert.equal(dry('--url', 'http://nb.test:9722').json.body.profileCwd, '/p/demo');
+  assert.equal(dry('--url', 'http://box-a.test:9722').json.body.profileCwd, '/p/demo');
   const other = dry('--url', 'http://other.test:1');
   assert.equal(other.code, 0, other.stdout);
   assert.ok(!('profileCwd' in other.json.body));
@@ -100,13 +100,13 @@ test('spawn из head, который сам ребёнок', () => {
 
 test('--url без каталога трекеров', () => {
   rmSync(join(e.home, '.ccfzf/windows'), { recursive: true });
-  const r = dry('--url', 'http://nb.test:9722');
+  const r = dry('--url', 'http://box-a.test:9722');
   assert.equal(r.code, 0, r.stdout);
   assert.ok(!('profileCwd' in r.json.body));
 });
 
 test('--url по имени машины из трекера', () => {
-  const r = dry('--url', 'http://nb:9722');
+  const r = dry('--url', 'http://box-a:9722');
   assert.equal(r.code, 0, r.stdout);
   assert.equal(r.json.body.profileCwd, '/p/demo');
 });
@@ -402,11 +402,11 @@ test('только из head: без метки — отказ', () => {
 });
 
 test('нет свежего трекера с http; --machine выбирает трекер', () => {
-  e.tracker('nb2', { projects: [], httpHost: 'nb2.test' });
-  let r = dry('--machine', 'nb2');
+  e.tracker('box-b', { projects: [], httpHost: 'box-b.test' });
+  let r = dry('--machine', 'box-b');
   assert.equal(r.code, 0, r.stdout);
-  assert.equal(r.json.url, 'http://nb2.test:9722/claude-wt/session-new');
-  assert.equal(r.json.urlSource, '~/.ccfzf/windows/nb2.json');
+  assert.equal(r.json.url, 'http://box-b.test:9722/claude-wt/session-new');
+  assert.equal(r.json.urlSource, '~/.ccfzf/windows/box-b.json');
   r = dry('--machine', 'ghost');
   assert.equal(r.code, 1);
   assert.deepEqual(r.json, { ok: false, error: 'no fresh tracker with http in ~/.ccfzf/windows (pass --machine or --url)', machine: 'ghost' });
@@ -423,9 +423,57 @@ test('dry-run целиком: тело, вступление, taskFile', () => {
   const r = dry('--session-id', SID);
   assert.equal(r.code, 0, r.stdout);
   assert.deepEqual(Object.keys(r.json), ['dryRun', 'url', 'urlSource', 'nameRequested', 'sessionId', 'body', 'intro', 'taskFile', 'taskBytes']);
-  assert.equal(r.json.url, 'http://nb.test:9722/claude-wt/session-new');
+  assert.equal(r.json.url, 'http://box-a.test:9722/claude-wt/session-new');
   assert.equal(r.json.nameRequested, '.t');
   assert.equal(r.json.taskBytes, Buffer.byteLength('задание'));
   assert.match(r.json.intro, new RegExp(`^Ты дочерняя сессия head-сессии "boss" \\(sessionId ${e.me.sessionId}\\)`));
   assert.match(r.json.intro, /--timeout 0, поле name/);
+});
+
+// --- ответ менеджера целиком: эти ключи читают бот-делегат и SKILL.md по имени ---
+
+test('успех: ответ целиком — sessionId, name, head, headId, url, promptFile, taskFile, next', async () => {
+  const m = await mockManager();
+  try {
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID], e.env);
+    assert.equal(r.code, 0, r.stdout);
+    assert.deepEqual(r.json, {
+      ok: true, sessionId: SID, name: '.t', head: 'boss', headId: e.me.sessionId,
+      url: `${m.url}/claude-wt/session-new`,
+      promptFile: join(e.home, `.ccfzf/prompts/${SID}.md`), taskFile: join(e.home, `.ccfzf/prompts/${SID}.task.md`),
+      next: 'session-find --session-id, wait for the child\'s "готов" message, then SendMessage the taskFile text to its from, notify_when_idle: true',
+    });
+  } finally { m.close(); }
+});
+
+test('отказ 403: ответ целиком', async () => {
+  const m = await mockManager(403);
+  try {
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID], e.env);
+    assert.equal(r.code, 1);
+    assert.deepEqual(Object.keys(r.json), ['ok', 'status', 'error', 'why', 'url', 'sessionId', 'name']);
+    assert.equal(r.json.status, 403);
+    assert.equal(r.json.error, 'nope');
+  } finally { m.close(); }
+});
+
+test('200 с оборванным телом: исход неизвестен — код 3, копии остаются', async () => {
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' });
+      res.write('{"ok":tr');
+      setTimeout(() => req.socket.destroy(), 50);
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const url = `http://127.0.0.1:${srv.address().port}`;
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', url, '--session-id', SID], e.env);
+    assert.equal(r.code, 3, r.stdout);
+    assert.equal(r.json.ok, 'unknown');
+    assert.equal(r.json.sessionId, SID);
+    assert.match(r.json.hint, /do NOT resend/);
+    assert.deepEqual(prompts(), [`${SID}.md`, `${SID}.task.md`]);
+  } finally { srv.close(); }
 });

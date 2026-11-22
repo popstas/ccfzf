@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { legacyWorld, runAsync, runOld, normalize, LEGACY } from './legacy-world.mjs';
+import { mockManager } from './helpers.mjs';
 
 const skip = !LEGACY && 'WT_LEGACY_SKILLS не задан';
 const SID = 'cccccccc-0000-4000-8000-000000000001';
@@ -20,6 +21,8 @@ async function both(setup, rel, cmd, args, drop = [], { noJson = false } = {}) {
     if (!noJson) assert.ok(old.json !== null, `старый скрипт без JSON: ${old.stdout}${old.stderr}`);
     assert.equal(neu.code, old.code, `код: ${neu.stdout}${neu.stderr} / ${old.stdout}${old.stderr}`);
     assert.deepEqual(normalize(neu.json, b.home, drop), normalize(old.json, a.home, drop));
+    // Без JSON сверяется stderr: иначе пустота у обоих сравнилась бы «равной».
+    if (noJson) assert.equal(!neu.stderr, !old.stderr, `stderr: ${neu.stderr} / ${old.stderr}`);
     return { old, neu };
   } finally { a.cleanup(); b.cleanup(); }
 }
@@ -116,7 +119,7 @@ const SPAWN_OLD = 'session-spawn/spawn.mjs';
 const CHILD = 'cccccccc-0000-4000-8000-0000000000c1';
 const spawnWorld = (w) => {
   w.mark();
-  w.tracker('nb', { projects: ['/p/demo'], httpHost: 'nb.test' });
+  w.tracker('box-a', { projects: ['/p/demo'], httpHost: 'box-a.test' });
   w.write('task.md', 'задание');
   w.write('mcp.json', { mcpServers: {} });
   w.write(`.ccfzf/children/${SID}.json`, { headId: 'P' });
@@ -129,11 +132,30 @@ test('session spawn --dry-run: как spawn.mjs', { skip }, async () => {
   const base = (w) => ['--task', 'Wide 2/3', '--prompt-file', `${w.home}/task.md`, '--cwd', '/p/demo', '--session-id', CHILD, '--dry-run'];
   await both(spawnWorld, SPAWN_OLD, S, base);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--mcp-config', `${w.home}/mcp.json`, '--dev-channels', 'server:a,server:b', '--zone', '2:1', '--terminal', 'wt']);
-  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--url', 'http://nb:9722/']);
+  await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--url', 'http://box-a:9722/']);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--name', 'exact']);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--permission-mode', 'bypassPermissions']);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--machine', 'ghost']);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--zone', '0:1']);
   await both(spawnWorld, SPAWN_OLD, S, (w) => [...base(w), '--fork', 'yes']);
   await both((w) => { spawnWorld(w); w.write(`.ccfzf/heads/${SID}.json`, ''); }, SPAWN_OLD, S, base);
+});
+
+test('session spawn после запроса: как spawn.mjs (200, 403, таймаут, обрыв)', { skip }, async () => {
+  const S = ['session', 'spawn'];
+  const replies = {
+    ok: (_p, body) => ({ status: 200, body: { ok: true, sessionId: body.sessionId, name: body.name } }),
+    refused: () => ({ status: 403, body: { ok: false, status: 403, reason: 'head window not found' } }),
+    text500: () => ({ status: 500, raw: 'boom' }),
+    hang: () => 'hang',
+    destroy: () => 'destroy',
+  };
+  for (const [what, reply] of Object.entries(replies)) {
+    const m = await mockManager(reply);
+    try {
+      const args = (w) => ['--task', 't', '--prompt-file', `${w.home}/task.md`, '--cwd', '/p/demo', '--session-id', CHILD, '--url', m.url, '--timeout', '1'];
+      const { neu } = await both(spawnWorld, SPAWN_OLD, S, args);
+      assert.ok(neu.json, what);
+    } finally { await m.close(); }
+  }
 });

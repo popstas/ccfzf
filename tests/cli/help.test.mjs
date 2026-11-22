@@ -17,3 +17,15 @@ test('session find --help — справка с кодом 0, а не поиск
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^usage: claude-wt/);
 });
+
+test('-h как значение не справка: session find --name -h ищет имя «-h»', async () => {
+  const { legacyWorld, run } = await import('./legacy-world.mjs');
+  const e = legacyWorld();
+  try {
+    const r = run(['session', 'find'], ['--name', '-h'], e.env);
+    assert.equal(r.code, 2, r.stdout);
+    assert.deepEqual(r.json, { found: false, name: '-h' });
+    const n = run(['session', 'rename'], ['--session-id', e.me.sessionId, '--to', '-h'], e.env);
+    assert.notEqual(n.json, null, 'rename с --to -h отвечает JSON, а не справкой');
+  } finally { e.cleanup(); }
+});

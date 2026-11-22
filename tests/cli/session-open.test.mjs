@@ -116,3 +116,24 @@ test('readTrackers: openSession как в ccfzf — нет поля или му�
     assert.deepEqual(t, { a: true, b: false, c: true });
   } finally { w.cleanup(); }
 });
+
+test('две свежие машины: окно открывается там, где окно вызывающего, а не у свежайшего трекера', async () => {
+  const other = await mockManager(ok({ ok: true, action: 'resume' }));
+  try {
+    const edit = (t) => {
+      t['box-a'].generated = now() - 60;
+      t['box-c'] = { host: 'box-c', generated: now(), http: { port: other.port, host: '127.0.0.1' }, windows: {} };
+    };
+    // head стоит на box-a — его ребёнок открывается рядом.
+    const r = await open(CHILD2, ok({ ok: true, action: 'resume' }), { edit });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.o.host, 'box-a');
+    assert.equal(r.requests.length, 1);
+    assert.equal(other.requests.length, 0);
+    // Вызывающий — ребёнок без окна: берётся окно его предка (head на box-a).
+    const c = await open(CHILD2, ok({ ok: true, action: 'resume' }), { edit, caller: CHILD2 });
+    assert.equal(c.status, 0, c.stderr);
+    assert.equal(c.o.host, 'box-a');
+    assert.equal(other.requests.length, 0);
+  } finally { await other.close(); }
+});
