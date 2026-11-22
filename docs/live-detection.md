@@ -7,9 +7,13 @@ evidence, applied in this order.
    session outright. A process carrying neither flag claims the newest transcript
    in its directory — newest **by content**, not by mtime: the age is taken from
    the last record with a `timestamp`, because bookkeeping records bump the mtime
-   days after the conversation ended. Transcripts older than two hours are not
-   candidates at all, and `K` processes in one directory take the `K` newest
-   files between them.
+   days after the conversation ended. A transcript whose last record is older
+   than the process itself was not written by it and is never a candidate; one
+   written after the process started is a candidate however long it has been
+   silent since. `K` processes in one directory take the `K` newest files
+   between them, the latest-started process choosing first. When the start
+   time cannot be read, the old rule applies: transcripts silent for more than
+   two hours are not candidates.
 
 2. **The pid from the hook.** Claude Code can change the id inside a live process
    (`/clear`, compaction), and the argv then points at a transcript nobody writes
