@@ -54,7 +54,7 @@ export function readAgents({ bin }) {
 // Файлы трекеров окон: где у машины менеджер и свеж ли файл.
 // Битый файл пропускается; файл без http (мак) остаётся, но с http: null.
 // projects — cwd проектов машины (профиль терминала ребёнка), openSession — принимает ли
-// трекер просьбы открыть сессию (у мака false).
+// трекер просьбы открыть сессию: нет поля или мусор — да (windows11-manager его не пишет), у мака false — как в ccfzf.
 export function readTrackers(dir, now = Date.now() / 1000) {
   const out = [];
   for (const file of jsonFiles(dir)) {
@@ -65,7 +65,7 @@ export function readTrackers(dir, now = Date.now() / 1000) {
     const http = Number.isInteger(port) && port > 0 ? { host: o.http.host || host, port } : null;
     const generated = Number(o.generated) || 0;
     const projects = Array.isArray(o.projects) ? o.projects.map((x) => x?.cwd).filter(Boolean) : [];
-    out.push({ file, host, http, generated, fresh: now - generated < TRACKER_MAX_AGE_SEC, projects, openSession: o.openSession === true });
+    out.push({ file, host, http, generated, fresh: now - generated < TRACKER_MAX_AGE_SEC, projects, openSession: typeof o.openSession === 'boolean' ? o.openSession : true });
   }
   return out;
 }

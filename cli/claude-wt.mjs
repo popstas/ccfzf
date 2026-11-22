@@ -61,6 +61,7 @@ const COMMANDS = {
   'window layout': cmd('window-layout'),
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
+  'session open': cmd('session-open'),
 };
 
 // Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего
