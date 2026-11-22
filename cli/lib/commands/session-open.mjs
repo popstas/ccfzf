@@ -1,6 +1,7 @@
 // claude-wt session open <session>: открыть окно своей сессии, когда окна нет
 // (решение Стаса 2026-11-22: агенту можно без спроса). Окно есть — отказ без
-// запроса: открывать второе окно нельзя, поднять — `window focus`.
+// запроса: открывать второе окно нельзя, поднять — `window focus`. Сессия жива,
+// а окна нет — тоже отказ без запроса: открывается только закрытая.
 // Машина — трекер с http, который берёт просьбы открыть сессию (`openSession`):
 // та, где окно вызывающего или ближайшего его предка (человек сидит рядом с ним),
 // иначе самый свежий такой трекер;
@@ -63,6 +64,12 @@ export default async function sessionOpen(args, opts, env) {
   const s = t.session;
   const base = { id: s.id, title: s.title };
   if (s.window) return { ...base, code: EXIT.REFUSED, error: 'window exists, use window focus', window: s.window };
+  // Живая без окна: только что открыта (окно ещё не доехало до --state) или окно
+  // отвалилось (обрыв ssh) — open запустил бы второй claude на ту же сессию (решение head
+  // 2026-11-22: ни в коем случае). Сессии нет в --state, но её знает `claude agents`, — тоже живая.
+  if (s.live !== false) {
+    return { ...base, code: EXIT.REFUSED, error: "session is running without a window — wait for its window (just spawned) or use the picker's Reopen (disconnected)" };
+  }
   const w = where(ctx.trackers(), opts, nearHosts(ctx.pic));
   if (w.fail) return { ...base, ...w.fail };
   const { url, host } = w.m;

@@ -73,7 +73,12 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   `pending: true` — "accepted, outcome unknown".
 - **`session open <session>`** opens a window for your session when it has
   none — it never opens a second one: a session with a window in `--state` is
-  refused before anything is sent (`window exists, use window focus`). The
+  refused before anything is sent (`window exists, use window focus`), and so
+  is a live session without a window — just spawned, its window not yet in
+  `--state`, or a window lost with its ssh connection: opening it would start a
+  second claude on the same session (`session is running without a window —
+  wait for its window (just spawned) or use the picker's Reopen
+  (disconnected)`). Only a closed session is opened. The
   request is `POST /claude-wt/session-open {id, action: "terminal", cwd}` to
   a tracker with an http manager that takes such requests (`openSession` in
   its tracker file; absent means yes, `false` means no): the machine of the
