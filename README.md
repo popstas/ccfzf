@@ -147,6 +147,8 @@ Every run also writes down what it saw, so whatever else you script around Claud
 
 `ccfzf --state` is the richer output: one JSON answer on stdout — sessions, projects, snapshots and window information — for a picker on another machine. The window half is the one thing this side cannot derive, since it sees processes and not windows, so `CCFZF_WINDOWS_FILE` is *read* rather than written, dropped next to the dumps by whoever tracks the windows.
 
+A picker polling once a second passes back the answer's `fingerprint` with `--if-changed <fp>`, and while nothing it shows has changed it gets a one-line `{"unchanged":true,...}` instead of the whole answer.
+
 → File formats, fields and the facts memo: [docs/dumps.md](docs/dumps.md).
 
 → The `--state` answer and the windows file it reads: [docs/state.md](docs/state.md).

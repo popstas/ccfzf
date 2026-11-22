@@ -13,6 +13,9 @@
 #                               picker on another machine; no picker, no fzf
 #   ccfzf --limit <n>           how many newest sessions to look at at all
 #                               (default 500; applies to --state and --dump)
+#   ccfzf --state --if-changed <fp>
+#                               the same, but when the answer's fingerprint is
+#                               still <fp> print only {"unchanged":true,...}
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -90,7 +93,7 @@ cmd_names=(
   "${CCFZF_PROJECT_COMMAND_NAME3:-${cmd_list[2]%% *}}"
 )
 
-usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p;}' "$0"; }
 
 print_mode=0
 kiosk=0
@@ -108,6 +111,9 @@ session_id=""
 # (state_record: без полей, которых пикер не читает, и без пустых), и 500 —
 # ~17 дней — весят ~371 КБ, легче прежних 300 до среза (644 КБ).
 limit=500
+# Отпечаток прошлого ответа `--state` (его поле `fingerprint`). Совпал —
+# ответ короткий, см. state_fingerprint в блоке.
+if_changed=""
 claude_args=()
 
 while (($#)); do
@@ -116,6 +122,9 @@ while (($#)); do
     -k|--kiosk) kiosk=1; shift ;;
     --dump) dump_only=1; shift ;;
     --state) state_only=1; shift ;;
+    --if-changed) if_changed="${2-}"
+      [[ -n $if_changed && $if_changed != -* ]] || { echo "ccfzf: --if-changed requires a fingerprint" >&2; exit 2; }
+      shift 2 ;;
     # Текст комментария приходит на stdin, а не аргументом: `ssh host cmd
     # args…` склеивает аргументы в строку для удалённого шелла, и комментарий
     # с `;` был бы командой. Второй аргумент — имя машины, назвавшей его: сама
@@ -142,6 +151,7 @@ done
 ((state_only && (kiosk || print_mode || dump_only || ${#session_id} || ${#project}))) && {
   echo "ccfzf: --state takes no other mode flags" >&2; exit 2;
 }
+((${#if_changed} && !state_only)) && { echo "ccfzf: --if-changed goes only with --state" >&2; exit 2; }
 
 # trailing arguments belong to claude, not to the project commands
 claude_tail=""
@@ -172,7 +182,7 @@ Nothing here reads a history in full: cwd sits in the first jsonl line, the
 title (custom-title/ai-title) and the latest activity sit in the tail, and the
 first prompt is looked up from the start of the file under a size cap.
 """
-import datetime, glob, json, os, re, subprocess, sys, time
+import datetime, glob, hashlib, json, os, re, subprocess, sys, time
 from collections import Counter
 
 # Ответ — UTF-8, какой бы ни была кодовая страница у того, кто нас позвал.
@@ -3191,6 +3201,55 @@ STATE_DROP = ("file", "projects", "doing", "gist", "age", "activityAt")
 STATE_REQUIRED = ("id", "cwd", "title", "mtime", "live", "kind")
 
 
+# Что меняется без смысла для читателя и потому вне отпечатка ответа
+# (state_fingerprint). Пути поимённые, а не список того, что входит: поле,
+# которое добавят завтра, войдёт в отпечаток само, и короткий ответ не скроет
+# его смену.
+#
+# `generated` — «сейчас», другое на каждом вызове. `lastSeen` у окна трекер
+# переписывает каждые несколько секунд, а пикер его не читает вовсе (сверено
+# 2026-11-22 по ccfzf-picker): в тихой системе, где не меняется ничего,
+# только оно и двигалось бы — замер на живом ответе, 11 опросов из 29.
+# Читатель, взявший ответ из своего кэша, видит прежний `lastSeen`, и
+# полагаться на его свежесть там нельзя.
+STATE_FP_SKIP_TOP = ("generated",)
+STATE_FP_SKIP_WINDOW = ("lastSeen",)
+
+
+def state_fingerprint(answer):
+    """Отпечаток ответа `--state`: одинаков, пока читателю нечего менять.
+
+    Считается по тому самому объекту, что уходит в stdout, — значит по той же
+    форме, что видит читатель, а не по сырым сессиям до среза. Ключи
+    сортируются: процесс новый на каждый опрос, и порядок словарей у двух
+    процессов обязан совпасть. Сам ответ не трогается — копируются только
+    уровни, где что-то вынимается.
+
+    Шестнадцать знаков hex — 64 бита: случайного совпадения у двух соседних
+    ответов не будет, а ключ едет в командной строке ssh на каждый опрос.
+    """
+    def window(w):
+        if not isinstance(w, dict):
+            return w
+        return {k: v for k, v in w.items() if k not in STATE_FP_SKIP_WINDOW}
+
+    def session(s):
+        if not isinstance(s, dict):
+            return s
+        out = dict(s)
+        if "window" in out:
+            out["window"] = window(out["window"])
+        if isinstance(out.get("windows"), list):
+            out["windows"] = [window(w) for w in out["windows"]]
+        return out
+
+    body = {k: v for k, v in answer.items() if k not in STATE_FP_SKIP_TOP}
+    if isinstance(body.get("sessions"), list):
+        body["sessions"] = [session(s) for s in body["sessions"]]
+    text = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def _empty(v):
     return v is None or v is False or v == "" or v == 0 or v == [] or v == {}
 
@@ -3651,9 +3710,14 @@ def session_by_name(name, live, cache=None, title_of=None):
 # `--state` — тот же режим `state`, но без путей в argv. Пустой предел значит
 # «умолчание самого блока» (DUMP_SESSIONS), и оно совпадает со значением,
 # которое подставляет обёртка.
+#
+# Ключи после `--state` — парами, в любом порядке: `--limit <n>` и
+# `--if-changed <fp>`. Незнакомое пропускается молча, как пропускал прежний
+# разбор: эту дорогу зовёт пикер, а пикер и агрегатор выкатываются порознь.
 if len(sys.argv) > 1 and sys.argv[1] == "--state":
-    _limit = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--limit" else ""
-    sys.argv = [sys.argv[0], "state"] + state_defaults(_limit)
+    _opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+    sys.argv = ([sys.argv[0], "state"] + state_defaults(_opts.get("--limit", ""))
+                + [_opts.get("--if-changed", "")])
 
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -3862,6 +3926,7 @@ elif mode == "state":
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
     children_dir = sys.argv[8] if len(sys.argv) > 8 else ""
+    if_changed = sys.argv[9] if len(sys.argv) > 9 else ""
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
@@ -4070,7 +4135,7 @@ elif mode == "state":
     # Сессии — проекцией state_record: без полей, которых пикер не читает, и
     # без пустых. Разделители без пробелов по той же причине: ответ едет по
     # ssh раз в секунду, а пробел после каждой запятой и двоеточия — ещё 4%.
-    json.dump({"generated": now, "sessions": [state_record(s) for s in sessions],
+    answer = {"generated": now, "sessions": [state_record(s) for s in sessions],
                # `todo` уезжает только пустым-непустым: у двадцати проектов из
                # сорока пяти docs/TODO.md нет вовсе, и ключ с пустым списком
                # стоил бы места в ответе ради «считать нечего» — того же, что
@@ -4101,8 +4166,21 @@ elif mode == "state":
                # может в срез не попасть, и тогда пропала бы и его строка, и
                # строка его зелийной сессии — ровно та невидимость, ради
                # которой всё делается.
-               "zellij": zellij_rows},
-              sys.stdout, ensure_ascii=False, separators=(",", ":"))
+               "zellij": zellij_rows}
+    # Условный ответ: читатель назвал отпечаток прошлого ответа, и он
+    # совпал — тогда вместо сотен килобайт уходит одна строка. Всё, что выше
+    # (памятка фактов, дамп для трекера), сделано уже и от развилки не
+    # зависит: дамп читает windows11-manager, а не этот stdout.
+    #
+    # Отпечаток едет и в полном ответе — читатель берёт его оттуда и только
+    # оттуда. Агрегатор прошлой версии поля не отдаёт, и ключа такой читатель
+    # ему не пошлёт: незнакомый ключ обёртка отвергает кодом 2.
+    fingerprint = state_fingerprint(answer)
+    if if_changed and if_changed == fingerprint:
+        answer = {"unchanged": True, "fingerprint": fingerprint, "generated": now}
+    else:
+        answer["fingerprint"] = fingerprint
+    json.dump(answer, sys.stdout, ensure_ascii=False, separators=(",", ":"))
 
 elif mode == "comment":
     # Запись комментария. Текст приходит на **stdin**, а не аргументом, и это
@@ -4207,7 +4285,7 @@ fi
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
   py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE" \
-    "$CHILDREN_DIR"
+    "$CHILDREN_DIR" "$if_changed"
   exit 0
 fi
 
