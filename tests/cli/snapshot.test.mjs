@@ -71,6 +71,16 @@ test('--sessions — только названные свои из снимка'
   assert.deepEqual(r.requests[0].body, { id: MIXED_SNAP, sessionIds: [HEAD] });
 });
 
+test('--sessions с неоднозначным именем — отказ с candidates', async () => {
+  const st = loadState();
+  st.sessions.push({ id: 'cccccccc-0000-4000-8000-000000000001', title: 'demo-head', live: false, window: null });
+  const r = await cli(['snapshot', 'restore', OWN_SNAP, '--sessions', 'demo-head'], { state: st });
+  assert.equal(r.status, 1);
+  assert.match(r.o.error, /ambiguous/);
+  assert.deepEqual(r.o.candidates.map((c) => c.id).sort(), [HEAD, 'cccccccc-0000-4000-8000-000000000001'].sort());
+  assert.equal(r.requests.length, 0);
+});
+
 test('--sessions вне снимка — отказ', async () => {
   const r = await cli(['snapshot', 'restore', OWN_SNAP, '--sessions', `${HEAD},${CHILD2}`]);
   assert.equal(r.status, 1);

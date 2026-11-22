@@ -43,7 +43,8 @@ export async function restore(args, opts, env) {
     wanted = [];
     for (const n of names) {
       const r = resolveSession(n, { state: pic.state, agents });
-      if (r.error) return { code: r.error === 'not found' ? EXIT.NOT_FOUND : EXIT.REFUSED, error: resolveError(n, r) };
+      if (r.error === 'not found') return { code: EXIT.NOT_FOUND, error: resolveError(n, r) };
+      if (r.error) return { code: EXIT.REFUSED, error: resolveError(n, r), candidates: r.candidates };
       if (!pic.own.has(r.id)) return { code: EXIT.REFUSED, error: `not your session: ${r.id} (${titleOf(r.id)})` };
       if (!wanted.includes(r.id)) wanted.push(r.id);
     }
