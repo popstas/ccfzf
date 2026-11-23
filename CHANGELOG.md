@@ -1,6 +1,12 @@
 # Changelog
 
 
+## v0.16.0 - 2026-11-23
+
+### Features
+
+- cli: Claude-wt window icon, window badge, window icons
+
 ## v0.15.0 - 2026-11-22
 
 ### Features
