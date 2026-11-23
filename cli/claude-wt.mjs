@@ -11,6 +11,9 @@ Commands:
   window focus <session>                 raise the existing window of your session (never opens one)
   window layout <head>                   lay out the windows of your head's group
   window place <session> --zone M:P      move your session's existing window into FancyZones zone P of monitor M
+  window icon <session> <name>|--clear   set your session's window icon from the icons folder of its machine
+  window badge <session> <name>|--clear  set the badge on your session's taskbar button (beats project and head badges)
+  window icons [--machine HOST]          names you can use with window icon/badge (.ico in the icons folder)
   snapshot list [--json]                 snapshots of trackers that have an http manager
   snapshot restore <id|last> [--sessions a,b]
                                          restore a snapshot of your own sessions
@@ -38,6 +41,7 @@ Options:
   --json            one JSON line on stdout
   --url URL         send to this manager instead of the window's tracker
   --machine HOST    use the tracker of this machine
+  --clear           window icon/badge: drop what was set, back to the automatic one
   -h, --help        this help
 
 Exit codes:
@@ -45,7 +49,7 @@ Exit codes:
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
   3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place
-     and session unread/seen, never session open or session spawn (a second window)
+     session unread/seen and window icon/badge, never session open or session spawn (a second window)
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
@@ -57,6 +61,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
+    else if (a === '--clear') opts.clear = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (VALUE_FLAGS.has(a)) {
       const v = argv[i + 1];
@@ -78,6 +83,9 @@ const COMMANDS = {
   'window focus': cmd('window-focus'),
   'window layout': cmd('window-layout'),
   'window place': cmd('window-place'),
+  'window icon': cmd('window-icon', 'icon'),
+  'window badge': cmd('window-icon', 'badge'),
+  'window icons': cmd('window-icons'),
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
   'session open': cmd('session-open'),

@@ -15,6 +15,7 @@
 import { EXIT } from '../out.mjs';
 import { context, ownTarget, manager } from '../act.mjs';
 import { post, answer, timeoutMs } from '../manager.mjs';
+import { windowHosts, worst } from '../hosts.mjs';
 
 const ROUTE = { unread: '/claude-wt/session-unread', seen: '/claude-wt/session-seen' };
 
@@ -26,24 +27,6 @@ const OLD = {
   unread: 'manager did not report unreadAt (old manager?): the picker may still show the session as seen',
   seen: 'manager did not report focusedAt (old manager?): only the taskbar button was put out',
 };
-
-const lc = (x) => String(x ?? '').toLowerCase();
-
-// Машины окон сессии, без повторов, в порядке ответа агрегатора.
-function windowHosts(state, id) {
-  const s = (state.sessions ?? []).find((x) => x.id === id) ?? {};
-  const wins = Array.isArray(s.windows) && s.windows.length ? s.windows : (s.window ? [s.window] : []);
-  const out = [];
-  for (const w of wins) {
-    const h = w?.host;
-    if (h && !out.some((x) => lc(x) === lc(h))) out.push(h);
-  }
-  return out;
-}
-
-// Худший код из исходов: отказ и «неизвестно» важнее «не найдено», успех — последним.
-const RANK = [EXIT.UNKNOWN, EXIT.REFUSED, EXIT.NOT_FOUND, EXIT.OK];
-const worst = (codes) => RANK.find((c) => codes.includes(c)) ?? EXIT.OK;
 
 async function markOne(kind, id, host, trackers, opts, env) {
   const mg = manager(host, trackers, opts);
