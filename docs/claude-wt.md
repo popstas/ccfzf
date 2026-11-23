@@ -14,6 +14,9 @@ claude-wt tree [--json]                  sessions, windows, heads and children, 
 claude-wt window focus <session>         raise the existing window of your session (never opens one)
 claude-wt window layout <head>           lay out the windows of your head's group
 claude-wt window place <session> --zone M:P   move your session's existing window into a FancyZones zone
+claude-wt window icon <session> <name>|--clear    window icon from the icons folder of the window's machine
+claude-wt window badge <session> <name>|--clear   badge on the taskbar button (beats project and head badges)
+claude-wt window icons [--machine HOST]  names usable with window icon/badge
 claude-wt snapshot list [--json]         snapshots of trackers that have an http manager
 claude-wt snapshot restore <id|last> [--sessions a,b]
 claude-wt session open <session>         open a window for your session that has none
@@ -112,6 +115,26 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   code 3, `outcome unknown — do not retry; check with tree in 30 s`: a repeat
   could open a second window. The timeout is 20 seconds unless
   `CLAUDE_WT_TIMEOUT_MS` is set.
+- **`window icon <session> <name>`** and **`window badge <session> <name>`**
+  set your session's window icon (`WM_SETICON`) and the badge in the corner of
+  its taskbar button by name — a `.ico` file of the manager's icons folder
+  (`claudeWt.windowIcons.dir`, case-insensitive, no subfolders, no paths;
+  `window icons` lists the names). What is set this way beats everything
+  automatic: the project icon, the `badges` rules and the head badge (Stas's
+  decision, 2026-11-23); `--clear` drops it and the automatic one comes back.
+  The manager keeps it per sessionId in its own file (`data/session-icons.json`),
+  so it survives a tray restart and `--resume`, not a new session. `POST
+  /claude-wt/window-icon {id, icon: name|null}` (`window-badge`, `badge`) answers
+  `applied: true`, or `applied: false` with `reason` (`no window`, `icons
+  disabled`, `no overlay support`, `no icon service`, `not applied (see tray
+  log)`) — saved anyway, code 0, it lands by itself once the reason is gone.
+  Refused (code 1) only for an unknown name (`unknown icon <name>; see
+  claude-wt window icons`) or a manager without the icons folder. All machines
+  of the session's windows get it, like `session unread`; no window is code 2
+  unless `--machine`/`--url` names one.
+- **`window icons`** asks the machine of your session's first window
+  (`--machine`/`--url` — another one, and no caller session is needed); prints
+  a name per line, `--json` — `{host, dir, names}`.
 - **`session unread <session>`** and **`session seen <session>`** set the
   "seen" marks of your session at the trackers of **all** its windows — no
   window is raised and focus stays where it is, only marks (head's decision,
@@ -180,7 +203,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread` and `session seen` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon` and `window badge` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
 
 ## Environment
 
