@@ -13,6 +13,7 @@ Commands:
   window place <session> --zone M:P      move your session's existing window into FancyZones zone P of monitor M
   window icon <session> <name>|--clear   set your session's window icon from the icons folder of its machine
   window badge <session> <name>|--clear  set the badge on your session's taskbar button (beats project and head badges)
+  window taskbar <session> hide|show|auto  hide or show your session's taskbar button (show beats the picker's auto-hiding)
   window icons [--machine HOST]          names you can use with window icon/badge (.ico in the icons folder)
   snapshot list [--json]                 snapshots of trackers that have an http manager
   snapshot restore <id|last> [--sessions a,b]
@@ -49,7 +50,7 @@ Exit codes:
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
   3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place
-     session unread/seen and window icon/badge, never session open or session spawn (a second window)
+     session unread/seen and window icon/badge/taskbar, never session open or session spawn (a second window)
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
@@ -85,6 +86,7 @@ const COMMANDS = {
   'window place': cmd('window-place'),
   'window icon': cmd('window-icon', 'icon'),
   'window badge': cmd('window-icon', 'badge'),
+  'window taskbar': cmd('window-taskbar', 'taskbar'),
   'window icons': cmd('window-icons'),
   'snapshot list': cmd('snapshot', 'list'),
   'snapshot restore': cmd('snapshot', 'restore'),
