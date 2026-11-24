@@ -16,6 +16,7 @@ claude-wt window layout <head>           lay out the windows of your head's grou
 claude-wt window place <session> --zone M:P   move your session's existing window into a FancyZones zone
 claude-wt window icon <session> <name>|--clear    window icon from the icons folder of the window's machine
 claude-wt window badge <session> <name>|--clear   badge on the taskbar button (beats project and head badges)
+claude-wt window taskbar <session> hide|show|auto  hide or show the taskbar button of the window
 claude-wt window icons [--machine HOST]  names usable with window icon/badge
 claude-wt snapshot list [--json]         snapshots of trackers that have an http manager
 claude-wt snapshot restore <id|last> [--sessions a,b]
@@ -132,6 +133,18 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   claude-wt window icons`) or a manager without the icons folder. All machines
   of the session's windows get it, like `session unread`; no window is code 2
   unless `--machine`/`--url` names one.
+- **`window taskbar <session> hide|show|auto`** hides or shows the taskbar
+  button of your session's window. `show` keeps it visible even when the
+  picker would hide it automatically (dimmed sessions); `hide` hides it and
+  drops itself on the session's next turn and when its window closes; `auto`
+  gives the decision back to the manager. A signal (a question, an unseen
+  finished turn, the cache blink) keeps the button whatever the mode. `POST
+  /claude-wt/window-taskbar {id, taskbar: 'hide'|'show'|null}` answers
+  `applied: true`, or `applied: false` with `reason` (saved anyway, code 0);
+  `auto` sends an explicit `null`, a missing key is refused. All machines of
+  the session's windows get it; no window is code 2. Any other mode is code 1,
+  `need hide, show or auto`. A manager without the route answers 404, shown as
+  `manager has no /claude-wt/window-taskbar (old manager?)`.
 - **`window icons`** asks the machine of your session's first window
   (`--machine`/`--url` — another one, and no caller session is needed); prints
   a name per line, `--json` — `{host, dir, names}`.
@@ -203,7 +216,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon` and `window badge` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon`, `window badge` and `window taskbar` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
 
 ## Environment
 
