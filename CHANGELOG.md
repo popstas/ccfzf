@@ -1,6 +1,12 @@
 # Changelog
 
 
+## v0.17.0 - 2026-11-24
+
+### Features
+
+- cli: Claude-wt window taskbar hide|show|auto
+
 ## v0.16.0 - 2026-11-23
 
 ### Features
