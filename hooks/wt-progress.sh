@@ -688,7 +688,8 @@ prune_state() {
 # `~/.ccfzf/children/<id>.json`. Транскрипт тут не помощник: записи с промптом
 # в нём на этот момент ещё нет. Прочие вставки (`<task-notification>`,
 # `<teammate-message …>` и соседи) узнаются по виду: весь текст — один
-# элемент `<tag …>…</tag>`. Пустой `prompt` — тоже не человек (см. turnAt).
+# элемент `<tag …>…</tag>`. Пустой `prompt` — тоже не человек (см. turnAt),
+# как и промпт с `agent_id` (субагент).
 wait_clear_on_prompt() {
   local sid file raw from pid peer parent tag
   local wrapper_re='^<([a-z][a-z0-9_-]*)[[:space:]>]'
@@ -696,6 +697,8 @@ wait_clear_on_prompt() {
   [ -n "$sid" ] || return 0
   file="$state_dir/$sid.wait.json"
   [ -f "$file" ] || return 0
+  # Промпт субагента (в stdin есть agent_id) — не ответ человека.
+  [ -z "$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null || true)" ] || return 0
   raw="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   [ -n "$raw" ] || return 0

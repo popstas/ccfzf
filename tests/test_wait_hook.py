@@ -26,7 +26,7 @@ def peer(pid, body="готово, мержу", name="co-x"):
             'from-name="%s" from-mode="prompting">\n%s\n</cross-session-message>' % (pid, name, body))
 
 
-def run_start(prompt, children=True):
+def run_start(prompt, children=True, **stdin_extra):
     h = Home()
     try:
         transcript(h.transcript, "q", "Жду твоего решения")
@@ -41,7 +41,7 @@ def run_start(prompt, children=True):
             kids = h.home / ".ccfzf" / "children"
             kids.mkdir(parents=True)
             (kids / (SID + ".json")).write_text(json.dumps({"sessionId": SID, "headId": HEAD}))
-        extra = {"hook_event_name": "UserPromptSubmit"}
+        extra = {"hook_event_name": "UserPromptSubmit", **stdin_extra}
         if prompt is not None:
             extra["prompt"] = prompt
         res = h.run("wt-progress.sh", "start", stdin=h.stdin(**extra))
@@ -83,6 +83,10 @@ def test_another_harness_wrapper_keeps_the_wait():
 def test_an_empty_prompt_keeps_the_wait():
     assert run_start(None) is True
     assert run_start("") is True
+
+
+def test_a_subagent_prompt_keeps_the_wait():
+    assert run_start("сделай X", agent_id="a1b2c3") is True
 
 
 def test_human_text_that_starts_with_a_tag_still_clears():

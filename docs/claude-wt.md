@@ -115,9 +115,10 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action, `wait` included,
   dump). It goes away with `wait clear` (`cleared: false` when there was
   nothing — not an error), or by itself on the next UserPromptSubmit that is
   an answer: a prompt typed by the human, or a message from the session's own
-  head (`headId` of its children record). A subagent report, a message from
-  any other session, a loop wakeup in a harness wrapper or an empty prompt do
-  not clear it — see `wait_clear_on_prompt` in
+  head (`headId` of its children record). A subagent report or prompt, a
+  message from any other session, another harness wrapper or an empty prompt
+  do not clear it; a loop or schedule wakeup is not measured yet and clears it
+  if it comes as plain text — see `wait_clear_on_prompt` in
   [hooks.md](hooks.md#declared-wait). A message that reaches a busy session
   mid-turn does not start a prompt and clears nothing; neither does the end
   of a session: the file of a closed session is ignored by `waiting` and

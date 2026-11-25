@@ -32,13 +32,13 @@ removes it when the prompt is an answer, and only then. The hook tells by the
 | `<cross-session-message from="uds:/run/user/<uid>/cc-socks/<pid>.sock" …>` from the session's own head: `<pid>` is the sender's claude, `~/.claude/sessions/<pid>.json` names its `sessionId`, and it equals `headId` in `~/.ccfzf/children/<id>.json` (`CCFZF_CHILDREN_DIR`) | yes |
 | the same from any other session, from an unknown pid, or without a children record | no |
 | a harness wrapper — the whole text is one `<tag …>…</tag>` element: `<task-notification>` (a subagent report), `<teammate-message>` and the like | no |
-| empty | no |
+| empty, or the stdin has `agent_id` (a subagent's prompt) | no |
 
 The transcript cannot help here: the prompt's own record is not in it yet when
 the hook runs. Human text that merely starts with a tag (`<div> is off`) still
-clears — only a closed wrapper counts as the harness. A loop or schedule wakeup
-arrives as a plain prompt too and clears the wait; nothing in stdin tells it
-from the human. The file is pruned with the rest of the session's files after
+clears — only a closed wrapper counts as the harness. A loop or schedule wakeup is not
+measured: if it arrives as plain text it clears the wait, since nothing else in
+stdin would tell it from the human. The file is pruned with the rest of the session's files after
 a week of silence.
 
 ## Why the dump hook

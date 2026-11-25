@@ -52,6 +52,22 @@ def test_state_carries_the_declared_wait_of_a_session():
             assert all("wait" not in s for s in json.load(fh)["sessions"]), "в дамп не едет"
 
 
+def test_a_new_or_dropped_wait_moves_the_fingerprint():
+    """Пикер опрашивает с --if-changed: объявленное обязано сдвинуть отпечаток."""
+    with tempfile.TemporaryDirectory() as tmp:
+        build_home(tmp, [A])
+        hooks = os.path.join(tmp, ".claude", "claude-wt")
+        os.makedirs(hooks)
+        dump = os.path.join(tmp, "dump.json")
+        before = run_state(tmp, dump)["fingerprint"]
+        _write(hooks, A + ".wait.json", {"kind": "review", "ask": "глянь PR", "setAt": 5})
+        during = run_state(tmp, dump)["fingerprint"]
+        os.remove(os.path.join(hooks, A + ".wait.json"))
+        after = run_state(tmp, dump)["fingerprint"]
+        assert before != during, (before, during)
+        assert after == before, (before, after)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
