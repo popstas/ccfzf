@@ -42,6 +42,10 @@
 #   CCFZF_STATE_DUMP_MAX_AGE         seconds; --state rewrites the sessions
 #                                    dump when it is older than this
 #                                    (default 30; 0 — rewrite every time)
+#   CCFZF_WORKTREES_FILE             memory of git worktrees seen: worktree ->
+#                                    main repo and branch, for sessions of a
+#                                    worktree already removed
+#                                    (default ~/.ccfzf/worktrees.json, empty — off)
 #
 # Data comes straight from ~/.claude/projects: the first jsonl line carries cwd,
 # the tail carries the title and the latest activity. ccsessions is unfit here —
@@ -528,14 +532,178 @@ def read_marks(marks_file):
     return marks
 
 
-def owners_of(cwd, marks):
+# Память о worktree: корень worktree → основной репо и ветка. Нужна ради
+# worktree, которого уже нет: после `git worktree remove` его `.git` не
+# прочитать, а сессии из него остаются в истории и всплыли бы отдельными
+# проектами. Пишется только при новом знании (новый worktree, другая ветка
+# или основной репо) и раз в сутки на запись — отметкой `seen`; запись, чьего
+# каталога нет и которую не видели WT_MEMORY_DAYS, при записи выбрасывается:
+# к тому времени Claude Code давно почистил транскрипты этого worktree.
+WORKTREES_FILE = os.environ.get("CCFZF_WORKTREES_FILE")
+if WORKTREES_FILE is None:
+    WORKTREES_FILE = os.path.join(os.path.expanduser("~"), ".ccfzf", "worktrees.json")
+WT_MEMORY_DAYS = 180
+WT_SEEN_EVERY = 86400
+# Изменяемые контейнеры, а не переприсваиваемые имена: тесты сбрасывают их
+# между прогонами, не перезагружая блок.
+WT_CACHE = {}
+WT_MEMORY = {}
+WT_MEMORY_LOADED = [False]
+
+
+def _wt_memory():
+    if not WT_MEMORY_LOADED[0]:
+        WT_MEMORY_LOADED[0] = True
+        try:
+            with open(os.path.expanduser(WORKTREES_FILE), encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (OSError, ValueError):
+            raw = {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if (isinstance(k, str) and isinstance(v, dict)
+                        and isinstance(v.get("main"), str) and v["main"]):
+                    WT_MEMORY[k] = {"main": v["main"],
+                                    "branch": v.get("branch") if isinstance(v.get("branch"), str) else "",
+                                    "seen": v.get("seen") if isinstance(v.get("seen"), (int, float)) else 0}
+    return WT_MEMORY
+
+
+def _wt_remember(root, main, branch):
+    mem = _wt_memory()
+    now = int(time.time())
+    old = mem.get(root)
+    if old and old["main"] == main and old["branch"] == branch and now - old["seen"] < WT_SEEN_EVERY:
+        return
+    mem[root] = {"main": main, "branch": branch, "seen": now}
+    for k in [k for k, v in mem.items()
+              if now - v["seen"] > WT_MEMORY_DAYS * 86400 and not os.path.isdir(k)]:
+        del mem[k]
+    if not WORKTREES_FILE:
+        return
+    path = os.path.expanduser(WORKTREES_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        return
+    write_json(path, dict(sorted(mem.items())))
+
+
+def _wt_recall(cwd):
+    """Запомненный worktree, внутри которого лежит `cwd`, или None."""
+    best = ""
+    for root in _wt_memory():
+        if (cwd == root or cwd.startswith(root + "/")) and len(root) > len(best):
+            best = root
+    if not best:
+        return None
+    v = WT_MEMORY[best]
+    return {"path": best, "branch": v["branch"], "main": v["main"]}
+
+
+def _read_first_line(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.readline().strip()
+    except OSError:
+        return None
+
+
+def _worktree_at(cwd):
+    # От `cwd` вверх до первого `.git`. Каталог `.git` — обычный клон. Файл с
+    # `gitdir:` — worktree или подмодуль, и различает их `commondir` в gitdir:
+    # у worktree он есть и указывает на общий `.git` основного репо, у
+    # подмодуля его нет. Основной репо — родитель общего `.git`; общий каталог
+    # с другим именем — голый репо, проекта-каталога у него нет.
+    d = cwd
+    while True:
+        dotgit = os.path.join(d, ".git")
+        if os.path.isdir(dotgit):
+            return None
+        if os.path.isfile(dotgit):
+            line = _read_first_line(dotgit) or ""
+            if not line.startswith("gitdir:"):
+                return None
+            gitdir = os.path.normpath(os.path.join(d, line[len("gitdir:"):].strip()))
+            if not os.path.isdir(gitdir):
+                # Каталог worktree на месте, а его запись в основном репо уже
+                # снята (`git worktree prune`): судить может только память.
+                return _wt_recall(cwd)
+            common = _read_first_line(os.path.join(gitdir, "commondir"))
+            if not common:
+                return None
+            common = os.path.normpath(os.path.join(gitdir, common))
+            if os.path.basename(common) != ".git":
+                return None
+            head = _read_first_line(os.path.join(gitdir, "HEAD")) or ""
+            branch = head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
+            found = {"path": d, "branch": branch, "main": os.path.dirname(common)}
+            _wt_remember(d, found["main"], branch)
+            return found
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def worktree_of(cwd):
+    """Git worktree, в котором лежит `cwd`: `{path, branch, main}` или None.
+
+    `path` — корень worktree, `main` — каталог основного репо, `branch` — из
+    `HEAD` worktree (пустая у отделённого HEAD). Подмодуль и обычный клон —
+    не worktree. Каталога нет вовсе — ответ из памяти (WORKTREES_FILE).
+
+    Только POSIX-пути: местный источник пикера на Windows зовёт этот же блок,
+    а `gitdir:` с путём Windows здесь не разбирается — там всё как до
+    распознавания. Кэш по `cwd` — на процесс: `--state` зовут раз в секунду,
+    и у его сотен сессий уникальных каталогов десятки.
+    """
+    if cwd in WT_CACHE:
+        return WT_CACHE[cwd]
+    found = None
+    if os.name == "posix" and cwd.startswith("/"):
+        found = _worktree_at(cwd) if os.path.isdir(cwd) else _wt_recall(cwd)
+    WT_CACHE[cwd] = found
+    return found
+
+
+def owner_cwd(cwd, marks, projects=()):
+    """Путь, от которого считается проект-владелец сессии из `cwd`.
+
+    Сам `cwd`, кроме сессии из git worktree: тогда тот же путь внутри
+    основного репо (`<main>` + путь `cwd` от корня worktree), и сессия
+    достаётся его проекту — с его типом и строкой. Своя запись важнее
+    наследства: если внутри worktree, над `cwd` или на нём, стоит закладка
+    или проект трекера, владелец считается от `cwd`, как без worktree.
+    """
+    wt = worktree_of(cwd)
+    if not wt:
+        return cwd
+    root = wt["path"]
+    roots = list(marks or [])
+    for p in projects or []:
+        r = p.get("cwd") if isinstance(p, dict) else None
+        if isinstance(r, str) and r.rstrip("/"):
+            roots.append(r.rstrip("/"))
+    for r in roots:
+        if (r == root or r.startswith(root + "/")) and (cwd == r or cwd.startswith(r + "/")):
+            return cwd
+    return wt["main"] + cwd[len(root):]
+
+
+def owners_of(cwd, marks, projects=()):
     """Projects whose session list should show a session from this cwd.
 
     Its own cwd always. Plus the nearest ancestor mark when the cwd is not a
     mark itself: marks are declared project roots, so a session started in a
     subdirectory (config subrepo, worktree) belongs in the root's list too.
     Without the marks-only restriction a mark on ~ would swallow every project.
+
+    A git worktree counts as the same path inside its main repo (owner_cwd):
+    its sessions go to the main project's list, and the worktree gets no
+    project row of its own.
     """
+    cwd = owner_cwd(cwd, marks, projects)
     owners = {cwd}
     if cwd not in marks:
         ancestors = [m for m in marks if cwd.startswith(m + "/")]
@@ -554,8 +722,10 @@ def project_owner(cwd, projects, marks):
 
     Не `owners_of` целиком: тот знает только закладки `~/.fzf-marks`, а тип
     живёт у проектов менеджера, и сессия из worktree лежит в подкаталоге
-    проекта, у которого закладки может и не быть.
+    проекта, у которого закладки может и не быть. Сессия из git worktree
+    считается от пути в основном репо (owner_cwd).
     """
+    cwd = owner_cwd(cwd, marks, projects)
     best = ""
     for p in projects or []:
         root = p.get("cwd") if isinstance(p, dict) else None
@@ -3755,8 +3925,12 @@ def project_at(files, age_of=None):
     return best
 
 
-def project_rows(dirs, live, marks, age_of=None, todo_at=None):
-    """One row per project: marks and directories with sessions, newest first."""
+def project_rows(dirs, live, marks, age_of=None, todo_at=None, projects=()):
+    """One row per project: marks and directories with sessions, newest first.
+
+    `projects` — the tracker's projects: an own record of a git worktree keeps
+    its row (owner_cwd); without one a worktree has no row of its own.
+    """
     agg = {}
     for entry in dirs:
         # Возраст считается один раз на каталог, а не на владельца: `owners_of`
@@ -3768,7 +3942,7 @@ def project_rows(dirs, live, marks, age_of=None, todo_at=None):
         # `--dump` считает по этому полю `ago`, а `--state` отдаёт его читателю
         # как `lastActivity`.
         at = project_at(entry["files"], age_of) or entry["files"][0][1]
-        for owner in owners_of(entry["cwd"], marks):
+        for owner in owners_of(entry["cwd"], marks, projects):
             a = agg.setdefault(owner, {"n": 0, "live": 0, "mtime": 0.0})
             a["n"] += len(entry["files"])
             a["live"] += sum(1 for f, _ in entry["files"]
@@ -3870,6 +4044,12 @@ def merge_project_hotkeys(rows, projects):
 # отличает его от отсутствия — ccfzf прошлой версии поля не пишет.
 DUMP_KEEP = ("id", "title", "cwd", "live", "mtime", "kind", "parent", "activityAt",
              "shell")
+# Поля, которые едут в дамп только непустыми. `projectCwd` — проект-владелец
+# (project_owner), когда он не сам `cwd`: по нему менеджер ищет иконку,
+# значки и профиль терминала сессии из подкаталога или git worktree.
+# `worktree` — `{path, branch}` у сессии из git worktree (worktree_of). Ключа
+# нет, когда значения нет: у почти всех сессий оба поля пусты.
+DUMP_OPTIONAL = ("projectCwd", "worktree")
 
 
 def dump_record(s):
@@ -3880,7 +4060,17 @@ def dump_record(s):
     кто записал последним. Отсутствующее поле роняет KeyError намеренно —
     молча отданный читателю индекс без title стирается целиком.
     """
-    return {k: s[k] for k in DUMP_KEEP}
+    out = {k: s[k] for k in DUMP_KEEP}
+    for k in DUMP_OPTIONAL:
+        if s.get(k):
+            out[k] = s[k]
+    return out
+
+
+def worktree_field(cwd):
+    """Поле `worktree` сессии: `{path, branch}`, или пустое — не из worktree."""
+    wt = worktree_of(cwd)
+    return {"path": wt["path"], "branch": wt["branch"]} if wt else {}
 
 
 # Чего пикер в строке сессии не читает вовсе — сверено 2026-11-16 по
@@ -4554,7 +4744,7 @@ elif mode == "dump":
     # обход один: scandir по каталогу, доли миллисекунды. Считать одно и то же
     # с двух сторон незачем — число уезжает полем.
     stamps = hook_stamps()
-    windows, _, _, _, _, _ = read_window_sources(
+    windows, _, _, _, window_projects, _ = read_window_sources(
         windows_path, sys.argv[7] if len(sys.argv) > 7 else "", now)
     # То же объединение, что в режиме `state`, и по той же причине — плюс одна
     # своя: `$SESSIONS_FILE` пишут оба режима, и без этой строки значение `live`
@@ -4569,7 +4759,7 @@ elif mode == "dump":
                 "path": r["path"], "name": r["name"], "mark": r["mark"],
                 "sessions": r["n"], "live": r["live"], "mtime": r["mtime"],
                 "age": ago(r["mtime"], now) if r["mtime"] else "",
-            } for r in project_rows(dirs, live, marks)],
+            } for r in project_rows(dirs, live, marks, projects=window_projects)],
         })
 
     if sessions_path:
@@ -4614,6 +4804,9 @@ elif mode == "dump":
             need_hook = proc is not None and proc.get("status") is None
             shell, _ = background_shell(
                 proc, ((agent_of(sid) or {}).get("state", "")) if need_hook else "")
+            # Владелец и worktree — так же, как в `state`: файл пишут оба
+            # режима, и поле, которое знает один, пропадало бы после другого.
+            owner = project_owner(cwd, window_projects, marks)
             sessions.append(dump_record({
                 "id": sid, "cwd": cwd, "title": f["title"],
                 "mtime": mtime, "live": sid in live,
@@ -4621,6 +4814,8 @@ elif mode == "dump":
                 "parent": agent.get("parent", ""),
                 "activityAt": int(stamps.get(sid, 0)),
                 "shell": shell,
+                "projectCwd": owner if owner != cwd else "",
+                "worktree": worktree_field(cwd),
             }))
         if facts != cache:
             save_facts(FACTS_FILE, facts)
@@ -4752,7 +4947,7 @@ elif mode == "state":
         owner = project_owner(cwd, window_projects, marks)
         sessions.append({
             "id": sid, "cwd": cwd, "file": path,
-            "projects": sorted(owners_of(cwd, marks)),
+            "projects": sorted(owners_of(cwd, marks, window_projects)),
             # Проект-владелец и его тип — для группировки по типу и пункта
             # `Type` в ^K пикера: у пикера есть только точное совпадение cwd,
             # а сессия из worktree лежит в подкаталоге проекта (project_owner).
@@ -4764,6 +4959,10 @@ elif mode == "state":
             # выбрасывает).
             "projectCwd": owner if owner != cwd else "",
             "projectType": project_type_of(owner, window_projects),
+            # Сессия из git worktree: его корень и ветка (пустая у отделённого
+            # HEAD) — для значка у имени в пикере. Ключа нет у сессий не из
+            # worktree (state_record выбрасывает пустое).
+            "worktree": worktree_field(cwd),
             # Спека и план — пути внутри `cwd`, а не абсолютные: файл лежит на
             # этой машине, а открывает его читатель у себя, переведя путь через
             # свой pathMap. Абсолютный путь той стороне пришлось бы разбирать
@@ -4902,7 +5101,8 @@ elif mode == "state":
                              # Тип проекта из claudeWt.projects менеджера.
                              **({"type": r["type"]} if r.get("type") else {})}
                             for r in merge_project_hotkeys(
-                                project_rows(dirs, live, marks, todo_at=todo_at),
+                                project_rows(dirs, live, marks, todo_at=todo_at,
+                                             projects=window_projects),
                                 window_projects)],
                # Агрегатор считает проект-владельца сессии (`projectCwd`,
                # project_owner). Нужен, потому что `projectCwd` пишется только

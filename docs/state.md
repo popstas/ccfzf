@@ -8,7 +8,7 @@ The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
 `todo`, `comment`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
-`projectCwd`/`projectType`,
+`projectCwd`/`projectType`, `worktree`,
 `shell`/`shellCmd`, `disconnected`, `wait` (declared by `claude-wt wait set`: `{kind, ask, clearBy?, setAt}`, see [claude-wt.md](claude-wt.md)), and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
@@ -83,6 +83,19 @@ flag is talking to an older aggregator that knows no owners at all.
 `projectType` is the `type` of the owning tracker project, absent when it has
 none — so a session in a project's worktree gets the project's type. The reader
 has only exact `cwd` matches, hence the fields.
+
+A session in a git worktree is owned as if its `cwd` were the same path inside
+the main repo, so `projectCwd` is the main project (or its tracker project) and
+`projectType` is its type; the worktree directory has no row in `projects`. An
+own bookmark or tracker project on the worktree (or inside it, above `cwd`)
+wins over that. Such a session also carries `worktree: {path, branch}` — the
+worktree root and the branch from its `HEAD`, empty when detached; the key is
+absent for every other session, a submodule included. A worktree is remembered
+in `~/.ccfzf/worktrees.json` (`CCFZF_WORKTREES_FILE`) as
+`{"<root>": {"main", "branch", "seen"}}`, written only when something changes
+and at most daily for `seen`; an entry whose directory is gone and that was not
+seen for 180 days is dropped. A removed worktree is answered from there; one
+removed before this memory existed is not recognized.
 
 What the reader never looked at is not sent at all: `file`, the per-session
 `projects`, `gist`, `doing`, `age` and `activityAt` (that one is for the dump).

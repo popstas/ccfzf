@@ -33,6 +33,19 @@ it needs — nothing else:
    "parent": "",
    "activityAt": 1785460166,
    "shell": false
+  },
+  {
+   "id": "0b0e9a4e-1c43-4a39-8f3e-5d2a7c9e6f10",
+   "title": "Fix the parser",
+   "cwd": "/home/you/projects/js/webapp.fix-parser",
+   "live": true,
+   "mtime": 1785460100.5,
+   "kind": "interactive",
+   "parent": "",
+   "activityAt": 1785460100,
+   "shell": false,
+   "projectCwd": "/home/you/projects/js/webapp",
+   "worktree": {"path": "/home/you/projects/js/webapp.fix-parser", "branch": "fix-parser"}
   }
  ]
 }
@@ -43,6 +56,12 @@ it needs — nothing else:
 never did — the reader ranks same-titled candidates by it, and computing it here
 saves it a network `stat` per candidate. `kind` is `interactive` or `background`,
 and `parent` names the session a background agent was forked from.
+
+`projectCwd` and `worktree` are present only when set, exactly as in
+[`--state`](state.md): `projectCwd` is the owning project when it is not `cwd`
+itself (a subdirectory of a project, or a git worktree — then the main
+project), so the tracker can find the icon, badges and terminal profile by it;
+`worktree` is `{path, branch}` of a session in a git worktree.
 
 `shell` is `true` while the session's turn is over but a background command it
 started — Bash with `run_in_background` (and, by the agent's code, a Monitor;
