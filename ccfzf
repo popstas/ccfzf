@@ -3221,6 +3221,35 @@ def reattribute(live, procs, agents, stamps, now, ids_in=None, ttl=HOOK_LIVE_TTL
     return moved
 
 
+def closed_marks(path=STATUS_DIR):
+    """{id сессии: когда её закрыли} — mtime `<uuid>.closed.json`.
+
+    Файл кладёт `claude-wt session close`, когда процесс ребёнка уже вышел.
+    Без него последняя отметка хука закрытой сессии ещё HOOK_LIVE_TTL была
+    доводом о жизни (live_by_hook): ребёнок стоял `live` без процесса, и
+    `claude-wt waiting` числил его среди ждущих. Тот же каталог, тот же обход,
+    что у hook_stamps; уходит он той же недельной чисткой хука, что и тройка
+    файлов сессии.
+    """
+    out = {}
+    tail = ".closed.json"
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if not entry.name.endswith(tail):
+                    continue
+                sid = entry.name[:-len(tail)]
+                if not UUID_RE.match(sid):
+                    continue
+                try:
+                    out[sid] = entry.stat().st_mtime
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
 def live_by_hook(live, stamps, now, skip=None, ttl=HOOK_LIVE_TTL):
     """Свежая отметка хука — довод о жизни сама по себе.
 
@@ -3418,6 +3447,14 @@ def running_sessions():
     # чью сессию уже назвали точно, мог бы уехать к соседу, который закрылся
     # минуту назад и оставил после себя отметку свежее.
     stamps = hook_stamps()
+    # Отметка хука, не моложе отметки закрытия (`session close`), — след
+    # закрытой сессии, а не её работа: ни живости по ней (live_by_hook), ни
+    # кандидата для чужого процесса в том же каталоге (reattribute). Хук,
+    # записавший после закрытия, — сессию подняли снова, и отметка снова
+    # довод. Живой процесс с этим id отметки не спрашивает вовсе.
+    closed = closed_marks()
+    stamps = {sid: at for sid, at in stamps.items()
+              if sid not in closed or at > closed[sid]}
     moved, resolved = reattribute_by_pid(live, procs, agents, pid_owners())
     moved |= reattribute(live, procs, agents, stamps, now, skip_procs=resolved)
     live_by_hook(live, stamps, now, skip=moved)

@@ -5,7 +5,7 @@
 // Только из head с живой меткой и только своих детей. Запись children остаётся (она нужна
 // истории пикера); копии промпта и боковые файлы (<sid>.md, .task.md, .mcp.json, .channels, .fork) удаляются.
 // Вывод и коды — как у close.mjs скилла session-close: {ok, sessionId, name, closed, adopted, why}; 0 — закрыт, 1 — нет.
-import { readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJson } from '../sources.mjs';
 import { parseLegacyArgs } from '../args.mjs';
@@ -80,5 +80,15 @@ export default async function sessionClose(argv, env) {
     outC(false, { sessionId, name, pid, closed: false, why: `did not exit after ${signal}; SIGKILL only on an explicit request of the user (--kill)` });
   }
   for (const f of [`${sessionId}.md`, `${sessionId}.task.md`, `${sessionId}.mcp.json`, `${sessionId}.channels`, `${sessionId}.fork`]) rmSync(join(p.promptsDir, f), { force: true });
+  // Отметка закрытия рядом с состоянием хуков: ccfzf (closed_marks) перестаёт
+  // считать последнюю отметку хука доводом о жизни. Без неё закрытый ребёнок ещё
+  // до HOOK_LIVE_TTL (2 мин) стоял `live` без процесса, и `waiting` его показывал.
+  // Сбой записи закрытие не отменяет: процесс уже вышел.
+  try {
+    const stateDir = env.CLAUDE_WT_STATE_DIR || join(p.home, '.claude', 'claude-wt');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, `${sessionId}.closed.json`),
+      `${JSON.stringify({ sessionId, closedAt: Math.floor(Date.now() / 1000), by: me })}\n`);
+  } catch {}
   outC(true, { sessionId, name, pid, closed: true, signal, why: signal === 'SIGKILL' ? 'killed: the window stays open with code 137' : 'exited on SIGTERM' });
 }

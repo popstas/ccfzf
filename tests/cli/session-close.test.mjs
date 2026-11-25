@@ -68,6 +68,26 @@ test('close удаляет копии промпта и файлы канала'
   assert.deepEqual(readdirSync(join(e.home, '.ccfzf/prompts')), ['other.md']);
 });
 
+// Отметка закрытия: без неё свежая отметка хука держала закрытого ребёнка
+// живым в `ccfzf --state` ещё до HOOK_LIVE_TTL (2 мин) после выхода.
+test('close кладёт <id>.closed.json рядом с состоянием хуков', async () => {
+  const sid = liveChild();
+  const before = Math.floor(Date.now() / 1000);
+  const r = await runAsync(CLOSE, ['--session-id', sid, '--wait', '5'], e.env);
+  assert.equal(r.code, 0, r.stdout);
+  const mark = e.read(`.claude/claude-wt/${sid}.closed.json`);
+  assert.equal(mark.sessionId, sid);
+  assert.equal(mark.by, e.me.sessionId);
+  assert.ok(mark.closedAt >= before, JSON.stringify(mark));
+});
+
+test('отказ: отметки закрытия нет', async () => {
+  const sid = liveChild({ head: 'other', headId: 'O' });
+  const r = await runAsync(CLOSE, ['--session-id', sid, '--wait', '1'], e.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.equal(e.exists(`.claude/claude-wt/${sid}.closed.json`), false);
+});
+
 // --- отказы: в CLI проверки те же, что в close.mjs ---
 
 test('чужой ребёнок: not your child, процесс жив', async () => {
