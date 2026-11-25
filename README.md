@@ -134,6 +134,7 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 | `CCFZF_PROJECTS_FILE` | `~/.ccfzf.projects.json` | dump of the project list; empty turns it off |
 | `CCFZF_SENDQ_FILE` | `$XDG_CACHE_HOME/ccfzf/sendq.json` | last send-queue sample of each ssh socket, so two neighbouring `--state` calls can tell a broken link (`disconnected`); empty turns the flag off |
 | `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
+| `CCFZF_WORKTREES_FILE` | `~/.ccfzf/worktrees.json` | memory of git worktrees seen (worktree → main repo, branch), so the sessions of a removed worktree stay under the main project; empty turns writing it off |
 | `CCFZF_CHILDREN_DIR` | `~/.ccfzf/children` | records of sessions started by `claude-wt-new`, read by `--state`; empty turns it off |
 | `CCFZF_VAULTS_CONFIG` | `~/.claude/vaults-config.md` | Obsidian vaults whose `tasks.md` gives a session its `task` in `--state` (a `- Сессия <name>` sub-item under the task); missing file — no field, empty turns it off |
 | `CCFZF_HEADS_DIR` | `~/.ccfzf/heads` | head marks: `claude-wt-new` opens a child only for a running session marked here |
@@ -222,6 +223,8 @@ Optional, degrades quietly when absent:
 ## How sessions map to projects
 
 A session belongs to its own `cwd`. It additionally shows up under the nearest ancestor **mark**, so a session started in a config subrepo or a git worktree is visible from the project root. The restriction to marks is deliberate: without it, a mark on `~` would swallow the sessions of every project below it.
+
+A session in a **git worktree** counts as the same path inside its main repo: it belongs to the main project, gets its type, and the worktree directory gets no project row of its own — unless the worktree has its own mark or tracker project, which then wins. A worktree is recognized by its `.git` file: `gitdir:` pointing to a directory with a `commondir` (a submodule's gitdir has none, so a submodule is not a worktree). Once seen, a worktree is remembered in `CCFZF_WORKTREES_FILE`, so its sessions stay with the main project after `git worktree remove`. POSIX paths only.
 
 For `--state` a session also names one owning project, `projectCwd` (sent only when it is not the session's own `cwd`), and its `projectType` (`work`, `home`, …): the nearest ancestor among the window tracker's projects, else the nearest mark, else its own `cwd`. The type comes from the tracker's project list (`claudeWt.projects` in windows11-manager). → [docs/state.md](docs/state.md).
 
