@@ -9,7 +9,7 @@ The sessions are the same set as in [the dump](dumps.md). Each record carries
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
 `todo`, `comment`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
 `projectCwd`/`projectType`,
-`shell`/`shellCmd`, `disconnected`, and the `head`/`headId` of a session started by
+`shell`/`shellCmd`, `disconnected`, `wait` (declared by `claude-wt wait set`: `{kind, ask, clearBy?, setAt}`, see [claude-wt.md](claude-wt.md)), and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
 empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sent;
 the reader treats a missing key exactly as it treated the empty one. Two

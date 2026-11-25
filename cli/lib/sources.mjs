@@ -17,6 +17,7 @@ export function paths(env = process.env) {
     windowsDir: env.CCFZF_WINDOWS_DIR || join(home, '.ccfzf', 'windows'),
     childrenDir: env.CCFZF_CHILDREN_DIR || join(home, '.ccfzf', 'children'),
     headsDir: env.CCFZF_HEADS_DIR || join(home, '.ccfzf', 'heads'),
+    stateDir: env.CLAUDE_WT_STATE_DIR || join(home, '.claude', 'claude-wt'),
   };
 }
 

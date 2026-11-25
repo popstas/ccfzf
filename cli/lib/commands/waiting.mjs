@@ -10,9 +10,17 @@ import { readJson } from '../sources.mjs';
 import { picture } from './tree.mjs';
 
 // Порядок вывода: то, что держит сессию прямо сейчас, — первым.
-export const KINDS = ['permission', 'question', 'attention', 'reply', 'pr'];
+export const KINDS = ['declared', 'permission', 'question', 'attention', 'reply', 'pr'];
+
+// Чем снять объявленное, когда агент не сказал сам (--clear-by).
+const DECLARED_HINTS = {
+  decision: 'decide and reply in its chat',
+  review: 'review and reply in its chat',
+  external: 'waits for someone else; nudge them or reply in its chat',
+};
 
 const HINTS = {
+  declared: (e) => e.wait.clearBy || DECLARED_HINTS[e.wait.kind] || 'reply in its chat',
   permission: () => 'approve in its window',
   question: () => 'answer in its window',
   attention: () => 'look at its window',
@@ -63,16 +71,23 @@ export function promptKind(agent) {
   return null;
 }
 
-// Кандидаты: живые, и либо ждут ответа, либо закончили ход с pr_url.
+// Объявленное агентом (`claude-wt wait set`, поле `wait` в --state) перебивает
+// выводимое reply, но не то, что держит сессию прямо сейчас: диалог разрешения
+// или открытый вопрос в окне.
+const declaredWait = (w) => (w && typeof w === 'object' && typeof w.ask === 'string' && w.ask ? w : null);
+
+// Кандидаты: живые, и либо ждут ответа, либо объявили ожидание, либо закончили ход с pr_url.
 // Работающая сессия с открытым PR не ждёт: она ещё сама его двигает.
 export function candidates(sessions) {
   const out = [];
   for (const s of sessions) {
     if (!s.live) continue;
     const a = s.agent || null;
-    const kind = promptKind(a);
+    const wait = declaredWait(s.wait);
+    let kind = promptKind(a);
+    if (wait && (!kind || kind === 'reply')) kind = 'declared';
     const prUrl = a && (kind || a.state !== 'active') ? a.pr_url || '' : '';
-    if (kind || prUrl) out.push({ s, kind, prUrl });
+    if (kind || prUrl) out.push({ s, kind, prUrl, wait });
   }
   return out;
 }
@@ -158,14 +173,15 @@ export async function prStates(urls, env, now = Date.now() / 1000) {
 
 // ---- сборка ----
 
-export function entryOf({ s, kind, prUrl }, prs, now, rel) {
+export function entryOf({ s, kind, prUrl, wait }, prs, now, rel) {
   const a = s.agent || {};
   const pr = prUrl ? { url: prUrl, ...(({ state, reason }) => ({ state, ...(reason ? { reason } : {}) }))(prs.get(prUrl) || { state: 'unknown' }) } : null;
   const prWaits = pr && pr.state !== 'MERGED' && pr.state !== 'CLOSED';
   const k = kind || (prWaits ? 'pr' : null);
   if (!k) return null;
-  const since = Number(a.updated) || 0;
-  const text = k === 'question' ? a.question
+  const since = (k === 'declared' ? Number(wait.setAt) : 0) || Number(a.updated) || 0;
+  const text = k === 'declared' ? wait.ask
+    : k === 'question' ? a.question
     : k === 'permission' || k === 'attention' ? a.message
       : k === 'reply' ? a.summary || a.lastSummary
         : a.summary || a.lastSummary || pr.url;
@@ -180,6 +196,7 @@ export function entryOf({ s, kind, prUrl }, prs, now, rel) {
     hint: '',
     state: a.state || null,
     ...(pr ? { pr } : {}),
+    ...(wait ? { wait } : {}),
     own: rel.own.has(s.id),
     parent: rel.parent.get(s.id) ?? null,
   };
@@ -224,7 +241,8 @@ export function buildTree(entries, rel, titles) {
 function line(e, depth) {
   const pad = '  '.repeat(depth);
   if (!e.waiting && e.waiting !== undefined) return `${pad}${e.name ?? '?'}  ${e.short}  (not waiting)`;
-  const head = `${pad}${e.name ?? '?'}  ${e.short}  ${e.kind}  ${e.ageSec == null ? '?' : ago(e.ageSec)}  -> ${e.hint}`;
+  const kind = e.kind === 'declared' ? `declared:${e.wait.kind}` : e.kind;
+  const head = `${pad}${e.name ?? '?'}  ${e.short}  ${kind}  ${e.ageSec == null ? '?' : ago(e.ageSec)}  -> ${e.hint}`;
   return e.text ? `${head}\n${pad}    ${clip(e.text, 140)}` : head;
 }
 
