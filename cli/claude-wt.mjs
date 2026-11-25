@@ -8,6 +8,7 @@ const USAGE = `usage: claude-wt <group> <action> [args] [--json] [--url URL] [--
 
 Commands:
   tree [--json]                          sessions, windows, heads and children, snapshots; marks your own
+  waiting [--tree] [--json]              live sessions waiting for something (permission, question, reply, PR) and how to clear it
   window focus <session>                 raise the existing window of your session (never opens one)
   window layout <head>                   lay out the windows of your head's group
   window place <session> --zone M:P      move your session's existing window into FancyZones zone P of monitor M
@@ -43,6 +44,7 @@ Options:
   --url URL         send to this manager instead of the window's tracker
   --machine HOST    use the tracker of this machine
   --clear           window icon/badge: drop what was set, back to the automatic one
+  --tree            waiting: group by head -> children
   -h, --help        this help
 
 Exit codes:
@@ -63,6 +65,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
     else if (a === '--clear') opts.clear = true;
+    else if (a === '--tree') opts.tree = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (VALUE_FLAGS.has(a)) {
       const v = argv[i + 1];
@@ -81,6 +84,7 @@ function parseArgs(argv) {
 const cmd = (file, name = 'default') => async () => (await import(`./lib/commands/${file}.mjs`))[name];
 const COMMANDS = {
   tree: cmd('tree'),
+  waiting: cmd('waiting'),
   'window focus': cmd('window-focus'),
   'window layout': cmd('window-layout'),
   'window place': cmd('window-place'),

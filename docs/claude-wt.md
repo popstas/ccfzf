@@ -11,6 +11,7 @@ something.
 
 ```
 claude-wt tree [--json]                  sessions, windows, heads and children, snapshots; marks your own
+claude-wt waiting [--tree] [--json]      live sessions waiting for something, and how to clear it
 claude-wt window focus <session>         raise the existing window of your session (never opens one)
 claude-wt window layout <head>           lay out the windows of your head's group
 claude-wt window place <session> --zone M:P   move your session's existing window into a FancyZones zone
@@ -46,7 +47,7 @@ it adopted; for an executor, only itself and its own children. Anything else —
 a session started by hand, another head's group — is refused.
 
 Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
-`tree` and `snapshot list` still work.
+`tree`, `waiting` and `snapshot list` still work.
 
 ## What each command does
 
@@ -56,6 +57,42 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   `id`, `created`, `host`, `sessions` (ids), `own` — true only when all its
   sessions are yours. Without `--json` it prints a short tree of live, own and
   windowed sessions.
+- **`waiting`** lists live sessions that wait for something, read-only, for
+  any session (not only your own). It reads only what the hooks and `ccfzf
+  --state` already know, plus the PR state from `gh`. Kinds, in the order they
+  are listed (oldest first within a kind):
+
+  | `kind` | When | `text` | `hint` |
+  |---|---|---|---|
+  | `permission` | `agent.state` is `question` and `agent.question` is empty: a permission dialog (also plan approval — the hook keeps no text for `ExitPlanMode`) | `agent.message` | approve in its window |
+  | `question` | `agent.question` is set: an open `AskUserQuestion`. Keyed on the field, not on the state — the hook sets it on PreToolUse, while the state is still `active` | the question | answer in its window |
+  | `reply` | the turn is over (`idle`/`review`) and the summary reads as a question to the human: it contains `?`, «жду твоих/ок/ответа/решения…», «твоё решение», «дай ок», "let me know", "should I", "want me to"… | the summary | reply in its chat |
+  | `pr` | the turn is over and `agent.pr_url` is a PR that is not `MERGED` or `CLOSED` | the summary | merge PR \<url\> |
+
+  The summary is the start of the last answer (see the hook), so a question at
+  its very end is not seen. "Claude is waiting for your input" is not a sign
+  by itself: every session gets it a minute after its turn ends. A session that
+  waits for someone other than the human cannot be told from this data. A
+  working session (`active`) with a PR is not waiting; a session with both a
+  question and an open PR is listed under the question, and its hint adds
+  "then merge PR". Closed sessions are left out.
+
+  Each entry: `id`, `short` (8 chars), `name`, `kind`, `since` (`agent.updated`:
+  the hook keeps it across the idle notification and compaction, so it is
+  when the wait began), `ageSec`, `text` (cut to 200), `hint`, `state`, `pr:
+  {url, state, reason?}` when the session has one, `own`, `parent`. The answer
+  also carries `live` (how many live sessions there are). `--tree` groups the
+  entries by head → children, as `tree` does, and with `--json` adds `tree`:
+  nested nodes, a head that does not wait itself is a node with `waiting:
+  false`.
+
+  PR state comes from `gh pr view <url> --json state`, one call per URL, all in
+  parallel, each killed after `CLAUDE_WT_GH_TIMEOUT_MS` (8 s): the network can
+  slow the command down but never hang it. Answers are cached in
+  `$XDG_CACHE_HOME/claude-wt/prs.json` (`CLAUDE_WT_CACHE_DIR`): `MERGED` and
+  `CLOSED` for good, `OPEN` for 10 minutes. Without `gh`, on a timeout or an
+  error the state is `unknown` with a `reason`, the session stays in the list,
+  and nothing is cached.
 - **`window focus`** only raises a window that exists. A session with no
   window in `--state` is refused with code 2 before anything is sent — an
   older window manager would open a new terminal instead. The request is
@@ -223,7 +260,9 @@ A snapshot that lists no sessions by id is refused: an empty list means
 Every path can be replaced, which is how the tests run without touching a
 live machine: `CCFZF_BIN` (default `ccfzf`), `CLAUDE_BIN` (`claude`),
 `CCFZF_WINDOWS_DIR` (`~/.ccfzf/windows`), `CCFZF_CHILDREN_DIR`
-(`~/.ccfzf/children`), `CCFZF_HEADS_DIR` (`~/.ccfzf/heads`). The session
+(`~/.ccfzf/children`), `CCFZF_HEADS_DIR` (`~/.ccfzf/heads`), and for
+`waiting` `GH_BIN` (`gh`), `CLAUDE_WT_CACHE_DIR` (`$XDG_CACHE_HOME/claude-wt`)
+and `CLAUDE_WT_GH_TIMEOUT_MS` (8000). The session
 commands read `~/.claude/sessions` and `~/.ccfzf/prompts` under `HOME`, and
 keep the overrides of their scripts: `SESSION_RENAME_DIR` (the rename queue)
 and `SPAWN_TEST_HEAD_MODE` (tests only: the head's permission mode instead of
