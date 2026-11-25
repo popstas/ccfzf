@@ -257,7 +257,10 @@ between sessions: no sender, no `from`.
   dialog may open at any moment and would take the keystrokes. A `question`
   state in the hooks' `state.json` is refused as well. On screen, the input box
   (`❯` between two `────` lines) must be there and empty; text already in it
-  (the human typing) is refused.
+  (the human typing) is refused. The screen is read with `get-text
+  --escapes`, and faint text (SGR 2) is dropped: Claude Code draws its
+  next-prompt suggestion and placeholder faint in an empty box, and on a plain
+  screen they look typed.
 - **WezTerm only.** The window is found in the tracker file of its machine:
   `windows[<sessionId>].app` must be WezTerm and `.pid` the pid of the
   `wezterm-gui` process of that window (written by windows11-manager). The

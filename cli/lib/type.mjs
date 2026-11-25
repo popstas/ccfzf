@@ -90,10 +90,57 @@ export function pickPane(listJson, names) {
 const RULE = /^\s*─{8,}(?:\s+\S.*\s+─+)?\s*$/;
 const PROMPT = /^\s*❯[\s\u00a0]?/;
 
+// Экран из `get-text --escapes` → простой текст без бледного (SGR 2, faint).
+// Бледным Claude Code рисует в пустом поле подсказку следующего промпта и
+// заглушку: на простом экране их не отличить от набранного (живая проверка
+// 25.11: в поле «стоял» текст, которого никто не печатал). Остальные
+// escape-последовательности (цвета, OSC 8 ссылок, выбор набора символов)
+// просто снимаются.
+export function plainScreen(raw) {
+  const s = String(raw ?? '');
+  let out = '';
+  let faint = false;
+  for (let i = 0; i < s.length;) {
+    const c = s[i];
+    if (c !== '\u001b') {
+      if (!faint || c === '\n' || c === '\r') out += c;
+      i += 1;
+      continue;
+    }
+    const n = s[i + 1];
+    if (n === '[') {
+      let j = i + 2;
+      while (j < s.length && !/[@-~]/.test(s[j])) j += 1;
+      if (s[j] === 'm') {
+        const params = s.slice(i + 2, j).split(';');
+        for (let k = 0; k < params.length; k++) {
+          const v = params[k].split(':')[0];
+          // 38/48/58 — цвет: `;5;n` или `;2;r;g;b`, их «2» и «5» — не атрибуты.
+          if ((v === '38' || v === '48' || v === '58') && !params[k].includes(':')) {
+            k += params[k + 1] === '5' ? 2 : params[k + 1] === '2' ? 4 : 0;
+          } else if (v === '' || v === '0' || v === '22') faint = false;
+          else if (v === '2') faint = true;
+        }
+      }
+      i = j + 1;
+    } else if (n === ']') {
+      let j = i + 2;
+      while (j < s.length && s[j] !== '\u0007' && !(s[j] === '\u001b' && s[j + 1] === '\\')) j += 1;
+      i = s[j] === '\u0007' ? j + 1 : j + 2;
+    } else if (n === '(' || n === ')') {
+      i += 3;
+    } else {
+      i += 2;
+    }
+  }
+  return out;
+}
+
 // Поле ввода Claude Code: строка `❯ …` и её продолжения между двумя линиями
 // `────`, последняя такая пара на экране. Нет поля — null (на экране диалог).
+// Экран — сырой из `get-text --escapes` или уже простой: бледное снимается.
 export function inputBox(screen) {
-  const lines = String(screen ?? '').split(/\r?\n/).map((l) => l.replace(/\r$/, ''));
+  const lines = plainScreen(screen).split(/\r?\n/).map((l) => l.replace(/\r$/, ''));
   for (let end = lines.length - 1; end > 0; end--) {
     if (!RULE.test(lines[end])) continue;
     let start = end - 1;
@@ -160,7 +207,7 @@ try {
     @{ code = $pr.ExitCode; out = $o.Result; err = $e.Result.Trim() }
   }
   function Screen([int]$pane) {
-    $g = Wez @('get-text', '--pane-id', [string]$pane) $null
+    $g = Wez @('get-text', '--escapes', '--pane-id', [string]$pane) $null
     if ($g.code -ne 0) { return $null }
     $g.out
   }

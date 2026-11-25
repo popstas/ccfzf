@@ -8,7 +8,7 @@ import { runCli, world, now } from './helpers.mjs';
 import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, GRAND, OTHER } from './fixtures.mjs';
 import { adoptedLink } from '../../cli/lib/commands/session-type.mjs';
 import {
-  checkText, readiness, normTitle, titleMatches, pickPane, inputBox, boxHasText, boxIsText,
+  checkText, readiness, normTitle, plainScreen, titleMatches, pickPane, inputBox, boxHasText, boxIsText,
   parseOut, payload, encodeScript, sshCommand, stdinFor, BOOT, SCRIPT, sshNotConnected,
 } from '../../cli/lib/type.mjs';
 
@@ -125,6 +125,24 @@ test('inputBox: пустое поле, текст, многострочное, �
   // Линии без ❯ между ними (рамка вывода) — не поле, ищется выше.
   const framed = ['x', RULE, '❯ typed', RULE, 'mid', RULE, 'not a prompt', RULE].join('\n');
   assert.equal(inputBox(framed), 'typed');
+});
+
+test('бледная подсказка Claude Code в поле — не текст (get-text --escapes)', () => {
+  const E = '\u001b';
+  // Снято живьём 25.11: подсказка следующего промпта в пустом поле, SGR 0;2.
+  const ghost = [
+    `${E}[38;5;244m${RULE}`,
+    `${E}[39m❯\u00a0${E}(B${E}[0;2mпроверка 2: печать с Enter${E}(B${E}[0m${E}[38;5;246m     \r`,
+    `${E}[38;5;244m${RULE}`,
+    `${E}[39m  ${E}[38;5;246m⏸ manual mode on · PR ${E}]8;id=u-1;https://x/45${E}\\#45${E}]8;;${E}\\\r`,
+  ].join('\n');
+  assert.equal(inputBox(ghost), '');
+  const typed = ghost.replace(`${E}[0;2mпроверка 2: печать с Enter`, `${E}[0mнабрано руками`);
+  assert.equal(inputBox(typed), 'набрано руками');
+  // 38;2;r;g;b — цвет, а не «бледный»; 22 снимает бледный.
+  assert.equal(plainScreen(`${E}[38;2;10;20;30mцвет${E}[2mтень${E}[22mснова`), 'цветснова');
+  assert.equal(plainScreen(`a${E}[1;2mb${E}[mc`), 'ac');
+  assert.ok(SCRIPT.includes("'get-text', '--escapes'"));
 });
 
 test('boxHasText и boxIsText', () => {
