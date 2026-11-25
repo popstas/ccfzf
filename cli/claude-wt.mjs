@@ -26,6 +26,11 @@ Commands:
   session open <session>                 open a window for your session that has none (never a second one)
   session unread <session>               mark your session unseen for the picker (no window is raised)
   session seen <session>                 mark your session seen: clears unread, puts the taskbar light out
+  session type <child> <text> [--enter]  type into the input box of your child session, as if typed by hand
+                                         (only children opened by session spawn, never adopted ones; WezTerm
+                                         over ssh; refused unless the child is idle with an empty input box:
+                                         never into a permission dialog). Logged to ~/.ccfzf/typed.jsonl
+  session type <child> --check           show the child's input box, type nothing
 
 Session and head commands (moved from the skill scripts; arguments, JSON and exit
 codes are compatible with the skill scripts: one JSON line on stdout, always):
@@ -49,6 +54,9 @@ Options:
   --machine HOST    use the tracker of this machine
   --clear           window icon/badge: drop what was set, back to the automatic one
   --tree            waiting: group by head -> children
+  --enter           session type: press Enter after the text (sends it)
+  --check           session type: only read the child's input box
+  --                the rest are positional (a text starting with "-")
   -h, --help        this help
 
 Exit codes:
@@ -56,7 +64,10 @@ Exit codes:
   1  refused, the reason is on stderr ("error" with --json)
   2  not found: session, window or machine
   3  outcome unknown (timeout, or connection lost after sending); retry only focus/layout/place
-     session unread/seen and window icon/badge/taskbar, never session open or session spawn (a second window)
+     session unread/seen and window icon/badge/taskbar, never session open or session spawn (a second window).
+     session type: never resend blindly, the text could double. Run session type <child> --check first:
+     an empty input box or exactly your text in it — the same command again is safe (a text already
+     in the box is not typed twice, --enter only presses Enter); anything else — leave it to the human
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
@@ -67,7 +78,10 @@ function parseArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--') { pos.push(...argv.slice(i + 1)); break; }
     if (a === '--json') opts.json = true;
+    else if (a === '--enter') opts.enter = true;
+    else if (a === '--check') opts.check = true;
     else if (a === '--clear') opts.clear = true;
     else if (a === '--tree') opts.tree = true;
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -104,6 +118,7 @@ const COMMANDS = {
   'session open': cmd('session-open'),
   'session unread': cmd('session-mark', 'unread'),
   'session seen': cmd('session-mark', 'seen'),
+  'session type': cmd('session-type'),
 };
 
 // Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего

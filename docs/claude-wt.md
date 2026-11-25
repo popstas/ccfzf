@@ -27,6 +27,8 @@ claude-wt snapshot restore <id|last> [--sessions a,b]
 claude-wt session open <session>         open a window for your session that has none
 claude-wt session unread <session>       mark your session unseen for the picker (no window is raised)
 claude-wt session seen <session>         mark your session seen: clears unread, puts the taskbar light out
+claude-wt session type <child> <text> [--enter]  type into your child's input box, as by hand
+claude-wt session type <child> --check   show your child's input box, type nothing
 
 claude-wt session find --session-id <id> [--timeout s] [--interval s] | --name <n> | --list [--cwd c]
 claude-wt session rename --session-id <id> --to <name> | --cancel [--settings f]
@@ -235,6 +237,59 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action, `wait` included,
   (`focusedAt` for `seen`) is an old one: code 0 with a warning. Both are
   idempotent, so code 3 is safe to retry.
 
+### `session type`: typing into a child's input box
+
+`session type <child> <text> [--enter]` puts the text into the input box of a
+child session the way the human would type it, so the child cannot tell it from
+a prompt typed by hand (Stas's decisions of 2026-11-25). It is not a message
+between sessions: no sender, no `from`.
+
+- **Only spawned children.** The target must be a descendant of the calling
+  session by `~/.ccfzf/children`; the calling session itself is refused. Every
+  link from the child up to the caller must be a child opened by
+  `session spawn`: a record with `adopted: true` (`head adopt`) anywhere on
+  the way is refused — adoption takes in any live session, and typing in the
+  human's name would reach any of them (Stas's decision of 2026-11-25).
+- **Only the input box, never a dialog.** The child must be `idle` in its
+  Claude Code registry record (`~/.claude/sessions/<pid>.json`). `waiting` is
+  an open dialog (`waitingFor`: `approve <Tool>: …`, `input needed`,
+  `dialog open`) and is refused; `busy` is refused too, since a permission
+  dialog may open at any moment and would take the keystrokes. A `question`
+  state in the hooks' `state.json` is refused as well. On screen, the input box
+  (`❯` between two `────` lines) must be there and empty; text already in it
+  (the human typing) is refused. The screen is read with `get-text
+  --escapes`, and faint text (SGR 2) is dropped: Claude Code draws its
+  next-prompt suggestion and placeholder faint in an empty box, and on a plain
+  screen they look typed.
+- **WezTerm only.** The window is found in the tracker file of its machine:
+  `windows[<sessionId>].app` must be WezTerm and `.pid` the pid of the
+  `wezterm-gui` process of that window (written by windows11-manager). The
+  command goes over `ssh <tracker http.host>`: the command line carries only a
+  short loader (`-EncodedCommand`; the OpenSSH shell on Windows is cmd.exe,
+  8191 characters at most), the script and the data come on stdin. The script
+  talks to that window's socket
+  `%USERPROFILE%\.local\share\wezterm\gui-sock-<pid>` with `wezterm cli
+  --no-auto-start` — without `--no-auto-start` the cli starts a
+  `wezterm-mux-server` that stays on the machine. The window must have one
+  pane, and its title (without the status glyph) must be the child's name.
+  Windows Terminal and others: `unsupported terminal`.
+- **Paste, then Enter.** The text goes in as a bracketed paste, so newlines do
+  not send it early; multi-line text is fine. Control characters other than
+  `\n` and `\t` are refused (ESC would end the paste). `--enter` checks the
+  registry once more and that the text is seen in the box, then sends `\r`.
+  Without `--enter` the text just waits in the box.
+- **Logged.** Every attempt, refusals and unknown outcomes included, goes to
+  `~/.ccfzf/typed.jsonl`: before each send a `sending` line (not written —
+  nothing is sent), after it a line with the outcome. Fields: `at`, `headId`, `headName`, `child`,
+  `childId`, `childName`, `host`, `text`, `enter`, `result`
+  (`ok`|`refused`|`unknown`), `reason`, `step`, `typed`, `entered`,
+  `already`. `--check` types nothing and is not logged.
+- **Code 3 is never retried blindly** — the text could double. Run
+  `session type <child> --check` first. An empty box or exactly your text in
+  it — the same command again is safe: a text already in the box is not typed
+  twice, and `--enter` then only presses Enter. Anything else is left to the
+  human.
+
 ## Session and head commands
 
 `session find`, `session rename`, `session close`, `session spawn`, `head mark`
@@ -283,7 +338,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon`, `window badge` and `window taskbar` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon`, `window badge` and `window taskbar` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window; `session type` only after `--check` (see above) |
 
 ## Environment
 
@@ -297,7 +352,10 @@ and `CLAUDE_WT_GH_TIMEOUT_MS` (8000), for `wait` `CLAUDE_WT_STATE_DIR`
 commands read `~/.claude/sessions` and `~/.ccfzf/prompts` under `HOME`, and
 keep the overrides of their scripts: `SESSION_RENAME_DIR` (the rename queue)
 and `SPAWN_TEST_HEAD_MODE` (tests only: the head's permission mode instead of
-its transcript).
+its transcript). `session type` reads `CLAUDE_WT_SESSIONS_DIR`
+(`~/.claude/sessions`), `CLAUDE_WT_STATE_DIR` (`~/.claude/claude-wt`), writes
+`CLAUDE_WT_TYPED_LOG` (`~/.ccfzf/typed.jsonl`) and runs `CLAUDE_WT_SSH`
+(`ssh`).
 
 ## Install
 
