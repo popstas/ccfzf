@@ -89,6 +89,28 @@ def test_a_subagent_prompt_keeps_the_wait():
     assert run_start("сделай X", agent_id="a1b2c3") is True
 
 
+def test_a_cross_session_idle_notice_keeps_the_wait():
+    assert run_start('[Cross-session idle notice] ".child", which you asked to be notified about, '
+                     'is idle now \u2014 it finished a turn at 23:21. This is a notice from the harness.') is True
+
+
+def test_a_cross_session_delivery_notice_keeps_the_wait():
+    assert run_start('[Cross-session delivery notice] Your message to ".child" was held for its user.') is True
+
+
+def test_any_other_cross_session_notice_keeps_the_wait():
+    assert run_start('[Cross-session something new] text') is True
+
+
+def test_a_system_notification_frame_keeps_the_wait():
+    assert run_start('[SYSTEM NOTIFICATION - NOT USER INPUT] task finished') is True
+
+
+def test_human_text_that_starts_with_a_bracket_still_clears():
+    assert run_start("[срочно] берём B") is False
+    assert run_start("[Cross-session] это я пишу руками") is False, "без пробела после session — не заголовок харнесса"
+
+
 def test_human_text_that_starts_with_a_tag_still_clears():
     assert run_start("<div> съехал, поправь") is False
 

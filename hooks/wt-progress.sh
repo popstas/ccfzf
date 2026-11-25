@@ -702,6 +702,12 @@ wait_clear_on_prompt() {
   raw="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   [ -n "$raw" ] || return 0
+  # Уведомления харнесса голым текстом, без тега: `[Cross-session idle notice]`
+  # (подписка на простой соседа), `[Cross-session delivery notice]` и прочие
+  # `[Cross-session …]`, рамка `[SYSTEM NOTIFICATION - NOT USER INPUT]`. Head,
+  # подписанный на детей, терял бы ожидание на каждом уведомлении о простое
+  # (замечено 2026-11-25). Человеку «[» в начале промпта по-прежнему можно.
+  case "$raw" in '[Cross-session '* | '[SYSTEM NOTIFICATION - NOT USER INPUT]'*) return 0 ;; esac
   if [[ "$raw" == '<cross-session-message '* ]]; then
     from="$(sed -n '1s/^<cross-session-message [^>]*from="\([^"]*\)".*/\1/p' <<<"$raw")"
     pid="${from##*/}"
