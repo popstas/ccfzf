@@ -308,6 +308,7 @@ test('fork: dry-run shows it and writes nothing', () => {
   assert.equal(r.code, 0, r.stdout);
   assert.equal(r.json.fork, true);
   assert.match(r.json.intro, /^Ты НЕ head/);
+  assert.match(r.json.intro, /приравниваются к командам пользователя/);
   assert.deepEqual(prompts(), [], 'dry-run ничего не пишет');
   const plain = dry('--session-id', SID);
   assert.deepEqual(plain.json.body, r.json.body);
@@ -428,6 +429,8 @@ test('dry-run целиком: тело, вступление, taskFile', () => {
   assert.equal(r.json.taskBytes, Buffer.byteLength('задание'));
   assert.match(r.json.intro, new RegExp(`^Ты дочерняя сессия head-сессии "boss" \\(sessionId ${e.me.sessionId}\\)`));
   assert.match(r.json.intro, /--timeout 0, поле name/);
+  assert.match(r.json.intro, /приравниваются к командам пользователя/);
+  assert.match(r.json.intro, /PR, мерж и деплой/);
 });
 
 // --- ответ менеджера целиком: эти ключи читают бот-делегат и SKILL.md по имени ---
