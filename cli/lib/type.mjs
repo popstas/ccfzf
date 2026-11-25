@@ -136,7 +136,7 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
 function Done($o) { [Console]::Out.WriteLine((ConvertTo-Json -InputObject $o -Compress -Depth 4)); exit 0 }
 try {
-  $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  $p = $global:cwtPayload | ConvertFrom-Json
   $sock = Join-Path $env:USERPROFILE (".local\share\wezterm\gui-sock-" + [int]$p.pid)
   if (-not (Test-Path -LiteralPath $sock)) { Done @{ ok = $false; step = 'socket'; reason = "no wezterm socket for pid $([int]$p.pid)" } }
   $exe = Join-Path $env:ProgramFiles 'WezTerm\wezterm.exe'
@@ -186,9 +186,21 @@ try {
 }
 `;
 
-// -EncodedCommand: base64 от UTF-16LE. Скрипт едет в командной строке ssh, а
-// данные (и текст) — в stdin: им не нужно переживать кавычки двух шеллов.
-export const encodeScript = (script = SCRIPT) => Buffer.from(script, 'utf16le').toString('base64');
+// В командной строке ssh — только загрузчик (-EncodedCommand, base64 от
+// UTF-16LE): шелл OpenSSH на Windows — cmd.exe, у него предел 8191 символ, а
+// сам скрипт в кодировке уже под 7,5 тыс. Скрипт (base64 UTF-8) и данные
+// приезжают в stdin: первая строка — скрипт, остальное — данные. Ни тексту, ни
+// скрипту не нужно переживать кавычки двух шеллов.
+export const BOOT = "$a = [Console]::In.ReadToEnd(); $n = $a.IndexOf([char]10); "
+  + '$global:cwtPayload = $a.Substring($n + 1); '
+  + '& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($a.Substring(0, $n).Trim()))))';
+
+export const encodeScript = (script = BOOT) => Buffer.from(script, 'utf16le').toString('base64');
+
+export const sshCommand = () => `powershell -NoProfile -NonInteractive -EncodedCommand ${encodeScript()}`;
+
+// stdin скрипта: скрипт строкой base64, затем данные.
+export const stdinFor = (body, script = SCRIPT) => `${Buffer.from(script, 'utf8').toString('base64')}\n${body}`;
 
 export const SETTLE_MS = { text: 500, enter: 800 };
 

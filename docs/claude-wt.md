@@ -257,8 +257,10 @@ between sessions: no sender, no `from`.
 - **WezTerm only.** The window is found in the tracker file of its machine:
   `windows[<sessionId>].app` must be WezTerm and `.pid` the pid of the
   `wezterm-gui` process of that window (written by windows11-manager). The
-  command goes over `ssh <tracker http.host>` and runs a PowerShell script
-  (`-EncodedCommand`, data on stdin) that talks to that window's socket
+  command goes over `ssh <tracker http.host>`: the command line carries only a
+  short loader (`-EncodedCommand`; the OpenSSH shell on Windows is cmd.exe,
+  8191 characters at most), the script and the data come on stdin. The script
+  talks to that window's socket
   `%USERPROFILE%\.local\share\wezterm\gui-sock-<pid>` with `wezterm cli
   --no-auto-start` — without `--no-auto-start` the cli starts a
   `wezterm-mux-server` that stays on the machine. The window must have one
@@ -269,8 +271,9 @@ between sessions: no sender, no `from`.
   `\n` and `\t` are refused (ESC would end the paste). `--enter` checks the
   registry once more and that the text is seen in the box, then sends `\r`.
   Without `--enter` the text just waits in the box.
-- **Logged.** Every attempt, refusals and unknown outcomes included, is one
-  JSON line in `~/.ccfzf/typed.jsonl`: `at`, `headId`, `headName`, `child`,
+- **Logged.** Every attempt, refusals and unknown outcomes included, goes to
+  `~/.ccfzf/typed.jsonl`: before each send a `sending` line (not written —
+  nothing is sent), after it a line with the outcome. Fields: `at`, `headId`, `headName`, `child`,
   `childId`, `childName`, `host`, `text`, `enter`, `result`
   (`ok`|`refused`|`unknown`), `reason`, `step`, `typed`, `entered`,
   `already`. `--check` types nothing and is not logged.

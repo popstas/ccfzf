@@ -8,7 +8,7 @@ import { runCli, world, now } from './helpers.mjs';
 import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, OTHER } from './fixtures.mjs';
 import {
   checkText, readiness, normTitle, titleMatches, pickPane, inputBox, boxHasText, boxIsText,
-  parseOut, payload, encodeScript, SCRIPT, sshNotConnected,
+  parseOut, payload, encodeScript, sshCommand, stdinFor, BOOT, SCRIPT, sshNotConnected,
 } from '../../cli/lib/type.mjs';
 
 const RULE = '─'.repeat(60);
@@ -23,8 +23,11 @@ const FAKE_SSH = `#!/usr/bin/env node
 const fs = require('fs'); const path = require('path');
 const dir = process.env.FAKE_SSH_DIR;
 const input = fs.readFileSync(0, 'utf8');
-const p = JSON.parse(input);
-fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ argv: process.argv.slice(2), payload: p }) + '\\n');
+const nl = input.indexOf('\\n');
+const p = JSON.parse(input.slice(nl + 1));
+const journal = path.join(dir, '.ccfzf', 'typed.jsonl');
+const logged = fs.existsSync(journal) ? fs.readFileSync(journal, 'utf8').trim().split('\\n').length : 0;
+fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ argv: process.argv.slice(2), script: input.slice(0, nl), payload: p, logged }) + '\\n');
 const all = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json'), 'utf8'));
 const q = all[p.mode] || [];
 const r = (Array.isArray(q) ? q.shift() : q) || { stdout: '', stderr: 'no response', status: 1 };
@@ -53,9 +56,11 @@ function setup({ caller = HEAD, child = {}, win = {}, hook = null, responses = {
   const env = { ...w.env, CLAUDE_WT_SSH: fake, FAKE_SSH_DIR: w.dir };
   const read = (f) => (existsSync(join(w.dir, f)) ? readFileSync(join(w.dir, f), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   return {
+    dir: w.dir,
     run: (args) => {
       const r = runCli(['session', 'type', ...args], env);
-      return { ...r, calls: read('calls.jsonl'), log: read('.ccfzf/typed.jsonl'), o: args.includes('--json') && r.stdout ? JSON.parse(r.stdout) : null };
+      const raw = read('.ccfzf/typed.jsonl');
+      return { ...r, calls: read('calls.jsonl'), raw, log: raw.filter((e) => e.result !== 'sending'), o: args.includes('--json') && r.stdout ? JSON.parse(r.stdout) : null };
     },
     cleanup: w.cleanup,
   };
@@ -138,7 +143,17 @@ test('скрипт: каждый вызов wezterm cli несёт --no-auto-sta
   // Процесс wezterm запускается в одном месте — в Wez, и только с этими аргументами.
   assert.equal((SCRIPT.match(/ProcessStartInfo/g) ?? []).length, 1);
   assert.ok(!/Start-Process|&\s*\$exe|&\s*['"][^'"]*wezterm/i.test(SCRIPT));
-  assert.equal(Buffer.from(encodeScript(), 'base64').toString('utf16le'), SCRIPT);
+  assert.equal(Buffer.from(encodeScript(), 'base64').toString('utf16le'), BOOT);
+});
+
+test('командная строка ssh короткая: скрипт едет в stdin', () => {
+  // Шелл OpenSSH на Windows — cmd.exe, предел 8191 символ.
+  assert.ok(sshCommand().length < 2000, `${sshCommand().length}`);
+  const input = stdinFor('{"mode":"probe"}');
+  const nl = input.indexOf('\n');
+  assert.equal(Buffer.from(input.slice(0, nl), 'base64').toString('utf8'), SCRIPT);
+  assert.equal(input.slice(nl + 1), '{"mode":"probe"}');
+  assert.match(SCRIPT, /\$global:cwtPayload \| ConvertFrom-Json/);
 });
 
 test('payload: текст base64 UTF-8, probe без панели', () => {
@@ -168,7 +183,13 @@ test('печать без Enter: проба и текст, журнал с те�
   assert.equal(Buffer.from(r.calls[1].payload.text, 'base64').toString('utf8'), 'hello child');
   // ssh на адрес менеджера из трекера; скрипт — -EncodedCommand.
   assert.ok(r.calls[0].argv.includes('127.0.0.1'));
-  assert.match(r.calls[0].argv.at(-1), /^powershell -NoProfile -NonInteractive -EncodedCommand /);
+  assert.equal(r.calls[0].argv.at(-1), sshCommand());
+  assert.equal(Buffer.from(r.calls[0].script, 'base64').toString('utf8'), SCRIPT);
+  // Намерение записано до отправки текста, исход — после.
+  assert.equal(r.calls[0].logged, 0);
+  assert.equal(r.calls[1].logged, 1);
+  assert.deepEqual(r.raw.map((e) => [e.result, e.step]), [['sending', 'text'], ['ok', undefined]]);
+  assert.equal(r.raw[0].text, 'hello child');
   assert.equal(r.o.result, 'ok');
   assert.equal(r.o.entered, false);
   assert.equal(r.log.length, 1);
@@ -340,6 +361,25 @@ test('--check: поле ввода, без журнала', () => withSetup({ re
   assert.match(r0.stdout, /input is empty/);
   assert.deepEqual(r0.calls.map((c) => c.payload.mode), ['probe']);
   assert.equal(r0.log.length, 0, '--check не пишет в журнал');
+}));
+
+test('журнал не пишется — ничего не печатается', () => withSetup({ responses: GOOD }, (s) => {
+  writeFileSync(join(s.dir, '.ccfzf'), 'not a directory');
+  const r = s.run([CHILD1, 'hi', '--enter']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not writable.*nothing typed/);
+  assert.deepEqual(r.calls.map((c) => c.payload.mode), ['probe']);
+}));
+
+test('SENT, а потом отказ скрипта (get-text завис) — код 3, не отказ', () => withSetup({
+  responses: { ...GOOD, enter: [{ stdout: 'SENT\r\n{"ok":false,"step":"error","reason":"wezterm cli get-text timed out"}\r\n' }] },
+}, (s) => {
+  const r = s.run([CHILD1, 'hi', '--enter']);
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /sent, but wezterm cli get-text timed out/);
+  assert.equal(r.log.at(-1).result, 'unknown');
+  assert.equal(r.log.at(-1).step, 'enter');
+  assert.deepEqual(r.raw.map((e) => e.result), ['sending', 'sending', 'unknown']);
 }));
 
 test('--check с текстом или с --enter — ошибка вызова', () => withSetup({ responses: GOOD }, (s) => {

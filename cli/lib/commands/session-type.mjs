@@ -11,7 +11,8 @@
 // Текст вставляется (bracketed paste: переносы строк не отправляют его раньше
 // времени), Enter — отдельно и только с --enter, после повторной проверки
 // реестра и того, что текст встал в поле. Каждая попытка — строка в
-// ~/.ccfzf/typed.jsonl. --check ничего не печатает: показывает поле ввода.
+// ~/.ccfzf/typed.jsonl: строка-намерение (`sending`) перед каждой отправкой и
+// строка исхода. --check ничего не печатает: показывает поле ввода.
 //
 // Код 3 — исход неизвестен (ssh оборвался после отправки). Повторять вслепую
 // нельзя — текст удвоится: сначала --check, по полю ввода решать. Поле пустое
@@ -25,7 +26,7 @@ import { context, ownTarget, offMachine } from '../act.mjs';
 import { readJson } from '../sources.mjs';
 import {
   checkText, registryRecord, readiness, pickPane, inputBox, boxHasText, boxIsText,
-  encodeScript, payload, parseOut, sshNotConnected, journal,
+  sshCommand, stdinFor, payload, parseOut, sshNotConnected, journal,
 } from '../type.mjs';
 
 const SSH_TIMEOUT_MS = 45000;
@@ -61,8 +62,8 @@ function trackerWindow(windowsDir, host, id) {
 function ssh(bin, host, body) {
   const r = spawnSync(bin, [
     '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
-    `powershell -NoProfile -NonInteractive -EncodedCommand ${encodeScript()}`,
-  ], { input: body, encoding: 'utf8', timeout: SSH_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    sshCommand(),
+  ], { input: stdinFor(body), encoding: 'utf8', timeout: SSH_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
   const out = parseOut(r.stdout);
   return { status: r.status, stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT', spawnError: r.error && r.error.code !== 'ETIMEDOUT' ? r.error.message : null, ...out };
 }
@@ -72,12 +73,13 @@ function call(w, host, mode, args) {
   const r = ssh(w.ssh, host, payload(mode, args));
   const sends = mode !== 'probe';
   if (r.result?.ok === true) return { ok: true, result: r.result, sent: Boolean(r.result.sent) };
+  // Ушло, а потом сломалось (get-text завис, ssh оборвался): не отказ — исход неизвестен.
+  if (sends && r.sent) return { code: EXIT.UNKNOWN, error: `${host}: sent, but ${r.result?.reason || 'no answer after it'}${r.timedOut ? ' (timeout)' : ''}`, sent: true };
   if (r.result && r.result.ok === false) {
     return { code: EXIT.REFUSED, error: `${host}: ${r.result.reason || r.result.step || 'refused'}`, sent: false };
   }
   if (r.spawnError) return { code: EXIT.REFUSED, error: `ssh: ${r.spawnError}`, sent: false };
   if (!sends) return { code: EXIT.REFUSED, error: `ssh ${host}: ${r.timedOut ? 'timeout' : (r.stderr.trim() || `exit ${r.status}`)}`, sent: false };
-  if (r.sent) return { code: EXIT.UNKNOWN, error: `${host}: sent, but no answer after it${r.timedOut ? ' (timeout)' : ''}`, sent: true };
   if (sshNotConnected(r.status, r.stderr)) return { code: EXIT.REFUSED, error: `ssh ${host}: ${r.stderr.trim()}`, sent: false };
   return { code: EXIT.UNKNOWN, error: `ssh ${host}: ${r.timedOut ? 'timeout' : (r.stderr.trim() || `exit ${r.status}`)}; outcome unknown`, sent: null };
 }
@@ -91,15 +93,34 @@ export default async function sessionType(args, opts, env) {
   const entry = { headId: env.CLAUDE_CODE_SESSION_ID ?? null, child: childArg ?? null };
   // Результат команды → строка журнала (кроме --check) и сам результат.
   // `text` результата — для человека; в журнал идёт напечатанный текст.
+  const line = (o) => {
+    const { code, text: _human, warnings, error, id, title, ...rest } = o;
+    return {
+      ...entry, text: text ?? null, enter, ...rest,
+      ...(error ? { reason: error } : {}), ...(warnings?.length ? { warnings } : {}),
+    };
+  };
+  // Исход пишется после действия; не записался — результат тот же, с
+  // предупреждением: печать уже случилась, и отказом её не назвать.
   const log = (o) => {
-    if (!check) {
-      const { code, text: _human, warnings, error, id, title, ...rest } = o;
-      journal(w.log, {
-        ...entry, text: text ?? null, enter, ...rest,
-        ...(error ? { reason: error } : {}), ...(warnings?.length ? { warnings } : {}),
-      });
+    if (check) return o;
+    try {
+      journal(w.log, line(o));
+      return o;
+    } catch (e) {
+      return { ...o, warnings: [...(o.warnings ?? []), `journal ${w.log} not written: ${e.message}`] };
     }
-    return o;
+  };
+  // Строка-намерение — до каждой отправки в панель: CLI могут убить между
+  // отправкой и исходом, а Стас должен видеть всё, что ушло от его имени. Не
+  // записалась — ничего не отправляется.
+  const intend = (step, extra = {}) => {
+    try {
+      journal(w.log, line({ result: 'sending', step, ...extra }));
+      return null;
+    } catch (e) {
+      return { code: EXIT.REFUSED, error: `journal ${w.log} not writable (${e.message}); nothing typed` };
+    }
   };
   const refuse = (error, extra = {}, code = EXIT.REFUSED) => log({ code, result: 'refused', error, ...extra });
 
@@ -170,6 +191,8 @@ export default async function sessionType(args, opts, env) {
   } else {
     const r1 = ready();
     if (!r1.ok) return refuse(r1.reason, base);
+    const no1 = intend('text', base);
+    if (no1) return no1;
     const tx = call(w, tw.sshHost, 'text', { pid, pane: pane.pane, text });
     if (!tx.ok) {
       if (tx.code === EXIT.UNKNOWN) return log({ ...base, code: EXIT.UNKNOWN, result: 'unknown', step: 'text', error: `${tx.error}; run session type ${s.id} --check before anything else` });
@@ -187,6 +210,8 @@ export default async function sessionType(args, opts, env) {
   if (!landed) return refuse('the text is not seen in the input box; Enter not sent (look with --check)', { ...base, typed, step: 'enter' });
   const r2 = ready();
   if (!r2.ok) return refuse(`${r2.reason}; Enter not sent, the text stays in the input box`, { ...base, typed, step: 'enter' });
+  const no2 = intend('enter', { ...base, typed });
+  if (no2) return no2;
   const en = call(w, tw.sshHost, 'enter', { pid, pane: pane.pane });
   if (!en.ok) {
     if (en.code === EXIT.UNKNOWN) return log({ ...base, code: EXIT.UNKNOWN, result: 'unknown', step: 'enter', typed, error: `${en.error}; run session type ${s.id} --check before anything else` });
