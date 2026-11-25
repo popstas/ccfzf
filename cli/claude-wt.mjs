@@ -27,8 +27,9 @@ Commands:
   session unread <session>               mark your session unseen for the picker (no window is raised)
   session seen <session>                 mark your session seen: clears unread, puts the taskbar light out
   session type <child> <text> [--enter]  type into the input box of your child session, as if typed by hand
-                                         (WezTerm over ssh; refused unless the child is idle with an empty
-                                         input box: never into a permission dialog). Logged to ~/.ccfzf/typed.jsonl
+                                         (only children opened by session spawn, never adopted ones; WezTerm
+                                         over ssh; refused unless the child is idle with an empty input box:
+                                         never into a permission dialog). Logged to ~/.ccfzf/typed.jsonl
   session type <child> --check           show the child's input box, type nothing
 
 Session and head commands (moved from the skill scripts; arguments, JSON and exit

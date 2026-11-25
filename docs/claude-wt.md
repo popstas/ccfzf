@@ -244,8 +244,12 @@ child session the way the human would type it, so the child cannot tell it from
 a prompt typed by hand (Stas's decisions of 2026-11-25). It is not a message
 between sessions: no sender, no `from`.
 
-- **Only children.** The target must be a descendant of the calling session
-  by `~/.ccfzf/children`; the calling session itself is refused.
+- **Only spawned children.** The target must be a descendant of the calling
+  session by `~/.ccfzf/children`; the calling session itself is refused. Every
+  link from the child up to the caller must be a child opened by
+  `session spawn`: a record with `adopted: true` (`head adopt`) anywhere on
+  the way is refused — adoption takes in any live session, and typing in the
+  human's name would reach any of them (Stas's decision of 2026-11-25).
 - **Only the input box, never a dialog.** The child must be `idle` in its
   Claude Code registry record (`~/.claude/sessions/<pid>.json`). `waiting` is
   an open dialog (`waitingFor`: `approve <Tool>: …`, `input needed`,

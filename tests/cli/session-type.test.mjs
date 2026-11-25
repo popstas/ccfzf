@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCli, world, now } from './helpers.mjs';
-import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, OTHER } from './fixtures.mjs';
+import { loadState, trackers, CHILDREN, HEADS, HEAD, CHILD1, GRAND, OTHER } from './fixtures.mjs';
+import { adoptedLink } from '../../cli/lib/commands/session-type.mjs';
 import {
   checkText, readiness, normTitle, titleMatches, pickPane, inputBox, boxHasText, boxIsText,
   parseOut, payload, encodeScript, sshCommand, stdinFor, BOOT, SCRIPT, sshNotConnected,
@@ -37,10 +38,10 @@ process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '');
 process.exit(r.status ?? 0);
 `;
 
-function setup({ caller = HEAD, child = {}, win = {}, hook = null, responses = {} } = {}) {
+function setup({ caller = HEAD, child = {}, win = {}, hook = null, responses = {}, children = CHILDREN } = {}) {
   const t = trackers(now());
   t['box-a'].windows[CHILD1] = { title: '└child-one', app: 'wezterm-gui.exe', pid: 4242, ...win };
-  const w = world({ state: loadState(), trackers: t, children: CHILDREN, heads: HEADS, caller });
+  const w = world({ state: loadState(), trackers: t, children, heads: HEADS, caller });
   const sessions = join(w.dir, '.claude', 'sessions');
   const hooks = join(w.dir, '.claude', 'claude-wt');
   mkdirSync(sessions, { recursive: true });
@@ -235,6 +236,22 @@ test('в себя и в чужую — отказ без ssh, в журнале'
   assert.deepEqual(other.log.map((e) => e.result), ['refused', 'refused']);
   assert.equal(other.log[1].text, 'hi');
 }));
+
+test('усыновлённый ребёнок или потомок усыновлённого — отказ без ssh', () => {
+  const adopted = CHILDREN.map((c) => (c.sessionId === CHILD1 ? { ...c, adopted: true } : c));
+  withSetup({ children: adopted, responses: GOOD }, (s) => {
+    const r = s.run([CHILD1, 'hi']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /adopted \(head adopt\), not opened by session spawn/);
+    assert.equal(r.calls.length, 0);
+    assert.equal(r.log[0].result, 'refused');
+  });
+  assert.equal(adoptedLink(adopted, GRAND, HEAD), CHILD1);
+  assert.equal(adoptedLink(adopted, CHILD1, HEAD), CHILD1);
+  assert.equal(adoptedLink(CHILDREN, GRAND, HEAD), null);
+  // Звено выше вызывающей не считается: от него вызывающая не зависит.
+  assert.equal(adoptedLink(adopted, GRAND, CHILD1), null);
+});
 
 test('busy, waiting, question — отказ без ssh', () => {
   for (const [opts, re] of [

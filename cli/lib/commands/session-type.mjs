@@ -1,7 +1,8 @@
 // claude-wt session type <child> <text> [--enter] | --check: напечатать текст в
 // поле ввода дочерней сессии — так, как набрал бы его Стас (решения Стаса 25.11).
 //
-// Только потомкам вызывающей (не ей самой) и только в поле ввода: ребёнок
+// Только потомкам вызывающей (не ей самой), поднятым session spawn — не
+// усыновлённым head adopt ни на одном звене, — и только в поле ввода: ребёнок
 // обязан быть idle по реестру Claude Code, без `question` в state.json хуков,
 // а на экране — с пустым полем `❯`. busy, открытый диалог (status waiting),
 // непустое поле — отказ. Окно — WezTerm: печать идёт по ssh на машину окна
@@ -57,6 +58,17 @@ function trackerWindow(windowsDir, host, id) {
   const w = best.windows?.[id];
   if (!w || typeof w !== 'object') return { error: `tracker of ${host} has no window of this session`, code: EXIT.NOT_FOUND };
   return { win: w, sshHost: best.http?.host || best.host || host };
+}
+
+// Первое звено с adopted: true по пути ребёнок → … → вызывающая, иначе null.
+export function adoptedLink(children, id, caller) {
+  const byId = new Map(children.map((c) => [c.sessionId, c]));
+  const seen = new Set();
+  for (let cur = id; cur && cur !== caller && !seen.has(cur); cur = byId.get(cur)?.headId) {
+    seen.add(cur);
+    if (byId.get(cur)?.adopted === true) return cur;
+  }
+  return null;
 }
 
 function ssh(bin, host, body) {
@@ -143,6 +155,16 @@ export default async function sessionType(args, opts, env) {
   const s = t.session;
   entry.childId = s.id;
   if (s.id === ctx.pic.caller) return refuse('only child sessions are typed into, not this session itself');
+  // Только дети, поднятые session spawn (решение Стаса 25.11, 1a): head adopt
+  // берёт в дети любую живую сессию, и печать «от Стаса» достала бы до любой.
+  // Проверяется вся цепочка от ребёнка до вызывающей: усыновлённое звено где
+  // угодно — отказ.
+  const via = adoptedLink(ctx.pic.children, s.id, ctx.pic.caller);
+  if (via) {
+    return refuse(via === s.id
+      ? 'child was adopted (head adopt), not opened by session spawn: only spawned children are typed into'
+      : `child descends from an adopted session ${via} (head adopt): only spawned children are typed into`);
+  }
 
   const rec = registryRecord(w.sessionsDir, s.id);
   entry.childName = rec?.name ?? s.title;
