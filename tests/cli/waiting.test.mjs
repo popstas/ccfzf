@@ -9,7 +9,7 @@ import { asksHuman, promptKind } from '../../cli/lib/commands/waiting.mjs';
 const ID = (n) => `cccccccc-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const T = now();
 
-const sess = (n, title, agent, extra = {}) => ({ id: ID(n), title, live: true, cwd: '/w', mtime: T, kind: 'interactive', agent: { updated: T - 60, ...agent }, ...extra });
+const sess = (n, title, agent, extra = {}) => ({ id: ID(n), title, live: true, cwd: '/w', mtime: T, kind: 'interactive', ...(agent ? { agent: { updated: T - 60, ...agent } } : {}), ...extra });
 
 const PR_OPEN = 'https://github.com/o/r/pull/1';
 const PR_MERGED = 'https://github.com/o/r/pull/2';
@@ -24,6 +24,7 @@ const SESSIONS = [
   sess(7, 'working', { state: 'active', event: 'tool-done', pr_url: PR_OPEN }),
   sess(8, 'closed', { state: 'question', message: 'x' }, { live: false }),
   sess(9, 'noagent', null),
+  sess(10, 'mailfail', { state: 'question', event: 'attention', message: '.agent-mail failed', updated: T - 90 }),
 ];
 
 // gh-заглушка: состояние по номеру PR, каждый вызов пишется в лог.
@@ -55,14 +56,16 @@ const byName = (o) => Object.fromEntries(o.waiting.map((e) => [e.name, e]));
 test('виды ожидания: разрешение, вопрос, ответ в чате, открытый PR; порядок — по срочности', () => {
   const r = run(['--json']);
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.o.live, 8);
+  assert.equal(r.o.live, 9);
   assert.deepEqual(r.o.waiting.map((e) => [e.name, e.kind]), [
-    ['perm', 'permission'], ['ask', 'question'], ['decide', 'reply'], ['pr-open', 'pr'],
+    ['perm', 'permission'], ['ask', 'question'], ['mailfail', 'attention'], ['decide', 'reply'], ['pr-open', 'pr'],
   ]);
   const w = byName(r.o);
   assert.equal(w.perm.text, 'Claude needs your permission to use Bash');
   assert.equal(w.perm.hint, 'approve in its window');
   assert.equal(w.ask.text, 'Which option?');
+  assert.equal(w.mailfail.text, '.agent-mail failed');
+  assert.equal(w.mailfail.hint, 'look at its window', 'не всякое уведомление — запрос разрешения');
   assert.equal(w.ask.hint, 'answer in its window');
   assert.equal(w.decide.hint, 'reply in its chat');
   assert.equal(w['pr-open'].hint, `merge PR ${PR_OPEN}`);
@@ -152,16 +155,16 @@ test('--tree: ждущий ребёнок под неждущим head, head —
 test('без --json — сводка для человека; никого — так и сказано', () => {
   const r = run([]);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /^waiting: 4 of 8 live \(permission 1, question 1, reply 1, pr 1\)/);
+  assert.match(r.stdout, /^waiting: 5 of 9 live \(permission 1, question 1, attention 1, reply 1, pr 1\)/);
   assert.match(r.stdout, /decide {2}cccccccc {2}reply {2}2d {2}-> reply in its chat\n {4}Готово\. Жду твоих решений/);
   const n = run([], { sessions: [SESSIONS[3]] });
   assert.equal(n.stdout.trim(), 'nothing is waiting (1 live sessions)');
 });
 
 test('эвристика «сводка — вопрос к человеку»', () => {
-  for (const s of ['Жду твоих решений по вопросам из сводки.', 'Что дальше?', 'жду ок на мерж', 'Нужно твоё решение по схеме', 'Let me know which one.'])
+  for (const s of ['Жду твоих решений по вопросам из сводки.', 'Что дальше?', 'жду ок на мерж', 'Нужно твоё решение по схеме', 'Let me know which one.', 'Берём «A»?', 'Мержим (#12)?'])
     assert.equal(asksHuman(s), true, s);
-  for (const s of ['Оба пункта сделаны: чекаут обновлён.', 'Вопросов к тебе за этот шаг не появилось.', 'Ждёт ответа сервера, ретраю.', ''])
+  for (const s of ['Оба пункта сделаны: чекаут обновлён.', 'Вопросов к тебе за этот шаг не появилось.', 'Ждёт ответа сервера, ретраю.', 'см. https://x.example/y?a=1 там всё', ''])
     assert.equal(asksHuman(s), false, s);
   assert.equal(promptKind({ state: 'active', summary: 'Что дальше?' }), null, 'работающая не ждёт ответа в чате');
   assert.equal(promptKind({ state: 'active', question: 'A или B?' }), 'question');

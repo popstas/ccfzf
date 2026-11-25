@@ -64,15 +64,18 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
 
   | `kind` | When | `text` | `hint` |
   |---|---|---|---|
-  | `permission` | `agent.state` is `question` and `agent.question` is empty: a permission dialog (also plan approval — the hook keeps no text for `ExitPlanMode`) | `agent.message` | approve in its window |
+  | `permission` | `agent.state` is `question`, `agent.question` is empty and `agent.message` names a permission ("Claude needs your permission…"): a permission dialog | `agent.message` | approve in its window |
   | `question` | `agent.question` is set: an open `AskUserQuestion`. Keyed on the field, not on the state — the hook sets it on PreToolUse, while the state is still `active` | the question | answer in its window |
-  | `reply` | the turn is over (`idle`/`review`) and the summary reads as a question to the human: it contains `?`, «жду твоих/ок/ответа/решения…», «твоё решение», «дай ок», "let me know", "should I", "want me to"… | the summary | reply in its chat |
+  | `attention` | `agent.state` is `question` with any other message: the hook sets `question` on every notification but "waiting for your input" (a failed hook, `ExitPlanMode` is not observed yet) | `agent.message` | look at its window |
+  | `reply` | the turn is over (`idle`/`review`) and the summary reads as a question to the human: it has a `?` that ends a sentence (followed by a space, a quote, a bracket or the end, so `?a=1` in a URL does not count), «жду твоих/ок/ответа/решения…», «твоё решение», «дай ок», "let me know", "should I", "want me to"… | the summary | reply in its chat |
   | `pr` | the turn is over and `agent.pr_url` is a PR that is not `MERGED` or `CLOSED` | the summary | merge PR \<url\> |
 
   The summary is the start of the last answer (see the hook), so a question at
   its very end is not seen. "Claude is waiting for your input" is not a sign
   by itself: every session gets it a minute after its turn ends. A session that
-  waits for someone other than the human cannot be told from this data. A
+  waits for someone other than the human cannot be told from this data, and a
+  question left by an interrupted `AskUserQuestion` (no PostToolUse) stays
+  until the next prompt or turn end — its age tells. A
   working session (`active`) with a PR is not waiting; a session with both a
   question and an open PR is listed under the question, and its hint adds
   "then merge PR". Closed sessions are left out.

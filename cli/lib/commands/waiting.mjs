@@ -10,11 +10,12 @@ import { readJson } from '../sources.mjs';
 import { picture } from './tree.mjs';
 
 // Порядок вывода: то, что держит сессию прямо сейчас, — первым.
-export const KINDS = ['permission', 'question', 'reply', 'pr'];
+export const KINDS = ['permission', 'question', 'attention', 'reply', 'pr'];
 
 const HINTS = {
   permission: () => 'approve in its window',
   question: () => 'answer in its window',
+  attention: () => 'look at its window',
   reply: () => 'reply in its chat',
   pr: (e) => `merge PR ${e.pr.url}`,
 };
@@ -27,7 +28,7 @@ const TEXT_MAX = 200;
 // «Сводка — вопрос к человеку». Сводка — начало последнего ответа (хук берёт
 // первые строки), поэтому вопрос в самом конце ответа отсюда не виден.
 const ASKS = [
-  /\?/,
+  /\?(?=[\s"'»)\]]|$)/,
   /(^|[^\p{L}])жду\s+(тво|ваш|ок|ответ|решени|подтвержд|команд|отмашк)/iu,
   /(тво[её]|ваше)\s+(решение|ок|подтверждение|ответ)/iu,
   /тво(его|их)\s+(решени|ок|ответ|подтвержд)/iu,
@@ -49,14 +50,15 @@ export function ago(sec) {
   return `${Math.floor(sec / 86400)}d`;
 }
 
-// Вид ожидания живой сессии без учёта PR: permission | question | reply | null.
+// Вид ожидания живой сессии без учёта PR: permission | question | attention | reply | null.
 // question — по непустому полю, а не по состоянию: хук кладёт вопрос уже на
-// PreToolUse, когда состояние ещё active. Запрос разрешения — состояние question
-// без текста вопроса (его текста нет нигде, только message уведомления).
+// PreToolUse, когда состояние ещё active. Состояние question без текста вопроса
+// хук ставит на любое уведомление, кроме «waiting for your input»: запрос
+// разрешения узнаётся по его message, остальное (сбой, прочие уведомления) — attention.
 export function promptKind(agent) {
   if (!agent) return null;
   if (agent.question) return 'question';
-  if (agent.state === 'question') return 'permission';
+  if (agent.state === 'question') return /permission/i.test(agent.message || '') ? 'permission' : 'attention';
   if ((agent.state === 'idle' || agent.state === 'review') && asksHuman(agent.summary || agent.lastSummary)) return 'reply';
   return null;
 }
@@ -164,7 +166,7 @@ export function entryOf({ s, kind, prUrl }, prs, now, rel) {
   if (!k) return null;
   const since = Number(a.updated) || 0;
   const text = k === 'question' ? a.question
-    : k === 'permission' ? a.message || 'permission request'
+    : k === 'permission' || k === 'attention' ? a.message
       : k === 'reply' ? a.summary || a.lastSummary
         : a.summary || a.lastSummary || pr.url;
   const e = {
