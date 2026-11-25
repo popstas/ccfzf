@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness
@@ -37,9 +38,15 @@ def test_limit_requires_a_value():
 def test_both_spellings_are_accepted():
     # Значение верное — значит разбор до конца дошёл и код 2 не возвращён.
     # Дальше режим отработает по-настоящему, поэтому сравниваем именно с 2.
-    for args in (("--limit", "7", "--state"), ("--limit=7", "--state")):
-        r = run(*args)
-        assert r.returncode != 2, (args, r.returncode, r.stderr)
+    # Во временном HOME: настоящий прогон пишет дамп, памятку фактов и память
+    # worktree, и под живым HOME он писал бы их в файлы живого агрегатора.
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, HOME=tmp, XDG_CACHE_HOME=os.path.join(tmp, "cache"))
+        for k in [k for k in env if k.startswith("CCFZF_")]:
+            del env[k]
+        for args in (("--limit", "7", "--state"), ("--limit=7", "--state")):
+            r = subprocess.run(["bash", SRC, *args], capture_output=True, text=True, env=env)
+            assert r.returncode != 2, (args, r.returncode, r.stderr)
 
 
 def test_help_documents_the_key():
