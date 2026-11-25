@@ -169,3 +169,27 @@ test('эвристика «сводка — вопрос к человеку»',
   assert.equal(promptKind({ state: 'active', summary: 'Что дальше?' }), null, 'работающая не ждёт ответа в чате');
   assert.equal(promptKind({ state: 'active', question: 'A или B?' }), 'question');
 });
+
+test('объявленное ожидание: первым, вид declared, перебивает reply, но не вопрос в окне', () => {
+  const sessions = [
+    sess(20, 'old-reply', { state: 'idle', summary: 'Что дальше?', updated: T - 9000 }),
+    sess(21, 'declared', { state: 'idle', summary: 'Жду твоих решений', updated: T - 50 }, { wait: { kind: 'external', ask: 'ждём ответа Саши', clearBy: 'Саша ответит в чате', setAt: T - 7200 } }),
+    sess(22, 'declared-idle', { state: 'review', summary: 'Сделано.' }, { wait: { kind: 'decision', ask: 'A или B', setAt: T - 60 } }),
+    sess(23, 'perm+wait', { state: 'question', message: 'Claude needs your permission' }, { wait: { kind: 'review', ask: 'глянь PR', setAt: T - 10 } }),
+    sess(24, 'dead', { state: 'idle' }, { live: false, wait: { kind: 'decision', ask: 'x', setAt: 1 } }),
+  ];
+  const r = run(['--json'], { sessions });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.o.waiting.map((e) => [e.name, e.kind]), [
+    ['declared', 'declared'], ['declared-idle', 'declared'], ['perm+wait', 'permission'], ['old-reply', 'reply'],
+  ]);
+  const w = byName(r.o);
+  assert.equal(w.declared.text, 'ждём ответа Саши');
+  assert.equal(w.declared.hint, 'Саша ответит в чате', 'clear-by — подсказка');
+  assert.ok(Math.abs(w.declared.ageSec - 7200) < 5, 'возраст — от setAt');
+  assert.deepEqual(w.declared.wait, { kind: 'external', ask: 'ждём ответа Саши', clearBy: 'Саша ответит в чате', setAt: T - 7200 });
+  assert.equal(w['declared-idle'].hint, 'decide and reply in its chat');
+  assert.equal(w['perm+wait'].wait.kind, 'review', 'объявленное приложено и к виду из окна');
+  const t = run([], { sessions });
+  assert.match(t.stdout, /declared {2}cccccccc {2}declared:external {2}2h {2}-> Саша ответит в чате\n {4}ждём ответа Саши/);
+});

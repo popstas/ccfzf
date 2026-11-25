@@ -8,7 +8,11 @@ const USAGE = `usage: claude-wt <group> <action> [args] [--json] [--url URL] [--
 
 Commands:
   tree [--json]                          sessions, windows, heads and children, snapshots; marks your own
-  waiting [--tree] [--json]              live sessions waiting for something (permission, question, reply, PR) and how to clear it
+  waiting [--tree] [--json]              live sessions waiting for something (declared, permission, question, reply, PR) and how to clear it
+  wait set --kind decision|review|external --ask "..." [--clear-by "..."] [<session>]
+                                         declare what your session waits for; cleared by the next human prompt or your head's message
+  wait clear [<session>]                 drop the declared wait
+  wait show [<session>]                  the declared wait, if any
   window focus <session>                 raise the existing window of your session (never opens one)
   window layout <head>                   lay out the windows of your head's group
   window place <session> --zone M:P      move your session's existing window into FancyZones zone P of monitor M
@@ -36,7 +40,7 @@ codes are compatible with the skill scripts: one JSON line on stdout, always):
   head mark                              mark this session as a head
   head adopt [--release] <name|id>...    take live sessions in as children (or let them go)
 
-<session> is a sessionId, a unique prefix of it (6+ chars) or a name.
+<session> is a sessionId, a unique prefix of it (6+ chars) or a name; wait set/clear/show default to this session.
 Only your own sessions can be acted on: this session and its descendants.
 
 Options:
@@ -56,7 +60,7 @@ Exit codes:
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
-const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions', '--zone']);
+const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions', '--zone', '--kind', '--ask', '--clear-by']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -85,6 +89,9 @@ const cmd = (file, name = 'default') => async () => (await import(`./lib/command
 const COMMANDS = {
   tree: cmd('tree'),
   waiting: cmd('waiting'),
+  'wait set': cmd('wait', 'set'),
+  'wait clear': cmd('wait', 'clear'),
+  'wait show': cmd('wait', 'show'),
   'window focus': cmd('window-focus'),
   'window layout': cmd('window-layout'),
   'window place': cmd('window-place'),

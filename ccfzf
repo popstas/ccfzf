@@ -2995,6 +2995,49 @@ def darwin_sysctl(name):
 _METAS = {}
 
 
+WAIT_KINDS = ("decision", "review", "external")
+
+
+def waits_all(path=None):
+    """{id сессии: объявленное ожидание} из `<id>.wait.json` хукового каталога.
+
+    Пишет файл `claude-wt wait set`, стирает `wait clear` и хук на промпте
+    человека (или на сообщении своего head) — см. docs/claude-wt.md. Здесь
+    только чтение: один scandir, файлы есть у считанных сессий.
+
+    Битая запись пропускается молча: вид не из WAIT_KINDS или пустой `ask`
+    читателю показывать нечего. Наружу уходят только известные поля —
+    `kind`, `ask`, `clearBy` (если есть) и `setAt`.
+    """
+    path = path or STATUS_DIR
+    out = {}
+    tail = ".wait.json"
+    try:
+        with os.scandir(path) as it:
+            names = [e.name for e in it if e.name.endswith(tail)]
+    except OSError:
+        return out
+    for name in names:
+        sid = name[:-len(tail)]
+        if not UUID_RE.match(sid):
+            continue
+        try:
+            with open(os.path.join(path, name), encoding="utf-8") as fh:
+                o = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(o, dict):
+            continue
+        kind, ask = o.get("kind"), o.get("ask")
+        if kind not in WAIT_KINDS or not isinstance(ask, str) or not ask.strip():
+            continue
+        rec = {"kind": kind, "ask": ask.strip(), "setAt": int(num(o.get("setAt")))}
+        if isinstance(o.get("clearBy"), str) and o["clearBy"].strip():
+            rec["clearBy"] = o["clearBy"].strip()
+        out[sid] = rec
+    return out
+
+
 def meta_all(path):
     """{id сессии: содержимое <id>.meta.json} — один проход по каталогу.
 
@@ -4563,6 +4606,7 @@ elif mode == "state":
     sessions_path = sys.argv[4] if len(sys.argv) > 4 else ""
     limit = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else DUMP_SESSIONS
     comments = read_comments(sys.argv[7] if len(sys.argv) > 7 else "")
+    waits = waits_all()
     children_dir = sys.argv[8] if len(sys.argv) > 8 else ""
     if_changed = sys.argv[9] if len(sys.argv) > 9 else ""
     # Задачи вольтов — один раз на ответ, ключом по имени сессии (sess2task
@@ -4707,6 +4751,9 @@ elif mode == "state":
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
+            # Ожидание, объявленное агентом (`claude-wt wait set`): чего он
+            # ждёт и чем снять. Ключа нет, когда не объявлено; в дамп не едет.
+            **({"wait": waits[sid]} if sid in waits else {}),
             # Задача вольта, под которой сессию записал sess2task: по имени,
             # точно. Ключа нет, когда задачи нет.
             **({"task": task} if task else {}),

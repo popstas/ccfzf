@@ -9,7 +9,7 @@ context fill. Most of that is written by Claude Code hooks into
 
 | Hook | Events | Writes |
 |---|---|---|
-| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start; `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction. Also sets the terminal progress bar (OSC 9;4) |
+| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start; `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction; removes `<id>.wait.json` when a prompt answers it ([below](#declared-wait)). Also sets the terminal progress bar (OSC 9;4) |
 | [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output. With `--hook` it writes nothing and prints nothing: it only passes the hook input to `ccstatusline --hook` |
 | [`claude-wt-agent-state.sh`](../hooks/claude-wt-agent-state.sh) | SessionStart, PostCompact | `<id>.meta.json` — id, cwd, transcript, source, the claude pid and its start time. The pid is what ties a process to the session it writes after `/clear` or compaction — see [live-detection.md](live-detection.md) |
 | [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, on every SessionStart: startup, resume, clear, compact) |
@@ -18,6 +18,28 @@ context fill. Most of that is written by Claude Code hooks into
 next event, so a reader that only gets one file per session still has them.
 Files of sessions silent for a week are pruned on UserPromptSubmit, all of a
 session's files at once.
+
+## Declared wait
+
+`claude-wt wait set` writes `<id>.wait.json` next to the session's state
+([claude-wt.md](claude-wt.md)). `wt-progress.sh start` (UserPromptSubmit)
+removes it when the prompt is an answer, and only then. The hook tells by the
+`prompt` field of its stdin (measured on 2.1.332):
+
+| `prompt` | Clears |
+|---|---|
+| plain text — typed by the human | yes |
+| `<cross-session-message from="uds:/run/user/<uid>/cc-socks/<pid>.sock" …>` from the session's own head: `<pid>` is the sender's claude, `~/.claude/sessions/<pid>.json` names its `sessionId`, and it equals `headId` in `~/.ccfzf/children/<id>.json` (`CCFZF_CHILDREN_DIR`) | yes |
+| the same from any other session, from an unknown pid, or without a children record | no |
+| a harness wrapper — the whole text is one `<tag …>…</tag>` element: `<task-notification>` (a subagent report), `<teammate-message>` and the like | no |
+| empty | no |
+
+The transcript cannot help here: the prompt's own record is not in it yet when
+the hook runs. Human text that merely starts with a tag (`<div> is off`) still
+clears — only a closed wrapper counts as the harness. A loop or schedule wakeup
+arrives as a plain prompt too and clears the wait; nothing in stdin tells it
+from the human. The file is pruned with the rest of the session's files after
+a week of silence.
 
 ## Why the dump hook
 

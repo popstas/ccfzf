@@ -12,6 +12,9 @@ something.
 ```
 claude-wt tree [--json]                  sessions, windows, heads and children, snapshots; marks your own
 claude-wt waiting [--tree] [--json]      live sessions waiting for something, and how to clear it
+claude-wt wait set --kind decision|review|external --ask "..." [--clear-by "..."] [<session>]
+claude-wt wait clear [<session>]         drop the declared wait
+claude-wt wait show [<session>]          the declared wait, if any
 claude-wt window focus <session>         raise the existing window of your session (never opens one)
 claude-wt window layout <head>           lay out the windows of your head's group
 claude-wt window place <session> --zone M:P   move your session's existing window into a FancyZones zone
@@ -46,7 +49,7 @@ parent), however deep: for a head that is the head, its children and the ones
 it adopted; for an executor, only itself and its own children. Anything else —
 a session started by hand, another head's group — is refused.
 
-Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
+Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action, `wait` included, is refused;
 `tree`, `waiting` and `snapshot list` still work.
 
 ## What each command does
@@ -64,6 +67,7 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
 
   | `kind` | When | `text` | `hint` |
   |---|---|---|---|
+  | `declared` | the agent said what it waits for with `wait set` (`wait` in `--state`). It beats `reply` of the same session, not `permission`/`question`/`attention` (those block the window right now; the declared wait then rides along as `wait`). Age is from `setAt` | the `ask` | its `clearBy`, else by kind: decision → decide and reply in its chat, review → review and reply in its chat, external → waits for someone else |
   | `permission` | `agent.state` is `question`, `agent.question` is empty and `agent.message` names a permission ("Claude needs your permission…"): a permission dialog | `agent.message` | approve in its window |
   | `question` | `agent.question` is set: an open `AskUserQuestion`. Keyed on the field, not on the state — the hook sets it on PreToolUse, while the state is still `active` | the question | answer in its window |
   | `attention` | `agent.state` is `question` with any other message: the hook sets `question` on every notification but "waiting for your input" (a failed hook, `ExitPlanMode` is not observed yet) | `agent.message` | look at its window |
@@ -83,7 +87,8 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   Each entry: `id`, `short` (8 chars), `name`, `kind`, `since` (`agent.updated`:
   the hook keeps it across the idle notification and compaction, so it is
   when the wait began), `ageSec`, `text` (cut to 200), `hint`, `state`, `pr:
-  {url, state, reason?}` when the session has one, `own`, `parent`. The answer
+  {url, state, reason?}` when the session has one, `wait: {kind, ask, clearBy?,
+  setAt}` when one is declared, `own`, `parent`. The answer
   also carries `live` (how many live sessions there are). `--tree` groups the
   entries by head → children, as `tree` does, and with `--json` adds `tree`:
   nested nodes, a head that does not wait itself is a node with `waiting:
@@ -96,6 +101,27 @@ Outside Claude Code (no `CLAUDE_CODE_SESSION_ID`) every action is refused;
   `CLOSED` for good, `OPEN` for 10 minutes. Without `gh`, on a timeout or an
   error the state is `unknown` with a `reason`, the session stays in the list,
   and nothing is cached.
+- **`wait set|clear|show [<session>]`** — the agent declares what it waits
+  for, so `waiting` (and later the picker) can tell "waits for your decision"
+  from "waits for Sasha" and from plain idle. `--kind` is `decision` (you
+  have to choose), `review` (look at a result or a PR) or `external` (someone
+  else has to act); `--ask` is the question or what is awaited (one line, up
+  to 500 characters); `--clear-by` says what ends it, when that is not just an
+  answer in the chat. The session defaults to the caller; another one must be
+  your own (itself or a descendant). The record is
+  `~/.claude/claude-wt/<id>.wait.json` (`CLAUDE_WT_STATE_DIR`):
+  `{sessionId, kind, ask, clearBy?, setAt, setBy}`; a second `set` replaces
+  it. `ccfzf --state` passes it on as the session's `wait` (not into the
+  dump). It goes away with `wait clear` (`cleared: false` when there was
+  nothing — not an error), or by itself on the next UserPromptSubmit that is
+  an answer: a prompt typed by the human, or a message from the session's own
+  head (`headId` of its children record). A subagent report, a message from
+  any other session, a loop wakeup in a harness wrapper or an empty prompt do
+  not clear it — see `wait_clear_on_prompt` in
+  [hooks.md](hooks.md#declared-wait). A message that reaches a busy session
+  mid-turn does not start a prompt and clears nothing; neither does the end
+  of a session: the file of a closed session is ignored by `waiting` and
+  pruned with its state after a week.
 - **`window focus`** only raises a window that exists. A session with no
   window in `--state` is refused with code 2 before anything is sent — an
   older window manager would open a new terminal instead. The request is
@@ -265,7 +291,8 @@ live machine: `CCFZF_BIN` (default `ccfzf`), `CLAUDE_BIN` (`claude`),
 `CCFZF_WINDOWS_DIR` (`~/.ccfzf/windows`), `CCFZF_CHILDREN_DIR`
 (`~/.ccfzf/children`), `CCFZF_HEADS_DIR` (`~/.ccfzf/heads`), and for
 `waiting` `GH_BIN` (`gh`), `CLAUDE_WT_CACHE_DIR` (`$XDG_CACHE_HOME/claude-wt`)
-and `CLAUDE_WT_GH_TIMEOUT_MS` (8000). The session
+and `CLAUDE_WT_GH_TIMEOUT_MS` (8000), for `wait` `CLAUDE_WT_STATE_DIR`
+(`~/.claude/claude-wt`). The session
 commands read `~/.claude/sessions` and `~/.ccfzf/prompts` under `HOME`, and
 keep the overrides of their scripts: `SESSION_RENAME_DIR` (the rename queue)
 and `SPAWN_TEST_HEAD_MODE` (tests only: the head's permission mode instead of

@@ -676,6 +676,45 @@ prune_state() {
   return 0
 }
 
+# Ожидание, объявленное агентом (`claude-wt wait set`, файл `<id>.wait.json`),
+# снимает ответ на него: промпт человека или сообщение своего head. Отчёт
+# субагента, сообщение чужой сессии и прочие вставки харнесса — не ответ.
+#
+# Различаются по `prompt` в stdin (замерено 2026-11-25 на 2.1.332): у
+# набранного человеком — голый текст; у межсессионного —
+# `<cross-session-message from="uds:/run/user/<uid>/cc-socks/<pid>.sock" …>`
+# в первой строке, и pid — это claude отправителя, чья запись
+# `~/.claude/sessions/<pid>.json` называет его sessionId. Свой head — headId из
+# `~/.ccfzf/children/<id>.json`. Транскрипт тут не помощник: записи с промптом
+# в нём на этот момент ещё нет. Прочие вставки (`<task-notification>`,
+# `<teammate-message …>` и соседи) узнаются по виду: весь текст — один
+# элемент `<tag …>…</tag>`. Пустой `prompt` — тоже не человек (см. turnAt).
+wait_clear_on_prompt() {
+  local sid file raw from pid peer parent tag
+  local wrapper_re='^<([a-z][a-z0-9_-]*)[[:space:]>]'
+  sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
+  [ -n "$sid" ] || return 0
+  file="$state_dir/$sid.wait.json"
+  [ -f "$file" ] || return 0
+  raw="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  [ -n "$raw" ] || return 0
+  if [[ "$raw" == '<cross-session-message '* ]]; then
+    from="$(sed -n '1s/^<cross-session-message [^>]*from="\([^"]*\)".*/\1/p' <<<"$raw")"
+    pid="${from##*/}"
+    pid="${pid%.sock}"
+    case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+    peer="$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null || true)"
+    parent="$(jq -r '.headId // empty' "${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}/$sid.json" 2>/dev/null || true)"
+    [ -n "$peer" ] && [ "$peer" = "$parent" ] || return 0
+  elif [[ "$raw" =~ $wrapper_re ]]; then
+    tag="${BASH_REMATCH[1]}"
+    [[ "$raw" == *"</$tag>"* ]] && return 0
+  fi
+  rm -f -- "$file" 2>/dev/null || true
+  return 0
+}
+
 case "$event" in
   compact)
     # Автосжатие приходит и после конца хода: PreCompact/PostCompact без
@@ -720,7 +759,7 @@ case "$event" in
     # compact — это Pre/PostCompact: сжатие идёт посреди хода, сессия занята,
     # и без этого события хук свалился бы в `unknown` с серым баром.
     save_state active || true
-    if [ "$event" = "start" ]; then prune_state || true; fi
+    if [ "$event" = "start" ]; then prune_state || true; wait_clear_on_prompt || true; fi
     emit "$(printf '\033]9;4;1;100\007')"
     ;;
 
