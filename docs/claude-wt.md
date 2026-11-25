@@ -305,7 +305,7 @@ printed always, without `--json`. The scripts become thin wrappers that call
 |---|---|---|
 | `session find` | a live session by id (waits up to `--timeout`, 45 s), by name, or the list; name, registry name history, window place (`windowHost`, `monitor`, `zone`, `slot`) | 0 found, 2 not found, 1 error |
 | `session rename` | queues a name for the rename hook, which applies it on the target's next prompt; refuses a multi-line name, a taken one, or when the hook is not registered | 0 / 1 |
-| `session close` | SIGTERM to a child of this head (busy only with `--force`, SIGKILL only with `--kill`); only from a head with a live mark, only its own children, only when the pid still matches the registry | 0 closed / 1 |
+| `session close` | SIGTERM to a child of this head (busy only with `--force`, SIGKILL only with `--kill`); only from a head with a live mark, only its own children, only when the pid still matches the registry. After the exit it writes `~/.claude/claude-wt/<id>.closed.json`, so `ccfzf --state` and `waiting` drop the child at once instead of keeping it live by its last hook mark for up to two minutes | 0 closed / 1 |
 | `session spawn` | opens a child in a claude-wt window: `POST /claude-wt/session-new` to the freshest tracker with http; the child starts with a short intro, the task stays in `taskFile`. Never `bypassPermissions` for a child; `--fork` only with a `claude-wt-new` that supports it | 0, 1, 3 = outcome unknown — never resend, look the child up by the printed `sessionId` |
 | `head mark` | marks this session a head (`~/.ccfzf/heads/<id>.json`) | 0 / 1 |
 | `head adopt` | records live sessions as children of this head (`adopted: true`); `--release` only adopted ones | 0 nothing refused / 1 |

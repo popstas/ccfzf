@@ -32,6 +32,13 @@ evidence, applied in this order.
 
 4. **The hook mark.** A session whose `~/.claude/claude-wt/<id>.state.json` was
    updated within the last two minutes is live even with no process naming it.
+   Not after `claude-wt session close`: it leaves `<id>.closed.json` next to
+   the state file, and a hook mark no newer than that file is the trace of a
+   closed session, not evidence of work — neither for this step nor for the
+   move by hook mark above. A hook that writes after the close (the session
+   was resumed) counts again; a process naming the id never asks. Other exits
+   (`/exit`, a window closed by hand) leave no such file and keep the tail of
+   up to two minutes after the last hook event.
 
 5. **An open window.** A session named in `CCFZF_WINDOWS_FILE` is live whatever
    its transcript says: a window on screen is an observation, not a guess, and
