@@ -93,8 +93,9 @@ worktree root and the branch from its `HEAD`, empty when detached; the key is
 absent for every other session, a submodule included. A worktree is remembered
 in `~/.ccfzf/worktrees.json` (`CCFZF_WORKTREES_FILE`) as
 `{"<root>": {"main", "branch", "seen"}}`, written only when something changes
-and at most daily for `seen`; an entry whose directory is gone and that was not
-seen for 180 days is dropped. A removed worktree is answered from there; one
+and at most daily for `seen`, which is refreshed both when the worktree is seen
+and when a removed one is asked about; an entry whose directory is gone and
+that nobody asked about for 180 days is dropped. A removed worktree is answered from there; one
 removed before this memory existed is not recognized.
 
 What the reader never looked at is not sent at all: `file`, the per-session

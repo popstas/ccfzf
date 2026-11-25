@@ -536,9 +536,12 @@ def read_marks(marks_file):
 # worktree, которого уже нет: после `git worktree remove` его `.git` не
 # прочитать, а сессии из него остаются в истории и всплыли бы отдельными
 # проектами. Пишется только при новом знании (новый worktree, другая ветка
-# или основной репо) и раз в сутки на запись — отметкой `seen`; запись, чьего
-# каталога нет и которую не видели WT_MEMORY_DAYS, при записи выбрасывается:
-# к тому времени Claude Code давно почистил транскрипты этого worktree.
+# или основной репо) и раз в сутки на запись — отметкой `seen`. `seen`
+# освежается и тогда, когда о записи спрашивают уже без каталога: история
+# транскриптов может жить годами (`cleanupPeriodDays`), и пока сессия
+# удалённого worktree в списке, её запись нужна. Запись, чьего каталога нет и
+# о которой не спрашивали WT_MEMORY_DAYS, при записи выбрасывается: сессий
+# этого worktree в списке к тому времени уже нет.
 WORKTREES_FILE = os.environ.get("CCFZF_WORKTREES_FILE")
 if WORKTREES_FILE is None:
     WORKTREES_FILE = os.path.join(os.path.expanduser("~"), ".ccfzf", "worktrees.json")
@@ -598,6 +601,7 @@ def _wt_recall(cwd):
     if not best:
         return None
     v = WT_MEMORY[best]
+    _wt_remember(best, v["main"], v["branch"])
     return {"path": best, "branch": v["branch"], "main": v["main"]}
 
 

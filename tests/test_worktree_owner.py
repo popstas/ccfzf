@@ -157,6 +157,58 @@ def test_memory_is_not_rewritten_on_every_call():
         assert os.stat(CC["WORKTREES_FILE"]).st_mtime_ns == before
 
 
+def _reset_process():
+    CC["WT_CACHE"].clear()
+    CC["WT_MEMORY"].clear()
+    CC["WT_MEMORY_LOADED"][0] = False
+
+
+def test_asking_about_a_removed_worktree_keeps_its_memory_alive():
+    # История транскриптов живёт годами (`cleanupPeriodDays`): пока о записи
+    # спрашивают, срок считается от вопроса, а не от последнего живого `.git`.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = os.path.realpath(tmp)
+        fresh(tmp)
+        gone = os.path.join(tmp, "proj.gone")
+        old = int(time.time()) - 400 * 86400
+        os.makedirs(os.path.dirname(CC["WORKTREES_FILE"]))
+        with open(CC["WORKTREES_FILE"], "w", encoding="utf-8") as fh:
+            json.dump({gone: {"main": os.path.join(tmp, "proj"), "branch": "b", "seen": old},
+                       os.path.join(tmp, "other.gone"):
+                           {"main": os.path.join(tmp, "other"), "branch": "", "seen": old}}, fh)
+        assert CC["worktree_of"](gone)["main"] == os.path.join(tmp, "proj")
+        with open(CC["WORKTREES_FILE"], encoding="utf-8") as fh:
+            mem = json.load(fh)
+        assert mem[gone]["seen"] > old, mem
+        # Та, о которой не спрашивали дольше срока и чьего каталога нет, ушла.
+        assert os.path.join(tmp, "other.gone") not in mem, mem
+
+
+def test_project_cwd_is_the_tracker_string_or_the_normalized_main():
+    # Менеджер сравнивает `projectCwd` с `claudeWt.projects[].cwd` строка в
+    # строку: владелец — ровно путь записи трекера (без хвостового `/`, как
+    # project_owner и до worktree), а без записи — основной репо без `..` и
+    # хвостового `/` (commondir у worktree относительный: `../..`).
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = os.path.realpath(tmp)
+        fresh(tmp)
+        main = repo(os.path.join(tmp, "proj"))
+        wt = os.path.join(tmp, "proj.feat")
+        git(main, "worktree", "add", "-q", "-b", "feat", wt)
+        gitdir = open(os.path.join(wt, ".git")).read().split(":", 1)[1].strip()
+        assert open(os.path.join(gitdir, "commondir")).read().strip().startswith(".."), gitdir
+        owner = CC["project_owner"](wt, [], {})
+        assert owner == main and owner == os.path.normpath(owner), owner
+        assert ".." not in owner.split("/") and not owner.endswith("/"), owner
+        rec = main + ""
+        assert CC["project_owner"](wt, [{"cwd": rec, "name": "proj"}], {}) == rec
+        assert CC["project_owner"](wt, [{"cwd": main + "/", "name": "proj"}], {}) == main
+        # Из памяти — то же нормализованное.
+        _reset_process()
+        git(main, "worktree", "remove", "--force", wt)
+        assert CC["project_owner"](wt, [], {}) == main
+
+
 def test_owner_and_type_come_from_the_main_repo():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = os.path.realpath(tmp)
@@ -294,6 +346,31 @@ def test_dump_mode_writes_the_same_fields():
         assert dump[SID]["projectCwd"] == main, dump[SID]
         assert dump[SID]["worktree"] == {"path": wt, "branch": "feat/x"}, dump[SID]
         assert "projectCwd" not in dump[SID2], dump[SID2]
+
+
+def test_state_keeps_the_row_of_a_worktree_with_its_own_record():
+    # Своя запись трекера на worktree важнее наследства: строка проекта
+    # остаётся, тип — свой, `projectCwd` нет (владелец — сам `cwd`), а поле
+    # `worktree` есть — значок worktree у имени от этого не зависит.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = os.path.realpath(tmp)
+        main, wt, wdir = _fixture(tmp)
+        with open(os.path.join(wdir, "box.json"), "w", encoding="utf-8") as fh:
+            json.dump({"generated": int(time.time()), "host": "box", "pid": 7, "windows": {},
+                       "projects": [{"cwd": main, "name": "proj", "type": "home"},
+                                    {"cwd": wt, "name": "feat", "hotkey": "Ctrl+F9",
+                                     "type": "work"}]}, fh)
+        r = subprocess.run(["bash", SRC, "--state"], capture_output=True, text=True,
+                           env=_env(tmp, wdir))
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        w = {s["id"]: s for s in out["sessions"]}[SID]
+        assert "projectCwd" not in w and w["projectType"] == "work", w
+        assert w["worktree"] == {"path": wt, "branch": "feat/x"}, w
+        prow = [p for p in out["projects"] if p["path"] == wt]
+        assert prow and prow[0]["sessions"] == 1, out["projects"]
+        mrow = [p for p in out["projects"] if p["path"] == main][0]
+        assert mrow["sessions"] == 1, mrow
 
 
 def test_state_keeps_a_removed_worktree_under_its_main_project():
