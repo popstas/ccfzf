@@ -40,7 +40,7 @@ codes are compatible with the skill scripts: one JSON line on stdout, always):
                                          queue a new name; it applies on the target's next prompt
   session close --session-id <id> [--force] [--kill] [--wait s]
                                          close a child of this head (SIGTERM, wait)
-  session spawn --task <slug> | --name <n> --prompt-file <f> [--cwd d] [--dry-run] [--fork] ...
+  session spawn --task <slug> | --name <n> --prompt-file <f> [--cwd d] [--dry-run] [--fork] [--model <name>] ...
                                          open a child session; 3 = outcome unknown, never resend
   head mark                              mark this session as a head
   head adopt [--release] <name|id>...    take live sessions in as children (or let them go)

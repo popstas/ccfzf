@@ -47,13 +47,21 @@
 #                         under ~/.claude/projects, otherwise the launch is
 #                         refused — claude would only say "No conversation found"
 #                         and close.
-# This is how a child gets a channel server or a fork: the caller writes the
+#   <sessionId>.model     the model name, passed on as `--model <name>`: a
+#                         lowercase letter or digit, then up to 60 more of
+#                         [a-z0-9.[]-] (sonnet, claude-sonnet-5-5, opus[1m]);
+#                         trailing newlines are dropped. A model is a wish and
+#                         not a condition of the launch: a name of another shape
+#                         or a file that cannot be read is not passed on, the
+#                         reason goes to stderr, and the child starts on the
+#                         default model.
+# This is how a child gets a channel server, a fork or a model: the caller writes the
 # files, the window manager that sends the launch over ssh does not have to know
 # about them.
 #
 # Variables of a parent Claude Code session (CLAUDE_CODE_* and a few more) are
 # unset first. claude runs as `claude -n <name> --session-id <id>
-# [--resume <headId> --fork-session] [--permission-mode <m>]
+# [--resume <headId> --fork-session] [--permission-mode <m>] [--model <name>]
 # [--mcp-config <file>] [--dangerously-load-development-channels <s>...]
 # [-- <prompt>]` in an interactive $SHELL, so the rc file is read and `cd` fires
 # its chpwd hooks — the same way ccfzf starts its commands.
@@ -128,6 +136,7 @@ side_dir=$HOME/.ccfzf/prompts
 mcp_config=""
 channels=()
 fork=""
+model=""
 # Physical, because claude starts after `cd` into the child's cwd, where a
 # relative path would point elsewhere. No directory means no files.
 if [[ -d $side_dir ]] && side_dir=$(phys "$side_dir"); then
@@ -154,6 +163,19 @@ if [[ -d $side_dir ]] && side_dir=$(phys "$side_dir"); then
   if [[ -e $f || -L $f ]]; then
     [[ -f $f && -r $f ]] || die "cannot read fork file: $f"
     fork=1
+  fi
+  f=$side_dir/$sid.model
+  if [[ -e $f || -L $f ]]; then
+    # The name ends up in claude's argv. Letters spelled out, as for channels.
+    lc='abcdefghijklmnopqrstuvwxyz0123456789'
+    model_re="^[$lc][]$lc.[-]{0,60}\$"
+    if ! [[ -f $f && -r $f ]]; then
+      echo "$me: cannot read model file, starting on the default model: $f" >&2
+    elif line=$(<"$f") && [[ $line =~ $model_re ]]; then
+      model=$line
+    else
+      echo "$me: bad model in $f, starting on the default model: '$line'" >&2
+    fi
   fi
 fi
 
@@ -280,6 +302,7 @@ mv -f -- "$tmp" "$children/$sid.json"
 args=(-n "$name" --session-id "$sid")
 [[ -z $fork ]] || args+=(--resume "$head_id" --fork-session)
 [[ $mode == - ]] || args+=(--permission-mode "$mode")
+[[ -z $model ]] || args+=(--model "$model")
 [[ -z $mcp_config ]] || args+=(--mcp-config "$mcp_config")
 ((${#channels[@]} == 0)) || args+=(--dangerously-load-development-channels "${channels[@]}")
 # `--` keeps a prompt that starts with a dash from being read as an option.

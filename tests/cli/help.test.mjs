@@ -10,6 +10,7 @@ test('--help называет команды сессий и head', () => {
     assert.ok(r.stdout.includes(c), c);
   }
   assert.match(r.stdout, /compatible with the skill scripts/);
+  assert.match(r.stdout, /session spawn .*\[--model <name>\]/);
 });
 
 test('session find --help — справка с кодом 0, а не поиск', () => {

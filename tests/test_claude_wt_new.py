@@ -446,10 +446,13 @@ def test_a_refusal_stays_on_screen_in_a_terminal():
 CHANNELS = "--dangerously-load-development-channels"
 
 
-def side(e, sid=SID, mcp=None, channels=None, fork=None, where=None):
+def side(e, sid=SID, mcp=None, channels=None, fork=None, model=None, where=None):
     d = pathlib.Path(where or e.prompt.parent)
     d.mkdir(parents=True, exist_ok=True)
     paths = {}
+    if model is not None:
+        paths["model"] = d / (sid + ".model")
+        paths["model"].write_text(model, encoding="utf-8")
     if fork is not None:
         paths["fork"] = d / (sid + ".fork")
         paths["fork"].write_text(fork, encoding="utf-8")
@@ -567,9 +570,10 @@ def test_no_side_files_no_flags():
     рядом с заданием должен остаться прежним. Файлы другой сессии не в счёт."""
     e = Env()
     head_transcript(e)
-    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n", fork="")
     side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n", fork="",
-         where=e.root / ".ccfzf" / "prompts")
+         model="sonnet\n")
+    side(e, sid=OTHER, mcp="{}", channels="server:telegram-delegate\n", fork="",
+         model="sonnet\n", where=e.root / ".ccfzf" / "prompts")
     for prompt, tail in ((e.prompt, ["--", "скажи ок"]), ("-", [])):
         r = e.run(*e.good(prompt=prompt, mode="plan"))
         assert r.returncode == 0, r.stderr
@@ -648,6 +652,85 @@ def test_the_head_transcript_follows_claude_config_dir():
     r = e.run(*e.good(), extra_env={"CLAUDE_CONFIG_DIR": str(conf)})
     assert r.returncode == 0, r.stderr
     assert e.called()["argv"][4:7] == FORK, e.called()
+
+
+# --- модель ребёнка: <sid>.model ------------------------------------------------
+
+
+def test_a_model_file_is_passed_as_model():
+    for text, want in (("sonnet\n", "sonnet"), ("opus[1m]", "opus[1m]"),
+                       ("claude-sonnet-5-5\n\n", "claude-sonnet-5-5"),
+                       ("a" + "b" * 60 + "\n", "a" + "b" * 60)):
+        e = Env()
+        f = side(e, mcp="{}", channels="server:telegram-delegate\n", model=text)
+        r = e.run(*e.good(mode="plan"))
+        assert r.returncode == 0, (text, r.stderr)
+        assert "default model" not in r.stderr, (text, r.stderr)
+        assert e.called()["argv"] == [
+            "-n", "t", "--session-id", SID, "--permission-mode", "plan",
+            "--model", want,
+            "--mcp-config", str(f["mcp"].resolve()),
+            CHANNELS, "server:telegram-delegate",
+            "--", "скажи ок"], (text, e.called())
+
+
+def test_without_a_prompt_the_model_file_comes_from_the_prompts_dir():
+    e = Env()
+    side(e, model="sonnet\n", where=e.root / ".ccfzf" / "prompts")
+    r = e.run(*e.good(prompt="-"))
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                  "--model", "sonnet"], e.called()
+
+
+def test_model_with_a_fork():
+    e = Env()
+    head_transcript(e)
+    side(e, fork="", model="sonnet\n")
+    r = e.run(*e.good())
+    assert r.returncode == 0, r.stderr
+    assert e.called()["argv"] == ["-n", "t", "--session-id", SID, *FORK,
+                                  "--model", "sonnet", "--", "скажи ок"], e.called()
+
+
+def test_a_bad_model_is_not_passed_and_the_child_still_starts():
+    """Модель - пожелание, а не условие запуска: кривое имя в argv не идёт,
+    ребёнок стартует на модели по умолчанию, причина - в stderr."""
+    bad = {
+        "empty": "",
+        "only newlines": "\n\n",
+        "upper case": "Sonnet\n",
+        "option": "--dangerously-skip-permissions\n",
+        "dash first": "-sonnet\n",
+        "dot first": ".x\n",
+        "injection": "sonnet; rm -rf ~\n",
+        "substitution": "$(id)\n",
+        "space": "son net\n",
+        "leading space": " sonnet\n",
+        "slash": "a/b\n",
+        "cyrillic": "сонет\n",
+        "carriage return": "sonnet\r\n",
+        "two lines": "sonnet\nopus\n",
+        "too long": "a" + "b" * 61 + "\n",
+    }
+    for label, text in bad.items():
+        e = Env()
+        side(e, model=text)
+        r = e.run(*e.good())
+        assert r.returncode == 0, (label, r.returncode, r.stderr)
+        assert "claude-wt-new:" in r.stderr and "default model" in r.stderr, (label, r.stderr)
+        assert "--model" not in e.called()["argv"], (label, e.called())
+        assert e.called()["argv"] == ["-n", "t", "--session-id", SID,
+                                      "--", "скажи ок"], (label, e.called())
+
+
+def test_a_model_file_that_is_not_a_file_is_not_passed():
+    e = Env()
+    (e.prompt.parent / (SID + ".model")).mkdir()
+    r = e.run(*e.good())
+    assert r.returncode == 0, (r.returncode, r.stderr)
+    assert "default model" in r.stderr, r.stderr
+    assert "--model" not in e.called()["argv"], e.called()
 
 
 if __name__ == "__main__":

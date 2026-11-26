@@ -98,9 +98,16 @@ have to know about them. The files are looked up in the directory of
   an empty file adds no flag. Every other line must match
   `^server:[a-z0-9][a-z0-9-]{0,40}$` (the letters are ASCII whatever the
   locale): those lines end up in claude's argv.
+- `<sessionId>.model` holds the model name, passed on as `--model <name>`
+  (`claude-wt session spawn --model` writes it). Trailing newlines are dropped,
+  and the rest must match `^[a-z0-9][a-z0-9.[\]-]{0,60}$`: `sonnet`,
+  `claude-sonnet-5-5`, `opus[1m]`.
 
 A line of another shape, or a side file that is not a readable regular file, is
-a wrong argument: exit 2, and nothing written or started. Without the files the
+a wrong argument: exit 2, and nothing written or started. The model file is the
+exception: a model is a wish, not a condition of the launch, so a bad name or an
+unreadable file is not passed on, the reason goes to stderr, and the child
+starts on the default model. Without the files the
 command is exactly what it was before them. Nothing here removes them; that is
 for whoever wrote them.
 
@@ -115,9 +122,10 @@ In this order:
    `createdAt` is unix seconds. If claude then fails to start, the record stays: nothing cleans the
    directory up, and nothing has to, since only the ids `--state` lists are ever
    looked up.
-2. `claude -n <name> --session-id <id> [--permission-mode <m>] [--mcp-config <file>]
-   [--dangerously-load-development-channels <server:name>...] [-- <prompt>]`
-   (the middle two from [files next to the prompt](#files-next-to-the-prompt))
+2. `claude -n <name> --session-id <id> [--permission-mode <m>] [--model <name>]
+   [--mcp-config <file>] [--dangerously-load-development-channels <server:name>...]
+   [-- <prompt>]` (`--model` and the two after it from
+   [files next to the prompt](#files-next-to-the-prompt))
    runs in an interactive `$SHELL` after `cd` into `cwd`, the same way ccfzf
    starts its own commands, so the rc file is read and `chpwd` hooks fire. The
    `--` keeps a prompt that starts with a dash from being read as an option;

@@ -10,6 +10,8 @@
 //                 [--fork]                        ребёнок стартует форком разговора этого head:
 //                                                 ~/.ccfzf/prompts/<sid>.fork, claude-wt-new передаёт
 //                                                 --resume <headId> --fork-session
+//                 [--model <name>]                модель ребёнка: ~/.ccfzf/prompts/<sid>.model, claude-wt-new
+//                                                 передаёт --model <name> (sonnet, opus, claude-sonnet-5-5, opus[1m])
 // Только изнутри head-сессии (нужны CLAUDE_PID / CLAUDE_CODE_SESSION_ID). Ребёнок стартует с коротким
 // вступлением (кто его head, ответить ему «готов»); задача из --prompt-file лежит в taskFile, и head
 // шлёт её сообщением после «готов»: у первого промпта нет отправителя, и ребёнок с целой задачей
@@ -35,6 +37,8 @@ const ISSUED_NAME_TTL_MS = 10 * 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // То же правило, что у claude-wt-new: строку, которую он не примет, он остановит (код 2).
 const CHANNEL = /^server:[a-z0-9][a-z0-9-]{0,40}$/;
+// Имя модели уходит в argv claude: алиас, полный id, суффикс окна вроде [1m]. Тот же знак у claude-wt-new.
+const MODEL = /^[a-z0-9][a-z0-9.[\]-]{0,60}$/;
 // Префикс имени ребёнка (Стас 13.11, точка с 21.11: ведущее тире читается как опция в
 // claude --resume, ccfzf --session и менеджере). --name берётся как есть.
 const CHILD_MARK = '.';
@@ -179,7 +183,7 @@ function intro(me, cwd, fork) {
   ].join('\n');
 }
 
-// --session-id / --mcp-config / --dev-channels / --fork: проверка до всякой записи и запроса.
+// --session-id / --mcp-config / --dev-channels / --fork / --model: проверка до всякой записи и запроса.
 function sideArgs(args) {
   let sessionId;
   if (args['session-id'] !== undefined) {
@@ -204,22 +208,44 @@ function sideArgs(args) {
   }
   // Флаг: разбор взял бы следующее слово значением и потерял бы его.
   if (args.fork !== undefined && args.fork !== true) fail(`--fork takes no value, got: ${args.fork}`);
-  return { sessionId, mcpText, channels, fork: args.fork === true };
+  let model;
+  if (args.model !== undefined) {
+    if (typeof args.model !== 'string') fail('--model <name> needs a model name, e.g. sonnet');
+    if (!MODEL.test(args.model)) fail(`--model: "${args.model}" does not match ${MODEL}`);
+    model = args.model;
+  }
+  return { sessionId, mcpText, channels, fork: args.fork === true, model };
 }
 
-// Старый claude-wt-new не читает <sid>.fork, и ребёнок стартовал бы пустым под вступлением форка — сказать сразу.
-// Он работает на этой машине: менеджер запускает его сюда по ssh, и он читает файлы промпта, записанные ниже.
-function requireForkSupport(env) {
+// claude-wt-new работает на этой машине: менеджер запускает его сюда по ssh, и он читает файлы промпта,
+// записанные ниже. Старый файл не читает — сказать сразу, а не открыть ребёнка без него.
+function wrapperText(env, flag) {
   const dir = (env.PATH || '').split(':').find((d) => {
     try { accessSync(join(d, 'claude-wt-new'), fsc.X_OK); return true; } catch { return false; }
   });
-  if (!dir) fail('--fork: claude-wt-new не найден в PATH, поддержку форка не проверить');
+  if (!dir) return { missing: true };
   const path = join(dir, 'claude-wt-new');
-  let text = '';
-  try { text = readFileSync(path, 'utf8'); } catch (e) { fail(`--fork: cannot read ${path}: ${e.code ?? e.message}`); }
-  if (!text.includes('$sid.fork')) {
+  try { return { path, text: readFileSync(path, 'utf8') }; } catch (e) { fail(`${flag}: cannot read ${path}: ${e.code ?? e.message}`); }
+}
+
+// Без <sid>.fork ребёнок стартовал бы пустым под вступлением форка.
+function requireForkSupport(env) {
+  const w = wrapperText(env, '--fork');
+  if (w.missing) fail('--fork: claude-wt-new не найден в PATH, поддержку форка не проверить');
+  if (!w.text.includes('$sid.fork')) {
     fail('--fork: этот claude-wt-new не умеет форк, ребёнок стартовал бы пустым', {
-      why: `${path} не читает <sid>.fork: нужен claude-wt-new из ccfzf с PR #27 (popstas/ccfzf, feat/fork-child)`,
+      why: `${w.path} не читает <sid>.fork: нужен claude-wt-new из ccfzf с PR #27 (popstas/ccfzf, feat/fork-child)`,
+    });
+  }
+}
+
+// Без <sid>.model ребёнок молча стартовал бы на модели по умолчанию.
+function requireModelSupport(env) {
+  const w = wrapperText(env, '--model');
+  if (w.missing) fail('--model: claude-wt-new is not in PATH, cannot check that it passes the model on');
+  if (!w.text.includes('$sid.model')) {
+    fail('--model: this claude-wt-new does not pass a model on, the child would start on the default one', {
+      why: `${w.path} does not read <sid>.model: update claude-wt-new from popstas/ccfzf`,
     });
   }
 }
@@ -230,6 +256,7 @@ async function spawnChild(argv, env) {
   const zone = zoneArg(args);
   const side = sideArgs(args);
   if (side.fork) requireForkSupport(env);
+  if (side.model) requireModelSupport(env);
   requireHead(p, env);
   const cwd = resolve(typeof args.cwd === 'string' ? args.cwd : process.cwd());
   const promptSrc = args['prompt-file'];
@@ -255,8 +282,10 @@ async function spawnChild(argv, env) {
   const mcpConfig = side.mcpText !== undefined ? join(p.promptsDir, `${sessionId}.mcp.json`) : undefined;
   const channelsFile = side.channels ? join(p.promptsDir, `${sessionId}.channels`) : undefined;
   const forkFile = side.fork ? join(p.promptsDir, `${sessionId}.fork`) : undefined;
+  const modelFile = side.model ? join(p.promptsDir, `${sessionId}.model`) : undefined;
   const sideOut = {
     ...(mcpConfig && { mcpConfig }), ...(side.channels && { devChannels: side.channels }), ...(forkFile && { fork: true, forkFile }),
+    ...(modelFile && { model: side.model, modelFile }),
   };
   const introText = intro(me, cwd, side.fork);
   // SPAWN_TEST_HEAD_MODE: только для тестов, подменяет режим head из его транскрипта.
@@ -309,7 +338,8 @@ async function spawnChild(argv, env) {
   if (channelsFile) writeFileSync(channelsFile, side.channels.map((c) => `${c}\n`).join(''), { mode: 0o600 });
   // claude-wt-new смотрит только на наличие; id head внутри — для человека, читающего каталог.
   if (forkFile) writeFileSync(forkFile, `${me.headId}\n`, { mode: 0o600 });
-  const dropCopies = () => { for (const f of [promptFile, taskFile, mcpConfig, channelsFile, forkFile]) if (f) rmSync(f, { force: true }); };
+  if (modelFile) writeFileSync(modelFile, `${side.model}\n`, { mode: 0o600 });
+  const dropCopies = () => { for (const f of [promptFile, taskFile, mcpConfig, channelsFile, forkFile, modelFile]) if (f) rmSync(f, { force: true }); };
   const unknown = (code) => ({
     code: 3,
     out: {

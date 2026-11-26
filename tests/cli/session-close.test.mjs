@@ -61,7 +61,7 @@ test('busy привязанный: отказ с adopted', async () => {
 
 test('close удаляет копии промпта и файлы канала', async () => {
   const sid = liveChild();
-  for (const ext of ['md', 'task.md', 'mcp.json', 'channels', 'fork']) e.write(`.ccfzf/prompts/${sid}.${ext}`, 'x');
+  for (const ext of ['md', 'task.md', 'mcp.json', 'channels', 'fork', 'model']) e.write(`.ccfzf/prompts/${sid}.${ext}`, 'x');
   e.write('.ccfzf/prompts/other.md', 'x');
   const r = await runAsync(CLOSE, ['--session-id', sid, '--wait', '5'], e.env);
   assert.equal(r.code, 0, r.stdout);
