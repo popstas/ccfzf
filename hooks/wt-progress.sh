@@ -649,6 +649,19 @@ save_state() {
   fi
   [ "$quiet" = "true" ] || quiet=false
 
+  # `turnAsked` — в этом ходе был вопрос человеку: запрос разрешения или
+  # вопрос (attention, кроме простоя) либо вызов AskUserQuestion. Ставится
+  # там же, держится до следующего start (через compact тоже — переносом).
+  # Такой ход тихим не бывает (quiet_verdict, решение head 26.11): Стас
+  # вмешивался, итог хода — для него.
+  local turn_asked=false
+  if [ "$event" != "start" ] && [ -f "$target" ]; then
+    turn_asked="$(jq -r 'if .turnAsked == true then "true" else "false" end' "$target" 2>/dev/null || echo false)"
+  fi
+  [ "$state" = "question" ] && turn_asked=true
+  [ "$event" = "tool-start" ] && [ "$tool_name" = "AskUserQuestion" ] && turn_asked=true
+  [ "$turn_asked" = "true" ] || turn_asked=false
+
   # `loudAt` — `updated` последнего законченного не тихого хода: stop, fail и
   # idle-уведомление с quiet=false ставят его равным отметке этой записи,
   # остальное (тихий конец, start, tool-*, compact) переносит прежнее.
@@ -684,10 +697,11 @@ save_state() {
       --arg turn_from "$turn_from" \
       --argjson quiet "$quiet" \
       --argjson loud_at "$loud_at" \
+      --argjson turn_asked "$turn_asked" \
       '{sessionId: $id, state: $state, event: $event, message: $message,
         summary: $summary, lastSummary: $last_summary, summaryAt: $summary_at,
         turnAt: $turn_at, turnFrom: $turn_from, quiet: $quiet,
-        loudAt: $loud_at,
+        loudAt: $loud_at, turnAsked: $turn_asked,
         prompt: $prompt, question: $question, branch: $branch, pr_url: $pr_url,
         costUsd: $cost_usd, contextPct: $context_pct,
         transcript: $transcript, cwd: $cwd, updated: $updated}' \
@@ -898,6 +912,9 @@ quiet_verdict() {
   case "$end_state" in question | fail) echo false; return 0 ;; esac
   from="$(jq -r '.turnFrom // empty' "$state_dir/$sid.state.json" 2>/dev/null || true)"
   case "$from" in '' | human | head) echo false; return 0 ;; esac
+  # В ходе был вопрос человеку — итог для него, даже если работа идёт.
+  [ "$(jq -r '.turnAsked // false' "$state_dir/$sid.state.json" 2>/dev/null || true)" = "true" ] \
+    && { echo false; return 0; }
   kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
   case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
   while :; do

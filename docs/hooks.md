@@ -74,7 +74,10 @@ event (so it survives Pre/PostCompact with the state). It is `true` only on
 positive evidence:
 
 - `turnFrom` is neither `human` nor `head`;
-- the turn does not end in `question` or `fail`;
+- the turn does not end in `question` or `fail`, and had no question for the
+  human at all: `turnAsked` is set by a permission or question notification
+  and by an `AskUserQuestion` call, and kept until the next `start` (through
+  compaction too);
 - the session has no `<id>.wait.json` of kind `decision` or `review`;
 - work is going on: its own wait of kind `external`, or a live descendant at
   work — its `state.json` says `active` with no open `question` (a child on

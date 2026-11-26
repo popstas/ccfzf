@@ -392,6 +392,39 @@ def test_loud_at_on_failure_and_on_a_loud_idle_notice():
         w.close()
 
 
+def test_a_turn_with_a_permission_question_is_never_quiet():
+    w = World()
+    try:
+        w.set_state(CHILD, "active")
+        w.start(peer(CHILD_PID))
+        q = w.hook("attention", hook_event_name="Notification", message="Claude needs your permission to use Bash")
+        assert q["turnAsked"] is True, q
+        w.hook("tool-done", hook_event_name="PostToolUse", tool_name="Bash")
+        s = w.stop()
+        assert s["quiet"] is False and s["loudAt"] == s["updated"] and s["turnAsked"] is True, s
+        assert w.start(IDLE_NOTICE)["turnAsked"] is False, "start сбрасывает"
+        assert w.stop()["quiet"] is True, "следующий ход без вопроса снова тихий"
+    finally:
+        w.close()
+
+
+def test_a_turn_with_ask_user_question_is_never_quiet_even_across_compact():
+    w = World()
+    try:
+        w.wait("external")
+        w.start(IDLE_NOTICE)
+        w.hook("tool-start", hook_event_name="PreToolUse", tool_name="AskUserQuestion",
+               tool_input={"questions": [{"question": "A или B?"}]})
+        w.hook("tool-done", hook_event_name="PostToolUse", tool_name="AskUserQuestion")
+        w.hook("compact", hook_event_name="PreCompact", trigger="auto")
+        c = w.hook("compact", hook_event_name="PostCompact", trigger="auto")
+        assert c["turnAsked"] is True, c
+        s = w.stop()
+        assert s["quiet"] is False and s["loudAt"] == s["updated"], s
+    finally:
+        w.close()
+
+
 def test_state_dir_override():
     w = World()
     try:
