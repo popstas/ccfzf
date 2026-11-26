@@ -910,13 +910,17 @@ quiet_verdict() {
   sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
   [ -n "$sid" ] || { echo false; return 0; }
   case "$end_state" in question | fail) echo false; return 0 ;; esac
+  kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
+  case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
+  # Своё ожидание `external` решает и в ходе человека или своего head (решение
+  # Стаса 26.11): их промпт ожидание снимает (wait_clear_on_prompt), значит
+  # оно объявлено в этом же ходе — агент сам сказал «от Стаса ничего не нужно,
+  # работа идёт». Без объявления такой ход громкий, как раньше.
   from="$(jq -r '.turnFrom // empty' "$state_dir/$sid.state.json" 2>/dev/null || true)"
   case "$from" in '' | human | head) echo false; return 0 ;; esac
   # `turnAsked` здесь не смотрим (решение Стаса 26.11): на отвеченный вопрос
   # head часто отвечает «отдал задачу ребёнку», и звонок по такому концу хода
   # лишний. Открытый вопрос — состояние question, он и так громкий.
-  kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
-  case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
   while :; do
     rc=0; active_descendant "$sid" || rc=$?
     [ "$rc" = 0 ] && { echo true; return 0; }

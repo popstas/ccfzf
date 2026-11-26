@@ -73,7 +73,10 @@ terminal need not ring. It is computed on `stop` and on the idle notification
 event (so it survives Pre/PostCompact with the state). It is `true` only on
 positive evidence:
 
-- `turnFrom` is neither `human` nor `head`;
+- `turnFrom` is neither `human` nor `head` — unless the session declared its
+  own `external` wait during this turn (a human or head prompt clears the
+  wait, so one present at stop was set in this turn): the agent says nothing
+  is needed from the human and work goes on elsewhere;
 - the turn does not end in `question` or `fail`. A question the human already
   answered during the turn does not make it loud: the head often answers it
   with "handed the task to a child", and ringing on that is noise. The field
