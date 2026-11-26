@@ -1,6 +1,33 @@
 # Changelog
 
 
+## v0.18.0 - 2026-11-26
+
+### Features
+
+- cli: Session spawn --model <name>
+- claude-wt-new: A child gets its model from <sid>.model
+- A session in a git worktree belongs to its main project
+- cli: Session type — только дети из session spawn, не усыновлённые
+- cli: Claude-wt session type — печать в поле ввода дочерней сессии
+- Claude-wt wait set|clear|show, cleared by a human prompt or the head's message
+- cli: Claude-wt waiting [--tree] [--json]
+- cli: Session spawn intro tells the child that head's messages are the user's commands
+
+### Bug Fixes
+
+- A removed worktree stays remembered while its sessions are asked about
+- A child closed by session close is no longer live by its last hook mark
+- hooks: Harness notices in plain text keep the declared wait
+- cli: Session type — бледная подсказка Claude Code в поле не текст
+- cli: Session type — журнал до отправки, скрипт в stdin
+- hooks: A subagent prompt keeps the declared wait; test the fingerprint
+- cli: Waiting tells permission from other notifications, ? in URLs is no question
+
+### Testing
+
+- limit: Run the real --state in a temporary HOME
+
 ## v0.17.0 - 2026-11-24
 
 ### Features
