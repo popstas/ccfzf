@@ -652,8 +652,8 @@ save_state() {
   # `turnAsked` — в этом ходе был вопрос человеку: запрос разрешения или
   # вопрос (attention, кроме простоя) либо вызов AskUserQuestion. Ставится
   # там же, держится до следующего start (через compact тоже — переносом).
-  # Такой ход тихим не бывает (quiet_verdict, решение head 26.11): Стас
-  # вмешивался, итог хода — для него.
+  # Только для сведения: на quiet не влияет (решение Стаса 26.11, вопрос уже
+  # отвечен — конец хода судится общим правилом).
   local turn_asked=false
   if [ "$event" != "start" ] && [ -f "$target" ]; then
     turn_asked="$(jq -r 'if .turnAsked == true then "true" else "false" end' "$target" 2>/dev/null || echo false)"
@@ -912,9 +912,9 @@ quiet_verdict() {
   case "$end_state" in question | fail) echo false; return 0 ;; esac
   from="$(jq -r '.turnFrom // empty' "$state_dir/$sid.state.json" 2>/dev/null || true)"
   case "$from" in '' | human | head) echo false; return 0 ;; esac
-  # В ходе был вопрос человеку — итог для него, даже если работа идёт.
-  [ "$(jq -r '.turnAsked // false' "$state_dir/$sid.state.json" 2>/dev/null || true)" = "true" ] \
-    && { echo false; return 0; }
+  # `turnAsked` здесь не смотрим (решение Стаса 26.11): на отвеченный вопрос
+  # head часто отвечает «отдал задачу ребёнку», и звонок по такому концу хода
+  # лишний. Открытый вопрос — состояние question, он и так громкий.
   kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
   case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
   while :; do
