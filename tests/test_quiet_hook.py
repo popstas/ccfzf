@@ -212,6 +212,26 @@ def test_a_human_or_head_turn_always_calls():
         w.close()
 
 
+def test_a_human_or_head_turn_goes_quiet_on_an_external_wait_declared_in_it():
+    w = World()
+    try:
+        w.wait("external")
+        w.start("1a")
+        assert not (w.state_dir / (SID + ".wait.json")).exists(), "промпт человека снимает ожидание"
+        assert w.stop()["quiet"] is False, "без объявления — громко"
+        w.start("1a")
+        w.wait("external")  # агент объявил в этом ходе: от Стаса ничего не нужно
+        assert w.stop()["quiet"] is True
+        w.start(peer(HEAD_PID))
+        w.wait("external")
+        assert w.stop()["quiet"] is True
+        w.start("а что со статусом?")
+        w.wait("review")
+        assert w.stop()["quiet"] is False, "review — итог для Стаса"
+    finally:
+        w.close()
+
+
 def test_own_external_wait_is_enough():
     w = World()
     try:
@@ -392,7 +412,7 @@ def test_loud_at_on_failure_and_on_a_loud_idle_notice():
         w.close()
 
 
-def test_a_turn_with_a_permission_question_is_never_quiet():
+def test_an_answered_permission_question_does_not_make_the_turn_loud():
     w = World()
     try:
         w.set_state(CHILD, "active")
@@ -401,14 +421,13 @@ def test_a_turn_with_a_permission_question_is_never_quiet():
         assert q["turnAsked"] is True, q
         w.hook("tool-done", hook_event_name="PostToolUse", tool_name="Bash")
         s = w.stop()
-        assert s["quiet"] is False and s["loudAt"] == s["updated"] and s["turnAsked"] is True, s
+        assert s["quiet"] is True and s["turnAsked"] is True, s
         assert w.start(IDLE_NOTICE)["turnAsked"] is False, "start сбрасывает"
-        assert w.stop()["quiet"] is True, "следующий ход без вопроса снова тихий"
     finally:
         w.close()
 
 
-def test_a_turn_with_ask_user_question_is_never_quiet_even_across_compact():
+def test_an_answered_ask_user_question_keeps_the_turn_quiet_across_compact():
     w = World()
     try:
         w.wait("external")
@@ -420,7 +439,7 @@ def test_a_turn_with_ask_user_question_is_never_quiet_even_across_compact():
         c = w.hook("compact", hook_event_name="PostCompact", trigger="auto")
         assert c["turnAsked"] is True, c
         s = w.stop()
-        assert s["quiet"] is False and s["loudAt"] == s["updated"], s
+        assert s["quiet"] is True, s
     finally:
         w.close()
 

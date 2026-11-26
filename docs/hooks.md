@@ -73,11 +73,16 @@ terminal need not ring. It is computed on `stop` and on the idle notification
 event (so it survives Pre/PostCompact with the state). It is `true` only on
 positive evidence:
 
-- `turnFrom` is neither `human` nor `head`;
-- the turn does not end in `question` or `fail`, and had no question for the
-  human at all: `turnAsked` is set by a permission or question notification
-  and by an `AskUserQuestion` call, and kept until the next `start` (through
-  compaction too);
+- `turnFrom` is neither `human` nor `head` — unless the session declared its
+  own `external` wait during this turn (a human or head prompt clears the
+  wait, so one present at stop was set in this turn): the agent says nothing
+  is needed from the human and work goes on elsewhere;
+- the turn does not end in `question` or `fail`. A question the human already
+  answered during the turn does not make it loud: the head often answers it
+  with "handed the task to a child", and ringing on that is noise. The field
+  `turnAsked` (set by a permission or question notification and by an
+  `AskUserQuestion` call, kept until the next `start`, through compaction too)
+  is informational only;
 - the session has no `<id>.wait.json` of kind `decision` or `review`;
 - work is going on: its own wait of kind `external`, or a live descendant at
   work — its `state.json` says `active` with no open `question` (a child on
