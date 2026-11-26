@@ -193,3 +193,19 @@ test('объявленное ожидание: первым, вид declared, п
   const t = run([], { sessions });
   assert.match(t.stdout, /declared {2}cccccccc {2}declared:external {2}2h {2}-> Саша ответит в чате\n {4}ждём ответа Саши/);
 });
+
+test('turnFrom и quiet записи агента едут в запись waiting, false и пустое — нет', () => {
+  const sessions = [
+    sess(1, 'quiet-head', { state: 'idle', summary: 'Жду твоего ок?', turnFrom: 'child', quiet: true, loudAt: T - 600 }),
+    sess(2, 'loud-head', { state: 'review', summary: 'Готово, жду твоего ок', turnFrom: 'notice', quiet: false }),
+  ];
+  const r = run(['--json'], { sessions });
+  assert.equal(r.status, 0, r.stderr);
+  const w = byName(r.o);
+  assert.equal(w['quiet-head'].turnFrom, 'child');
+  assert.equal(w['quiet-head'].quiet, true);
+  assert.equal(w['loud-head'].turnFrom, 'notice');
+  assert.equal('quiet' in w['loud-head'], false);
+  assert.equal(w['quiet-head'].loudAt, T - 600);
+  assert.equal('loudAt' in w['loud-head'], false);
+});

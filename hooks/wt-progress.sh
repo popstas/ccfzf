@@ -7,7 +7,18 @@ input="$(cat 2>/dev/null || true)"
 # Каталог состояний сессий. Читается и с Windows — через сетевой диск,
 # смонтированный на домашний каталог этой машины, — см. src/claude-wt в
 # windows11-manager.
-state_dir="$HOME/.claude/claude-wt"
+#
+# Переменные — те же, что у CLI (cli/lib/sources.mjs): прогон хука на копии
+# каталогов не должен трогать живые состояния.
+state_dir="${CLAUDE_WT_STATE_DIR:-$HOME/.claude/claude-wt}"
+children_dir="${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}"
+sessions_dir="$HOME/.claude/sessions"
+
+# Сколько на stop перепроверять «тихий» ход, пока не найдётся активный потомок
+# (см. quiet_verdict): head шлёт ребёнку задачу последним шагом хода, и
+# start-хук ребёнка может прийти позже stop head.
+QUIET_RECHECK_MS="${QUIET_RECHECK_MS:-3000}"
+QUIET_POLL_MS="${QUIET_POLL_MS:-500}"
 
 # Как часто сводку можно пересчитывать посреди хода. Полторы минуты — компромисс
 # между «строка живая» и «хвост транскрипта читается на каждый вызов
@@ -608,6 +619,63 @@ save_state() {
   case "$cost_usd" in '' | *[!0-9]*) cost_usd=0 ;; esac
   case "$context_pct" in '' | *[!0-9]*) context_pct=0 ;; esac
 
+  # `turnFrom` — кто начал текущий ход (turn_origin), ставится на start и
+  # держится до следующего start. `quiet` — тихий конец хода (quiet_verdict):
+  # считают его вызывающие на stop и на idle-уведомлении и передают через
+  # QUIET; start сбрасывает в false, прочие события переносят прежнее — так
+  # оно переживает и Pre/PostCompact вместе с состоянием.
+  #
+  # Start посреди хода (промпт субагента, вставка в идущий ход) не понижает
+  # human/head: иначе ход, начатый человеком, стал бы кандидатом в quiet
+  # (решение head 26.11).
+  local turn_from="" quiet="false" prev_from="" prev_quiet="false" prev_state=""
+  if [ -f "$target" ]; then
+    prev_from="$(jq -r '.turnFrom // empty' "$target" 2>/dev/null || true)"
+    prev_quiet="$(jq -r 'if .quiet == true then "true" else "false" end' "$target" 2>/dev/null || echo false)"
+    prev_state="$(jq -r '.state // empty' "$target" 2>/dev/null || true)"
+  fi
+  if [ "$event" = "start" ]; then
+    turn_from="${TURN_ORIGIN:-$(turn_origin)}"
+    if [ "$prev_state" = "active" ]; then
+      case "$prev_from:$turn_from" in
+        human:human | human:head | head:human | head:head) ;;
+        human:* | head:*) turn_from="$prev_from" ;;
+      esac
+    fi
+    quiet=false
+  else
+    turn_from="$prev_from"
+    quiet="${QUIET:-$prev_quiet}"
+  fi
+  [ "$quiet" = "true" ] || quiet=false
+
+  # `turnAsked` — в этом ходе был вопрос человеку: запрос разрешения или
+  # вопрос (attention, кроме простоя) либо вызов AskUserQuestion. Ставится
+  # там же, держится до следующего start (через compact тоже — переносом).
+  # Такой ход тихим не бывает (quiet_verdict, решение head 26.11): Стас
+  # вмешивался, итог хода — для него.
+  local turn_asked=false
+  if [ "$event" != "start" ] && [ -f "$target" ]; then
+    turn_asked="$(jq -r 'if .turnAsked == true then "true" else "false" end' "$target" 2>/dev/null || echo false)"
+  fi
+  [ "$state" = "question" ] && turn_asked=true
+  [ "$event" = "tool-start" ] && [ "$tool_name" = "AskUserQuestion" ] && turn_asked=true
+  [ "$turn_asked" = "true" ] || turn_asked=false
+
+  # `loudAt` — `updated` последнего законченного не тихого хода: stop, fail и
+  # idle-уведомление с quiet=false ставят его равным отметке этой записи,
+  # остальное (тихий конец, start, tool-*, compact) переносит прежнее.
+  # Менеджер глушит мигание у quiet, только если окно смотрели после loudAt:
+  # непрочитанный итог не гаснет от следующего тихого хода (решение head 26.11).
+  local loud_at=0
+  if [ -f "$target" ]; then
+    loud_at="$(jq -r '.loudAt // 0' "$target" 2>/dev/null || echo 0)"
+    case "$loud_at" in '' | *[!0-9]*) loud_at=0 ;; esac
+  fi
+  case "$event:$state" in
+    stop:* | fail:* | attention:idle) [ "$quiet" = "true" ] || loud_at="$stamp" ;;
+  esac
+
   if jq -nc \
       --arg id "$session_id" \
       --arg state "$state" \
@@ -626,9 +694,14 @@ save_state() {
       --argjson summary_at "$summary_at" \
       --argjson turn_at "$turn_at" \
       --argjson updated "$stamp" \
+      --arg turn_from "$turn_from" \
+      --argjson quiet "$quiet" \
+      --argjson loud_at "$loud_at" \
+      --argjson turn_asked "$turn_asked" \
       '{sessionId: $id, state: $state, event: $event, message: $message,
         summary: $summary, lastSummary: $last_summary, summaryAt: $summary_at,
-        turnAt: $turn_at,
+        turnAt: $turn_at, turnFrom: $turn_from, quiet: $quiet,
+        loudAt: $loud_at, turnAsked: $turn_asked,
         prompt: $prompt, question: $question, branch: $branch, pr_url: $pr_url,
         costUsd: $cost_usd, contextPct: $context_pct,
         transcript: $transcript, cwd: $cwd, updated: $updated}' \
@@ -677,51 +750,181 @@ prune_state() {
 }
 
 # Ожидание, объявленное агентом (`claude-wt wait set`, файл `<id>.wait.json`),
-# снимает ответ на него: промпт человека или сообщение своего head. Отчёт
-# субагента, сообщение чужой сессии и прочие вставки харнесса — не ответ.
-#
-# Различаются по `prompt` в stdin (замерено 2026-11-25 на 2.1.332): у
-# набранного человеком — голый текст; у межсессионного —
-# `<cross-session-message from="uds:/run/user/<uid>/cc-socks/<pid>.sock" …>`
-# в первой строке, и pid — это claude отправителя, чья запись
-# `~/.claude/sessions/<pid>.json` называет его sessionId. Свой head — headId из
-# `~/.ccfzf/children/<id>.json`. Транскрипт тут не помощник: записи с промптом
-# в нём на этот момент ещё нет. Прочие вставки (`<task-notification>`,
-# `<teammate-message …>` и соседи) узнаются по виду: весь текст — один
-# элемент `<tag …>…</tag>`. Пустой `prompt` — тоже не человек (см. turnAt),
-# как и промпт с `agent_id` (субагент).
+# снимает ответ на него: промпт человека или сообщение своего head (turnFrom
+# human / head, см. turn_origin ниже). Отчёт субагента, сообщение чужой сессии
+# или потомка и прочие вставки харнесса — не ответ.
 wait_clear_on_prompt() {
-  local sid file raw from pid peer parent tag
-  local wrapper_re='^<([a-z][a-z0-9_-]*)[[:space:]>]'
+  local sid file
   sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
   [ -n "$sid" ] || return 0
   file="$state_dir/$sid.wait.json"
   [ -f "$file" ] || return 0
-  # Промпт субагента (в stdin есть agent_id) — не ответ человека.
-  [ -z "$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null || true)" ] || return 0
+  case "${TURN_ORIGIN:-$(turn_origin)}" in
+    human | head) rm -f -- "$file" 2>/dev/null || true ;;
+  esac
+  return 0
+}
+
+# Head сессии по записи claude-wt-new (`<id>.json` в children): headId или пусто.
+head_of() {
+  [ -n "${1:-}" ] || return 0
+  jq -r '.headId // empty' "$children_dir/$1.json" 2>/dev/null || true
+}
+
+# $1 — потомок $2 на любой глубине: подъём по headId, с пределом от цикла.
+is_descendant() {
+  local cur="$1" root="$2" depth=0
+  [ -n "$cur" ] && [ -n "$root" ] && [ "$cur" != "$root" ] || return 1
+  while [ "$depth" -lt 16 ]; do
+    cur="$(head_of "$cur")"
+    [ -n "$cur" ] || return 1
+    [ "$cur" = "$root" ] && return 0
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+# Откуда пришёл промпт этого UserPromptSubmit — значение поля `turnFrom`:
+#
+#   subagent — в stdin есть agent_id (промпт субагента);
+#   wrapper  — пустой prompt (вставка харнесса, см. turnAt) или весь текст —
+#              один элемент `<tag …>…</tag>`: `<task-notification>` (отчёт
+#              субагента), `<teammate-message>` и соседи;
+#   notice   — уведомление харнесса голым текстом: `[Cross-session …]`
+#              (`idle notice` подписки на простой, `delivery notice` и прочие),
+#              рамка `[SYSTEM NOTIFICATION - NOT USER INPUT]`;
+#   head / child / peer — `<cross-session-message from="uds:…/<pid>.sock" …>`:
+#              pid — claude отправителя, его `~/.claude/sessions/<pid>.json`
+#              называет sessionId. head — свой head (headId из
+#              `~/.ccfzf/children/<id>.json`), child — потомок на любой
+#              глубине, peer — кто угодно ещё, неизвестный pid тоже;
+#   human    — всё остальное: текст, набранный человеком.
+#
+# Различается по `prompt` в stdin (замерено 2026-11-25 на 2.1.332):
+# транскрипт тут не помощник — записи с промптом в нём на этот момент ещё нет.
+# Человеку «[» или «<» в начале промпта по-прежнему можно: в notice попадают
+# только заголовки выше, в wrapper — только закрытый элемент.
+turn_origin() {
+  local sid raw from pid peer parent tag
+  local wrapper_re='^<([a-z][a-z0-9_-]*)[[:space:]>]'
+  if [ -n "$(jq -r '.agent_id // empty' <<<"$input" 2>/dev/null || true)" ]; then
+    echo subagent; return 0
+  fi
   raw="$(jq -r '.prompt // empty' <<<"$input" 2>/dev/null || true)"
   raw="${raw#"${raw%%[![:space:]]*}"}"
-  [ -n "$raw" ] || return 0
-  # Уведомления харнесса голым текстом, без тега: `[Cross-session idle notice]`
-  # (подписка на простой соседа), `[Cross-session delivery notice]` и прочие
-  # `[Cross-session …]`, рамка `[SYSTEM NOTIFICATION - NOT USER INPUT]`. Head,
-  # подписанный на детей, терял бы ожидание на каждом уведомлении о простое
-  # (замечено 2026-11-25). Человеку «[» в начале промпта по-прежнему можно.
-  case "$raw" in '[Cross-session '* | '[SYSTEM NOTIFICATION - NOT USER INPUT]'*) return 0 ;; esac
+  [ -n "$raw" ] || { echo wrapper; return 0; }
+  # Head, подписанный на детей, терял бы ожидание на каждом уведомлении о
+  # простое, если бы notice считался человеком (замечено 2026-11-25).
+  case "$raw" in
+    '[Cross-session '* | '[SYSTEM NOTIFICATION - NOT USER INPUT]'*) echo notice; return 0 ;;
+  esac
   if [[ "$raw" == '<cross-session-message '* ]]; then
+    sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
     from="$(sed -n '1s/^<cross-session-message [^>]*from="\([^"]*\)".*/\1/p' <<<"$raw")"
     pid="${from##*/}"
     pid="${pid%.sock}"
-    case "$pid" in '' | *[!0-9]*) return 0 ;; esac
-    peer="$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null || true)"
-    parent="$(jq -r '.headId // empty' "${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}/$sid.json" 2>/dev/null || true)"
-    [ -n "$peer" ] && [ "$peer" = "$parent" ] || return 0
+    case "$pid" in '' | *[!0-9]*) echo peer; return 0 ;; esac
+    peer="$(jq -r '.sessionId // empty' "$sessions_dir/$pid.json" 2>/dev/null || true)"
+    parent="$(head_of "$sid")"
+    if [ -n "$peer" ] && [ "$peer" = "$parent" ]; then echo head
+    elif is_descendant "$peer" "$sid"; then echo child
+    else echo peer
+    fi
+    return 0
   elif [[ "$raw" =~ $wrapper_re ]]; then
     tag="${BASH_REMATCH[1]}"
-    [[ "$raw" == *"</$tag>"* ]] && return 0
+    if [[ "$raw" == *"</$tag>"* ]]; then echo wrapper; return 0; fi
   fi
-  rm -f -- "$file" 2>/dev/null || true
+  echo human
+}
+
+# Потомки сессии на любой глубине, по строке на id. Записи children никто не
+# чистит (их сотни), поэтому каталог читается одним jq, а обход — в bash.
+descendants_of() {
+  local root="$1" pair h c i=0
+  [ -n "$root" ] && [ -d "$children_dir" ] || return 0
+  declare -A kids=()
+  while IFS=' ' read -r h c; do
+    [ -n "$h" ] && [ -n "$c" ] || continue
+    kids[$h]+="$c "
+  done < <(find "$children_dir" -maxdepth 1 -name '*.json' -exec \
+             jq -r '"\(.headId // "") \(.sessionId // "")"' {} + 2>/dev/null || true)
+  local -a queue=("$root")
+  declare -A seen=(["$root"]=1)
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    for c in ${kids[${queue[$i]}]:-}; do
+      [ -z "${seen[$c]:-}" ] || continue
+      seen[$c]=1
+      queue+=("$c")
+      printf '%s\n' "$c"
+    done
+    i=$((i + 1))
+  done
   return 0
+}
+
+# Хоть один потомок работает: его state.json в `active` без открытого
+# вопроса и его claude жив (запись `~/.claude/sessions/<pid>.json` с этим
+# sessionId и /proc/<pid>). Без живости ребёнок, убитый без stop, навсегда
+# оставался бы `active` — и глушил бы своего head (решение head 26.11).
+# Ребёнок на AskUserQuestion тоже `active` (хук кладёт `question` на
+# PreToolUse), но ждёт человека — он не работа.
+#
+# Код возврата: 0 — работающий есть; 1 — живые потомки есть, работающих нет;
+# 2 — живых потомков нет вовсе (ждать гонку не за кем).
+active_descendant() {
+  local root="$1" kids live="" p s c any=0
+  kids="$(descendants_of "$root")"
+  [ -n "$kids" ] || return 2
+  while IFS=' ' read -r p s; do
+    case "$p" in '' | *[!0-9]*) continue ;; esac
+    [ -d "/proc/$p" ] && live+="$s "
+  done < <(find "$sessions_dir" -maxdepth 1 -name '*.json' -exec \
+             jq -r '"\(.pid // "") \(.sessionId // "")"' {} + 2>/dev/null || true)
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    [[ " $live" == *" $c "* ]] || continue
+    any=1
+    [ "$(jq -r 'if .state == "active" and ((.question // "") == "") then "1" else "" end' \
+          "$state_dir/$c.state.json" 2>/dev/null || true)" = "1" ] && return 0
+  done <<<"$kids"
+  [ "$any" = 1 ] && return 1
+  return 2
+}
+
+# Тихий конец хода (поле `quiet`): позвать человека нечем, работа идёт без него.
+# Решается по положительным признакам, без них — звать, как раньше:
+#   - ход начал не человек и не свой head (`turnFrom`);
+#   - состояние, которым ход кончается ($1), не question и не fail;
+#   - сама сессия не объявила ожидание `decision` / `review`;
+#   - работа точно идёт: своё ожидание `external` или живой активный потомок.
+# Отчёт ребёнка при всех потомках в idle/review, итог head без ожидания — это
+# финал для человека, и тут quiet=false.
+#
+# $2=1 — перепроверка (только stop): head шлёт ребёнку задачу последним шагом
+# хода, start-хук ребёнка приходит позже stop head. Перепроверяется лишь
+# случай «всё за quiet, кроме активного потомка», и только при живых потомках:
+# человеческие ходы и ходы сессий без детей (отчёт фонового субагента) не ждут.
+quiet_verdict() {
+  local end_state="$1" recheck="${2:-0}" sid from kind waited=0 rc
+  sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
+  [ -n "$sid" ] || { echo false; return 0; }
+  case "$end_state" in question | fail) echo false; return 0 ;; esac
+  from="$(jq -r '.turnFrom // empty' "$state_dir/$sid.state.json" 2>/dev/null || true)"
+  case "$from" in '' | human | head) echo false; return 0 ;; esac
+  # В ходе был вопрос человеку — итог для него, даже если работа идёт.
+  [ "$(jq -r '.turnAsked // false' "$state_dir/$sid.state.json" 2>/dev/null || true)" = "true" ] \
+    && { echo false; return 0; }
+  kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
+  case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
+  while :; do
+    rc=0; active_descendant "$sid" || rc=$?
+    [ "$rc" = 0 ] && { echo true; return 0; }
+    [ "$rc" = 1 ] && [ "$recheck" = "1" ] && [ "$waited" -lt "$QUIET_RECHECK_MS" ] || break
+    sleep "$(printf '%d.%03d' "$((QUIET_POLL_MS / 1000))" "$((QUIET_POLL_MS % 1000))")"
+    waited=$((waited + QUIET_POLL_MS))
+  done
+  echo false
 }
 
 case "$event" in
@@ -767,6 +970,9 @@ case "$event" in
     # Во время работы всегда показываем залитый на 100% бар (state 1 = normal).
     # compact — это Pre/PostCompact: сжатие идёт посреди хода, сессия занята,
     # и без этого события хук свалился бы в `unknown` с серым баром.
+    # Происхождение промпта считается один раз: им пользуются и turnFrom, и
+    # снятие ожидания.
+    if [ "$event" = "start" ]; then TURN_ORIGIN="$(turn_origin || true)"; fi
     save_state active || true
     if [ "$event" = "start" ]; then prune_state || true; wait_clear_on_prompt || true; fi
     emit "$(printf '\033]9;4;1;100\007')"
@@ -796,19 +1002,21 @@ case "$event" in
         fi
         keep_at=""
         [ "${prev%% *}" = "review" ] && keep_at="${prev#* }"
-        KEEP_UPDATED="$keep_at" save_state idle "$msg" || true
+        KEEP_UPDATED="$keep_at" QUIET="$(quiet_verdict idle)" save_state idle "$msg" || true
         emit "$(printf '\033]9;4;0;0\007')"          # простой → обычный
         ;;
       *)
-        save_state question "$msg" || true
+        QUIET=false save_state question "$msg" || true
         emit "$(printf '\033]9;4;4;22\007\007')"     # внимание → жёлтый + bell
         ;;
     esac
     ;;
 
   stop)
-    # Работа закончена, результат ещё никто не смотрел.
-    save_state review || true
+    # Работа закончена, результат ещё никто не смотрел. Тихий ли это конец
+    # (quiet), решается до записи: менеджер звонит и мигает по первой же
+    # версии review, переправлять её поздно.
+    QUIET="$(quiet_verdict review 1)" save_state review || true
     emit "$(printf '\033]9;4;0;0\007')"
     ;;
 
@@ -817,7 +1025,7 @@ case "$event" in
     # чтобы статус не «висел» после прерывания/ошибки.
     # Для списка сессий это тот же «ждёт проверки»: агент встал, к нему надо
     # вернуться — тем более после ошибки.
-    save_state review || true
+    QUIET=false save_state review || true
     emit "$(printf '\007\033]9;4;0;0\007')"
     ;;
 

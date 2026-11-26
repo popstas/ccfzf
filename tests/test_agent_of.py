@@ -43,6 +43,27 @@ def _agent_of(d, sid, transcript="", turn_at=0):
     return CC["agent_of"](sid, transcript, turn_at)
 
 
+def test_agent_of_passes_turn_from_and_quiet():
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "review", "updated": NOW,
+                                          "turnFrom": "child", "quiet": True, "loudAt": TURN})
+        got = _agent_of(d, UUID_A)
+        assert got["loudAt"] == TURN, got
+        assert got["turnFrom"] == "child", got
+        assert got["quiet"] is True, got
+        assert CC["state_agent"](got)["quiet"] is True
+
+
+def test_agent_of_drops_a_false_or_bogus_quiet():
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, UUID_A, ".state.json", {"state": "review", "updated": NOW,
+                                          "turnFrom": 5, "quiet": "true"})
+        got = _agent_of(d, UUID_A)
+        assert got["turnFrom"] == "" and got["quiet"] is False, got
+        out = CC["state_agent"](got)
+        assert "quiet" not in out and "turnFrom" not in out, out
+
+
 def test_agent_of_passes_the_four_fields_from_their_own_files():
     with tempfile.TemporaryDirectory() as d:
         _write(d, UUID_A, ".state.json", {

@@ -1068,6 +1068,15 @@ def agent_of(sid, transcript="", turn_at=0, tail=None, mtime=0, now=None):
         # Статуслайн в этой развилке не участвует вовсе, как и у `updated`:
         # своего понятия о ходе у него нет.
         "turnAt": num(turn_at) or num(state.get("turnAt")),
+        # Кто начал текущий ход (human, head, child, peer, notice, wrapper,
+        # subagent) и тихий ли его конец — оба пишет хук (wt-progress.sh,
+        # turn_origin / quiet_verdict). Менеджер читает их из state.json сам,
+        # здесь — для пикера и HA. `quiet` только булев: мусор — false, и
+        # state_agent тогда выбрасывает ключ.
+        "turnFrom": state.get("turnFrom") if isinstance(state.get("turnFrom"), str) else "",
+        "quiet": state.get("quiet") is True,
+        # `updated` последнего не тихого конца хода (хук, loudAt).
+        "loudAt": num(state.get("loudAt")),
         # Старт сессии в текущем виде: meta.json хук переписывает на каждом
         # SessionStart, а /clear, resume и сжатие — тоже старт.
         "started": num(meta.get("started")),

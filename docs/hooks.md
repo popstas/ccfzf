@@ -9,7 +9,7 @@ context fill. Most of that is written by Claude Code hooks into
 
 | Hook | Events | Writes |
 |---|---|---|
-| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start; `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction; removes `<id>.wait.json` when a prompt answers it ([below](#declared-wait)). Also sets the terminal progress bar (OSC 9;4) |
+| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start, who started the turn (`turnFrom`) and whether its end is quiet (`quiet`, [below](#turn-origin-and-quiet)); `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction; removes `<id>.wait.json` when a prompt answers it ([below](#declared-wait)). Also sets the terminal progress bar (OSC 9;4) |
 | [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output. With `--hook` it writes nothing and prints nothing: it only passes the hook input to `ccstatusline --hook` |
 | [`claude-wt-agent-state.sh`](../hooks/claude-wt-agent-state.sh) | SessionStart, PostCompact | `<id>.meta.json` — id, cwd, transcript, source, the claude pid and its start time. The pid is what ties a process to the session it writes after `/clear` or compaction — see [live-detection.md](live-detection.md) |
 | [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, on every SessionStart: startup, resume, clear, compact) |
@@ -44,6 +44,66 @@ to its children's idle notices lost its own wait on every one of them
 measured: if it arrives as plain text it clears the wait, since nothing else in
 stdin would tell it from the human. The file is pruned with the rest of the session's files after
 a week of silence.
+
+## Turn origin and quiet
+
+`turnFrom` in `<id>.state.json` says who started the current turn. It is set
+on `start` (UserPromptSubmit) from the same `prompt` field as above and kept
+until the next `start`:
+
+| `turnFrom` | `prompt` |
+|---|---|
+| `human` | plain text |
+| `head` | a cross-session message from the session's own head |
+| `child` | a cross-session message from a descendant at any depth (`headId` chain in `~/.ccfzf/children`) |
+| `peer` | a cross-session message from anyone else, or from an unknown pid |
+| `notice` | `[Cross-session …]`, `[SYSTEM NOTIFICATION - NOT USER INPUT]` |
+| `wrapper` | the whole text is one `<tag …>…</tag>` element, or the prompt is empty |
+| `subagent` | the stdin has `agent_id` |
+
+A `start` while the previous record is still `active` and its `turnFrom` is
+`human` or `head` keeps that value: a subagent prompt or a message dropped into
+a running turn does not make the human's turn someone else's. The declared wait
+above is cleared exactly when `turnFrom` is `human` or `head`.
+
+`quiet` (`true`/`false`) tells a reader such as windows11-manager that the turn
+ended without anything for the human, so the taskbar need not flash and the
+terminal need not ring. It is computed on `stop` and on the idle notification
+(`waiting for your input`), reset to `false` on `start`, carried by every other
+event (so it survives Pre/PostCompact with the state). It is `true` only on
+positive evidence:
+
+- `turnFrom` is neither `human` nor `head`;
+- the turn does not end in `question` or `fail`, and had no question for the
+  human at all: `turnAsked` is set by a permission or question notification
+  and by an `AskUserQuestion` call, and kept until the next `start` (through
+  compaction too);
+- the session has no `<id>.wait.json` of kind `decision` or `review`;
+- work is going on: its own wait of kind `external`, or a live descendant at
+  work — its `state.json` says `active` with no open `question` (a child on
+  `AskUserQuestion` waits for the human) and its claude is running
+  (`~/.claude/sessions/<pid>.json` with its `sessionId`, `/proc/<pid>` exists).
+  A child killed without a Stop stays `active` forever and would silence its
+  head for good otherwise.
+
+Otherwise `false`: a child's report with every descendant idle or in review,
+or a head's own summary with no wait, is the final the human must see. A head
+often hands a child its task as the last step of a turn, and the child's
+`start` may come after the head's `stop`; when everything but an active
+descendant points to quiet and some descendant is alive, `stop` rechecks for
+up to `QUIET_RECHECK_MS` (3000) every `QUIET_POLL_MS` (500). Human and head
+turns, and sessions without live descendants, never wait.
+
+`loudAt` is the `updated` of the last turn end that was not quiet: `stop`,
+`fail` and the idle notification with `quiet=false` set it to the `updated`
+they write, everything else (a quiet end, `start`, tool events, compaction)
+carries it. A reader silences a quiet session only if its window was seen after
+`loudAt`, so an unread final is not hidden by the next quiet turn.
+
+`CLAUDE_WT_STATE_DIR` and `CCFZF_CHILDREN_DIR` override the state and children
+directories, the same variables the CLI reads. `ccfzf --state` passes the three
+fields in the `agent` record (`quiet` only when `true`, `loudAt` when set), and
+`claude-wt waiting --json` in each entry.
 
 ## Why the dump hook
 
