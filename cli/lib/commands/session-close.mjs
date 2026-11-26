@@ -3,7 +3,7 @@
 //     --force  закрыть и занятого ребёнка
 //     --kill   SIGKILL, если SIGTERM не помог (только по явной просьбе пользователя)
 // Только из head с живой меткой и только своих детей. Запись children остаётся (она нужна
-// истории пикера); копии промпта и боковые файлы (<sid>.md, .task.md, .mcp.json, .channels, .fork) удаляются.
+// истории пикера); копии промпта и боковые файлы (<sid>.md, .task.md, .mcp.json, .channels, .fork, .model) удаляются.
 // Вывод и коды — как у close.mjs скилла session-close: {ok, sessionId, name, closed, adopted, why}; 0 — закрыт, 1 — нет.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -79,7 +79,7 @@ export default async function sessionClose(argv, env) {
   if (!closed) {
     outC(false, { sessionId, name, pid, closed: false, why: `did not exit after ${signal}; SIGKILL only on an explicit request of the user (--kill)` });
   }
-  for (const f of [`${sessionId}.md`, `${sessionId}.task.md`, `${sessionId}.mcp.json`, `${sessionId}.channels`, `${sessionId}.fork`]) rmSync(join(p.promptsDir, f), { force: true });
+  for (const f of [`${sessionId}.md`, `${sessionId}.task.md`, `${sessionId}.mcp.json`, `${sessionId}.channels`, `${sessionId}.fork`, `${sessionId}.model`]) rmSync(join(p.promptsDir, f), { force: true });
   // Отметка закрытия рядом с состоянием хуков: ccfzf (closed_marks) перестаёт
   // считать последнюю отметку хука доводом о жизни. Без неё закрытый ребёнок ещё
   // до HOOK_LIVE_TTL (2 мин) стоял `live` без процесса, и `waiting` его показывал.

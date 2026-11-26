@@ -274,9 +274,10 @@ test('no new flags: no side files, body unchanged', async () => {
 
 // --- --fork: ребёнок стартует копией разговора head (Стас 2026-11-21) ---
 
-// claude-wt-new в подставном PATH раньше настоящего: с поддержкой форка или без.
-const wtNew = (fork = true) => {
-  e.write('bin/claude-wt-new', `#!/bin/sh\n${fork ? 'f=$side_dir/$sid.fork\n' : ''}exit 0\n`);
+// claude-wt-new в подставном PATH раньше настоящего: с поддержкой форка и модели или без.
+const wtNew = (fork = true, model = true) => {
+  const lines = [fork && 'f=$side_dir/$sid.fork', model && 'f=$side_dir/$sid.model'].filter(Boolean).map((l) => `${l}\n`).join('');
+  e.write('bin/claude-wt-new', `#!/bin/sh\n${lines}exit 0\n`);
   chmodSync(join(e.home, 'bin/claude-wt-new'), 0o755);
 };
 
@@ -353,6 +354,108 @@ test('fork: no claude-wt-new in PATH is refused', () => {
   const r = run(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--dry-run', '--fork'], { ...e.env, PATH: join(e.home, 'bin') + ':/usr/bin:/bin' });
   assert.equal(r.code, 1, r.stdout);
   assert.match(r.json.error, /не найден в PATH/);
+});
+
+// --- --model: модель ребёнка (Стас 26.11: coord открывается с sonnet) ---
+
+test('model: same body, model file 600, in the output', async () => {
+  wtNew();
+  const m = await mockManager();
+  try {
+    const plain = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID], e.env);
+    assert.equal(plain.code, 0, plain.stdout);
+    rmSync(join(e.home, '.ccfzf/prompts'), { recursive: true, force: true });
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID, '--model', 'sonnet'], e.env);
+    assert.equal(r.code, 0, r.stdout);
+    assert.deepEqual(m.bodies[1], m.bodies[0], 'тело session-new от --model не меняется');
+    assert.ok(!('model' in m.bodies[1]));
+    assert.deepEqual(prompts(), [`${SID}.md`, `${SID}.model`, `${SID}.task.md`]);
+    assert.equal(mode(`.ccfzf/prompts/${SID}.model`), 0o600);
+    assert.equal(readFileSync(join(e.home, `.ccfzf/prompts/${SID}.model`), 'utf8'), 'sonnet\n');
+    assert.equal(r.json.model, 'sonnet');
+    assert.equal(r.json.modelFile, join(e.home, `.ccfzf/prompts/${SID}.model`));
+  } finally { m.close(); }
+});
+
+test('model: good names pass, dry-run shows them and writes nothing', () => {
+  wtNew();
+  for (const name of ['sonnet', 'opus', 'haiku', 'claude-sonnet-5-5', 'opus[1m]', 'claude-opus-5-5[1m]', 'claude-3.5-x', `a${'b'.repeat(60)}`]) {
+    const r = dry('--session-id', SID, '--model', name);
+    assert.equal(r.code, 0, `${name}: ${r.stdout}`);
+    assert.equal(r.json.model, name);
+    assert.equal(r.json.modelFile, join(e.home, `.ccfzf/prompts/${SID}.model`));
+    assert.ok(!('model' in r.json.body), 'в теле session-new модели нет');
+  }
+  assert.deepEqual(prompts(), [], 'dry-run ничего не пишет');
+  const plain = dry('--session-id', SID);
+  assert.ok(!('model' in plain.json) && !('modelFile' in plain.json));
+});
+
+test('model: bad names fail before any write or request', async () => {
+  wtNew();
+  const m = await mockManager();
+  try {
+    const bad = [['--model'], ['--model', ''], ['--model', 'Sonnet'], ['--model', '-sonnet'], ['--model', '.x'],
+      ['--model', 'sonnet; rm -rf ~'], ['--model', 'son net'], ['--model', 'a/b'], ['--model', '$(id)'],
+      ['--model', 'сонет'], ['--model', 'a\nb'], ['--model', `a${'b'.repeat(61)}`]];
+    for (const extra of bad) {
+      const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, ...extra], e.env);
+      assert.equal(r.code, 1, `${JSON.stringify(extra)}: ${r.stdout}`);
+      assert.match(r.json.error, /--model/);
+    }
+    assert.equal(m.bodies.length, 0);
+    assert.deepEqual(prompts(), []);
+  } finally { m.close(); }
+});
+
+test('model file removed on refusal and when the manager is unreachable', async () => {
+  wtNew();
+  const m = await mockManager(403);
+  try {
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID, '--model', 'sonnet'], e.env);
+    assert.equal(r.code, 1, r.stdout);
+    assert.deepEqual(prompts(), []);
+  } finally { m.close(); }
+  const gone = await mockManager();
+  gone.close();
+  await new Promise((r) => setTimeout(r, 50));
+  const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', gone.url, '--session-id', SID, '--model', 'sonnet'], e.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.deepEqual(prompts(), []);
+});
+
+test('model: an older claude-wt-new is refused before any write or request', async () => {
+  wtNew(true, false);
+  const m = await mockManager();
+  try {
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID, '--model', 'sonnet'], e.env);
+    assert.equal(r.code, 1, r.stdout);
+    assert.match(r.json.error, /--model/);
+    assert.match(r.json.error, /claude-wt-new/);
+    assert.equal(m.bodies.length, 0);
+    assert.deepEqual(prompts(), []);
+    assert.equal(dry('--model', 'sonnet').code, 1, 'dry-run тоже отказывает');
+    assert.equal(dry('--fork').code, 0, 'форк от проверки модели не зависит');
+    assert.equal(dry().code, 0, 'без --model проверки нет');
+  } finally { m.close(); }
+});
+
+test('model: no claude-wt-new in PATH is refused', () => {
+  const r = run(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--dry-run', '--model', 'sonnet'], { ...e.env, PATH: join(e.home, 'bin') + ':/usr/bin:/bin' });
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.json.error, /--model/);
+  assert.match(r.json.error, /PATH/);
+});
+
+test('model and fork together: both files', async () => {
+  wtNew();
+  const m = await mockManager();
+  try {
+    const r = await runAsync(SPAWN, ['--task', 't', '--prompt-file', promptFile, '--url', m.url, '--session-id', SID, '--fork', '--model', 'opus[1m]'], e.env);
+    assert.equal(r.code, 0, r.stdout);
+    assert.deepEqual(prompts(), [`${SID}.fork`, `${SID}.md`, `${SID}.model`, `${SID}.task.md`]);
+    assert.equal(readFileSync(join(e.home, `.ccfzf/prompts/${SID}.model`), 'utf8'), 'opus[1m]\n');
+  } finally { m.close(); }
 });
 
 // --- права и исход неизвестен (Review Focus 5) ---
