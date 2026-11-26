@@ -197,6 +197,7 @@ export function entryOf({ s, kind, prUrl, wait }, prs, now, rel) {
     state: a.state || null,
     ...(a.turnFrom ? { turnFrom: a.turnFrom } : {}),
     ...(a.quiet === true ? { quiet: true } : {}),
+    ...(Number(a.loudAt) > 0 ? { loudAt: Number(a.loudAt) } : {}),
     ...(pr ? { pr } : {}),
     ...(wait ? { wait } : {}),
     own: rel.own.has(s.id),

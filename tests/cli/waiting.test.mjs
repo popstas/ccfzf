@@ -196,7 +196,7 @@ test('объявленное ожидание: первым, вид declared, п
 
 test('turnFrom и quiet записи агента едут в запись waiting, false и пустое — нет', () => {
   const sessions = [
-    sess(1, 'quiet-head', { state: 'idle', summary: 'Жду твоего ок?', turnFrom: 'child', quiet: true }),
+    sess(1, 'quiet-head', { state: 'idle', summary: 'Жду твоего ок?', turnFrom: 'child', quiet: true, loudAt: T - 600 }),
     sess(2, 'loud-head', { state: 'review', summary: 'Готово, жду твоего ок', turnFrom: 'notice', quiet: false }),
   ];
   const r = run(['--json'], { sessions });
@@ -206,4 +206,6 @@ test('turnFrom и quiet записи агента едут в запись waiti
   assert.equal(w['quiet-head'].quiet, true);
   assert.equal(w['loud-head'].turnFrom, 'notice');
   assert.equal('quiet' in w['loud-head'], false);
+  assert.equal(w['quiet-head'].loudAt, T - 600);
+  assert.equal('loudAt' in w['loud-head'], false);
 });

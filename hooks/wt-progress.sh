@@ -649,6 +649,20 @@ save_state() {
   fi
   [ "$quiet" = "true" ] || quiet=false
 
+  # `loudAt` — `updated` последнего законченного не тихого хода: stop, fail и
+  # idle-уведомление с quiet=false ставят его равным отметке этой записи,
+  # остальное (тихий конец, start, tool-*, compact) переносит прежнее.
+  # Менеджер глушит мигание у quiet, только если окно смотрели после loudAt:
+  # непрочитанный итог не гаснет от следующего тихого хода (решение head 26.11).
+  local loud_at=0
+  if [ -f "$target" ]; then
+    loud_at="$(jq -r '.loudAt // 0' "$target" 2>/dev/null || echo 0)"
+    case "$loud_at" in '' | *[!0-9]*) loud_at=0 ;; esac
+  fi
+  case "$event:$state" in
+    stop:* | fail:* | attention:idle) [ "$quiet" = "true" ] || loud_at="$stamp" ;;
+  esac
+
   if jq -nc \
       --arg id "$session_id" \
       --arg state "$state" \
@@ -669,9 +683,11 @@ save_state() {
       --argjson updated "$stamp" \
       --arg turn_from "$turn_from" \
       --argjson quiet "$quiet" \
+      --argjson loud_at "$loud_at" \
       '{sessionId: $id, state: $state, event: $event, message: $message,
         summary: $summary, lastSummary: $last_summary, summaryAt: $summary_at,
         turnAt: $turn_at, turnFrom: $turn_from, quiet: $quiet,
+        loudAt: $loud_at,
         prompt: $prompt, question: $question, branch: $branch, pr_url: $pr_url,
         costUsd: $cost_usd, contextPct: $context_pct,
         transcript: $transcript, cwd: $cwd, updated: $updated}' \
@@ -833,14 +849,19 @@ descendants_of() {
   return 0
 }
 
-# Хоть один потомок работает: его state.json в `active` и его claude жив
-# (запись `~/.claude/sessions/<pid>.json` с этим sessionId и /proc/<pid>).
-# Без второго условия ребёнок, убитый без stop, навсегда оставался бы
-# `active` — и глушил бы своего head (решение head 26.11).
+# Хоть один потомок работает: его state.json в `active` без открытого
+# вопроса и его claude жив (запись `~/.claude/sessions/<pid>.json` с этим
+# sessionId и /proc/<pid>). Без живости ребёнок, убитый без stop, навсегда
+# оставался бы `active` — и глушил бы своего head (решение head 26.11).
+# Ребёнок на AskUserQuestion тоже `active` (хук кладёт `question` на
+# PreToolUse), но ждёт человека — он не работа.
+#
+# Код возврата: 0 — работающий есть; 1 — живые потомки есть, работающих нет;
+# 2 — живых потомков нет вовсе (ждать гонку не за кем).
 active_descendant() {
-  local root="$1" kids live="" p s c
+  local root="$1" kids live="" p s c any=0
   kids="$(descendants_of "$root")"
-  [ -n "$kids" ] || return 1
+  [ -n "$kids" ] || return 2
   while IFS=' ' read -r p s; do
     case "$p" in '' | *[!0-9]*) continue ;; esac
     [ -d "/proc/$p" ] && live+="$s "
@@ -849,9 +870,12 @@ active_descendant() {
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     [[ " $live" == *" $c "* ]] || continue
-    [ "$(jq -r '.state // empty' "$state_dir/$c.state.json" 2>/dev/null || true)" = "active" ] && return 0
+    any=1
+    [ "$(jq -r 'if .state == "active" and ((.question // "") == "") then "1" else "" end' \
+          "$state_dir/$c.state.json" 2>/dev/null || true)" = "1" ] && return 0
   done <<<"$kids"
-  return 1
+  [ "$any" = 1 ] && return 1
+  return 2
 }
 
 # Тихий конец хода (поле `quiet`): позвать человека нечем, работа идёт без него.
@@ -865,9 +889,10 @@ active_descendant() {
 #
 # $2=1 — перепроверка (только stop): head шлёт ребёнку задачу последним шагом
 # хода, start-хук ребёнка приходит позже stop head. Перепроверяется лишь
-# случай «всё за quiet, кроме активного потомка» — человеческие ходы не ждут.
+# случай «всё за quiet, кроме активного потомка», и только при живых потомках:
+# человеческие ходы и ходы сессий без детей (отчёт фонового субагента) не ждут.
 quiet_verdict() {
-  local end_state="$1" recheck="${2:-0}" sid from kind waited=0
+  local end_state="$1" recheck="${2:-0}" sid from kind waited=0 rc
   sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
   [ -n "$sid" ] || { echo false; return 0; }
   case "$end_state" in question | fail) echo false; return 0 ;; esac
@@ -876,8 +901,9 @@ quiet_verdict() {
   kind="$(jq -r '.kind // empty' "$state_dir/$sid.wait.json" 2>/dev/null || true)"
   case "$kind" in decision | review) echo false; return 0 ;; external) echo true; return 0 ;; esac
   while :; do
-    if active_descendant "$sid"; then echo true; return 0; fi
-    [ "$recheck" = "1" ] && [ "$waited" -lt "$QUIET_RECHECK_MS" ] || break
+    rc=0; active_descendant "$sid" || rc=$?
+    [ "$rc" = 0 ] && { echo true; return 0; }
+    [ "$rc" = 1 ] && [ "$recheck" = "1" ] && [ "$waited" -lt "$QUIET_RECHECK_MS" ] || break
     sleep "$(printf '%d.%03d' "$((QUIET_POLL_MS / 1000))" "$((QUIET_POLL_MS % 1000))")"
     waited=$((waited + QUIET_POLL_MS))
   done
@@ -929,7 +955,7 @@ case "$event" in
     # и без этого события хук свалился бы в `unknown` с серым баром.
     # Происхождение промпта считается один раз: им пользуются и turnFrom, и
     # снятие ожидания.
-    if [ "$event" = "start" ]; then TURN_ORIGIN="$(turn_origin)"; fi
+    if [ "$event" = "start" ]; then TURN_ORIGIN="$(turn_origin || true)"; fi
     save_state active || true
     if [ "$event" = "start" ]; then prune_state || true; wait_clear_on_prompt || true; fi
     emit "$(printf '\033]9;4;1;100\007')"

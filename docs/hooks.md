@@ -76,8 +76,9 @@ positive evidence:
 - `turnFrom` is neither `human` nor `head`;
 - the turn does not end in `question` or `fail`;
 - the session has no `<id>.wait.json` of kind `decision` or `review`;
-- work is going on: its own wait of kind `external`, or a live descendant in
-  `active` — its `state.json` says `active` and its claude is running
+- work is going on: its own wait of kind `external`, or a live descendant at
+  work — its `state.json` says `active` with no open `question` (a child on
+  `AskUserQuestion` waits for the human) and its claude is running
   (`~/.claude/sessions/<pid>.json` with its `sessionId`, `/proc/<pid>` exists).
   A child killed without a Stop stays `active` forever and would silence its
   head for good otherwise.
@@ -86,12 +87,19 @@ Otherwise `false`: a child's report with every descendant idle or in review,
 or a head's own summary with no wait, is the final the human must see. A head
 often hands a child its task as the last step of a turn, and the child's
 `start` may come after the head's `stop`; when everything but an active
-descendant points to quiet, `stop` rechecks for up to `QUIET_RECHECK_MS`
-(3000) every `QUIET_POLL_MS` (500). Human and head turns never wait.
+descendant points to quiet and some descendant is alive, `stop` rechecks for
+up to `QUIET_RECHECK_MS` (3000) every `QUIET_POLL_MS` (500). Human and head
+turns, and sessions without live descendants, never wait.
+
+`loudAt` is the `updated` of the last turn end that was not quiet: `stop`,
+`fail` and the idle notification with `quiet=false` set it to the `updated`
+they write, everything else (a quiet end, `start`, tool events, compaction)
+carries it. A reader silences a quiet session only if its window was seen after
+`loudAt`, so an unread final is not hidden by the next quiet turn.
 
 `CLAUDE_WT_STATE_DIR` and `CCFZF_CHILDREN_DIR` override the state and children
-directories, the same variables the CLI reads. `ccfzf --state` passes both
-fields in the `agent` record (`quiet` only when `true`), and
+directories, the same variables the CLI reads. `ccfzf --state` passes the three
+fields in the `agent` record (`quiet` only when `true`, `loudAt` when set), and
 `claude-wt waiting --json` in each entry.
 
 ## Why the dump hook

@@ -328,6 +328,70 @@ def test_a_human_turn_does_not_wait_for_the_race_window():
         w.close()
 
 
+def test_a_child_on_a_question_is_not_work():
+    w = World()
+    try:
+        p = w.state_dir / (CHILD + ".state.json")
+        p.write_text(json.dumps({"sessionId": CHILD, "state": "active", "question": "A или B?"}))
+        assert w.turn(peer(CHILD_PID))["quiet"] is False
+    finally:
+        w.close()
+
+
+def test_no_race_wait_without_live_descendants():
+    """Отчёт фонового субагента у сессии без живых детей кончается сразу."""
+    for alive in (True, False):
+        w = World(child_alive=alive)
+        try:
+            if alive:  # живых потомков нет: записи children убраны
+                for f in w.kids.glob("*.json"):
+                    f.unlink()
+            else:
+                w.set_state(CHILD, "active")  # мёртвый и залипший
+            w.start("<task-notification>\n<task-id>x</task-id>\n</task-notification>")
+            t0 = time.monotonic()
+            s = w.stop(env={"QUIET_RECHECK_MS": "5000"})
+            assert s["quiet"] is False and time.monotonic() - t0 < 2.5, alive
+        finally:
+            w.close()
+
+
+def test_loud_at_marks_the_last_loud_end_and_survives_quiet_ones():
+    w = World()
+    try:
+        assert w.start("сделай X").get("loudAt", 0) == 0
+        loud = w.stop()
+        assert loud["quiet"] is False and loud["loudAt"] == loud["updated"], loud
+        w.set_state(CHILD, "active")
+        time.sleep(1.1)  # новая секунда: тихий конец обязан не сдвинуть loudAt
+        q = w.turn(peer(CHILD_PID))
+        assert q["quiet"] is True and q["loudAt"] == loud["loudAt"] and q["updated"] > q["loudAt"], q
+        idle = w.hook("attention", hook_event_name="Notification", message="Claude is waiting for your input")
+        assert idle["quiet"] is True and idle["loudAt"] == loud["loudAt"], idle
+        w.hook("compact", hook_event_name="PreCompact", trigger="auto")
+        c = w.hook("compact", hook_event_name="PostCompact", trigger="auto")
+        assert c["loudAt"] == loud["loudAt"], c
+        w.set_state(CHILD, "idle")
+        time.sleep(1.1)
+        final = w.turn(peer(CHILD_PID))
+        assert final["quiet"] is False and final["loudAt"] == final["updated"] > loud["loudAt"], final
+    finally:
+        w.close()
+
+
+def test_loud_at_on_failure_and_on_a_loud_idle_notice():
+    w = World()
+    try:
+        w.start(IDLE_NOTICE)
+        f = w.hook("fail", hook_event_name="StopFailure")
+        assert f["loudAt"] == f["updated"] > 0, f
+        w.set_state(f"{SID}", "review")  # сброс файла: без loudAt
+        s = w.hook("attention", hook_event_name="Notification", message="Claude is waiting for your input")
+        assert s["state"] == "idle" and s["quiet"] is False and s["loudAt"] == s["updated"] > 0, s
+    finally:
+        w.close()
+
+
 def test_state_dir_override():
     w = World()
     try:
