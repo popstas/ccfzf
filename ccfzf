@@ -16,6 +16,9 @@
 #   ccfzf --state --if-changed <fp>
 #                               the same, but when the answer's fingerprint is
 #                               still <fp> print only {"unchanged":true,...}
+#   ccfzf --auto-compact <id> on|off [host]
+#                               turn the picker's auto-compact of a session on or
+#                               off; --state then shows "autoCompact": false
 #
 # Besides the sessions themselves the list offers: new session, up to three
 # custom commands and a shell. Hotkeys act on the directory of the highlighted
@@ -39,6 +42,8 @@
 #   CCFZF_CHILDREN_DIR               records written by claude-wt-new; --state
 #                                    puts head/headId on those sessions' rows
 #                                    (default ~/.ccfzf/children, empty — off)
+#   CCFZF_AUTOCOMPACT_FILE           sessions with auto-compact turned off
+#                                    (default ~/.ccfzf.autocompact.json, empty — off)
 #   CCFZF_STATE_DUMP_MAX_AGE         seconds; --state rewrites the sessions
 #                                    dump when it is older than this
 #                                    (default 30; 0 — rewrite every time)
@@ -80,6 +85,11 @@ WINDOWS_DIR="${CCFZF_WINDOWS_DIR-$HOME/.ccfzf/windows}"
 # Пустая строка выключает и чтение, и запись.
 COMMENTS_FILE="${CCFZF_COMMENTS_FILE-$HOME/.ccfzf.comments.json}"
 
+# Сессии, которым выключен автокомпакт пикера (таймер живёт в пикере, решение
+# Стаса 27.11). Тот же расчёт, что у комментариев: файл здесь, а `--state`
+# читают пикеры всех машин. Пустая строка выключает и чтение, и запись.
+AUTOCOMPACT_FILE="${CCFZF_AUTOCOMPACT_FILE-$HOME/.ccfzf.autocompact.json}"
+
 # Вольты Obsidian этой машины: секции с `vault` и `tasks`. Из их tasks.md
 # --state берёт задачу сессии — подпункт `- Сессия <имя>`, который пишет скилл
 # sess2task. Нет файла — поля нет; пустая строка выключает чтение.
@@ -110,6 +120,9 @@ dump_only=0
 state_only=0
 comment_id=""
 comment_host=""
+autocompact_id=""
+autocompact_value=""
+autocompact_host=""
 project=""
 session_id=""
 # Сколько новейших сессий ccfzf вообще рассматривает. 10.08 урезали 200 → 100
@@ -141,6 +154,12 @@ while (($#)); do
     --comment) comment_id="${2-}"; comment_host="${3-}"
       [[ -n $comment_id ]] || { echo "ccfzf: --comment requires a session id" >&2; exit 2; }
       shift 2; [[ -n $comment_host ]] && shift ;;
+    # Значение — словом on/off, а не текстом: в stdin ему нечего делать. Имя
+    # машины третьим аргументом — как у --comment.
+    --auto-compact) autocompact_id="${2-}"; autocompact_value="${3-}"; autocompact_host="${4-}"
+      [[ -n $autocompact_id && $autocompact_id != -* ]] || { echo "ccfzf: --auto-compact requires a session id" >&2; exit 2; }
+      [[ $autocompact_value == on || $autocompact_value == off ]] || { echo "ccfzf: --auto-compact <id> on|off [host]" >&2; exit 2; }
+      shift 3; [[ -n $autocompact_host ]] && shift ;;
     --session) session_id="${2-}"; [[ -n $session_id && $session_id != -* ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift 2 ;;
     --session=*) session_id="${1#*=}"; [[ -n $session_id ]] || { echo "ccfzf: --session requires a session id" >&2; exit 2; }; shift ;;
     --limit) limit="${2-}"; [[ -n $limit ]] || { echo "ccfzf: --limit requires a positive integer" >&2; exit 2; }; shift 2 ;;
@@ -174,7 +193,7 @@ claude_tail=${claude_tail% }
 # читал это как отсутствие самого ccfzf. Временный каталог заводит та же
 # интерактивная ветка, и это верно: комментарий выходит из скрипта раньше,
 # чем `$tmp` кому-то понадобится.
-if ((dump_only || state_only)) || [[ -n $comment_id ]]; then
+if ((dump_only || state_only)) || [[ -n $comment_id || -n $autocompact_id ]]; then
   command -v python3 >/dev/null 2>&1 || { echo "ccfzf: python3 not found" >&2; exit 127; }
 else
   for dep in fzf python3; do
@@ -1881,6 +1900,53 @@ def set_comment(path, sid, text, now, host):
         all_[sid] = {"text": clean_text, "at": num(now), "host": host or ""}
     else:
         all_.pop(sid, None)
+    write_json(os.path.expanduser(path), all_)
+    return True
+
+
+def autocompact_entries(path):
+    """Записи о выключенном автокомпакте пикера: id → `{"off": true, "at", "host"}`.
+
+    Хранилище — по образцу комментариев (read_comments): файл на этой машине,
+    `--state` читают пикеры всех машин. Включено — умолчание, записи нет
+    вовсе. Разбор белым списком: незнакомое и кривое теряется молча, битый
+    файл — пустота.
+    """
+    if not path:
+        return {}
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {sid: {"off": True, "at": num(rec.get("at")),
+                  "host": rec.get("host") if isinstance(rec.get("host"), str) else ""}
+            for sid, rec in raw.items()
+            if isinstance(sid, str) and UUID_RE.match(sid)
+            and isinstance(rec, dict) and rec.get("off") is True}
+
+
+def read_autocompact(path):
+    """Сессии с выключенным автокомпактом: множество id."""
+    return set(autocompact_entries(path))
+
+
+def set_autocompact(path, sid, on, now, host):
+    """Включить (стереть запись) или выключить автокомпакт сессии.
+
+    Пишется весь файл из прочитанного словаря, как у set_comment: пишут с
+    разных машин, и перезапись одной записью стирала бы чужие. Ответ —
+    удалось ли (id не того алфавита — нет).
+    """
+    if not isinstance(sid, str) or not UUID_RE.match(sid):
+        return False
+    all_ = autocompact_entries(path)
+    if on:
+        all_.pop(sid, None)
+    else:
+        all_[sid] = {"off": True, "at": num(now), "host": host or ""}
     write_json(os.path.expanduser(path), all_)
     return True
 
@@ -4199,7 +4265,10 @@ def state_record(s):
             continue
         if k == "agent":
             v = state_agent(v)
-        if k in STATE_REQUIRED or (k == "pid" and s.get("live")) or not _empty(v):
+        # `autoCompact` бывает только ложью (выключен), и ложь — весь смысл
+        # поля: пустым её считать нельзя.
+        if (k in STATE_REQUIRED or (k == "pid" and s.get("live"))
+                or (k == "autoCompact" and v is False) or not _empty(v)):
             out[k] = v
     return out
 
@@ -4497,6 +4566,14 @@ def vaults_config_default():
     return os.path.join(os.path.expanduser("~"), ".claude", "vaults-config.md")
 
 
+def autocompact_default():
+    """Умолчание CCFZF_AUTOCOMPACT_FILE для дороги без bash — как в шапке."""
+    value = os.environ.get("CCFZF_AUTOCOMPACT_FILE")
+    if value is not None:
+        return value
+    return os.path.join(os.path.expanduser("~"), ".ccfzf.autocompact.json")
+
+
 def session_target(sid, live, procs, registry):
     """Чем открыть сессию по id: {how, pid, tmux, zellij, cwd}.
 
@@ -4633,7 +4710,8 @@ def session_by_name(name, live, cache=None, title_of=None):
 if len(sys.argv) > 1 and sys.argv[1] == "--state":
     _opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
     sys.argv = ([sys.argv[0], "state"] + state_defaults(_opts.get("--limit", ""))
-                + [_opts.get("--if-changed", ""), vaults_config_default()])
+                + [_opts.get("--if-changed", ""), vaults_config_default(),
+                   autocompact_default()])
 
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -4857,6 +4935,8 @@ elif mode == "state":
     # Задачи вольтов — один раз на ответ, ключом по имени сессии (sess2task
     # пишет имя, а не id).
     vault_tasks = vault_task_index(sys.argv[10] if len(sys.argv) > 10 else "")
+    # Выключенный автокомпакт пикера — тем же порядком, что комментарии.
+    autocompact_off = read_autocompact(sys.argv[11] if len(sys.argv) > 11 else "")
     # Одна память на весь ответ: счёт спрашивают и строки проектов, и строки
     # сессий, а каталоги у них те же самые.
     todo_at = todo_memo()
@@ -5000,6 +5080,9 @@ elif mode == "state":
             # Комментарий человека — общий на все машины: файл лежит здесь, а
             # `--state` читают все пикеры. Ключа нет, когда комментария нет.
             **({"comment": comments[sid]["text"]} if sid in comments else {}),
+            # Автокомпакт пикера выключен для этой сессии (`--auto-compact
+            # <id> off`). Ключа нет, когда включён — так у почти всех.
+            **({"autoCompact": False} if sid in autocompact_off else {}),
             # Ожидание, объявленное агентом (`claude-wt wait set`): чего он
             # ждёт и чем снять. Ключа нет, когда не объявлено; в дамп не едет.
             **({"wait": waits[sid]} if sid in waits else {}),
@@ -5173,6 +5256,15 @@ elif mode == "comment":
         sys.stderr.write("ccfzf: not a session id\n")
         sys.exit(2)
 
+elif mode == "autocompact":
+    # Флаг автокомпакта: id, путь, on|off, имя машины. Значение bash уже
+    # проверил; id — здесь, по алфавиту, как у комментария.
+    ok = set_autocompact(sys.argv[3], sys.argv[2], sys.argv[4] == "on",
+                         time.time(), sys.argv[5] if len(sys.argv) > 5 else "")
+    if not ok:
+        sys.stderr.write("ccfzf: not a session id\n")
+        sys.exit(2)
+
 elif mode == "target":
     # Для `--session`: чем открывать сессию прямо сейчас. По полю на строку, в
     # том порядке, в каком их читает bash: how, pid, tmux, zellij, cwd. Не
@@ -5244,6 +5336,14 @@ if [[ -n $comment_id ]]; then
   exit $?
 fi
 
+# Флаг автокомпакта — так же, до всего остального: пикер ставит его по ssh
+# отдельным вызовом, список ему не нужен.
+if [[ -n $autocompact_id ]]; then
+  [[ -n $AUTOCOMPACT_FILE ]] || { echo "ccfzf: auto-compact file is off" >&2; exit 2; }
+  py autocompact "$autocompact_id" "$AUTOCOMPACT_FILE" "$autocompact_value" "$autocompact_host"
+  exit $?
+fi
+
 # External callers (the picker) need the dumps rewritten without opening
 # the interactive UI. Run in the foreground so ssh returns only after the rename.
 if ((dump_only)); then
@@ -5255,7 +5355,7 @@ fi
 # Читателю на другой машине нужен ответ в stdout, а не файл на диске.
 if ((state_only)); then
   py state "$MARKS" "$WINDOWS_FILE" "$SESSIONS_FILE" "$limit" "$WINDOWS_DIR" "$COMMENTS_FILE" \
-    "$CHILDREN_DIR" "$if_changed" "$VAULTS_CONFIG"
+    "$CHILDREN_DIR" "$if_changed" "$VAULTS_CONFIG" "$AUTOCOMPACT_FILE"
   exit 0
 fi
 
