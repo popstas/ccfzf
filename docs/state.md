@@ -7,7 +7,7 @@ another machine: `generated`, `sessions`, `projects`, `projectOwners`,
 The sessions are the same set as in [the dump](dumps.md). Each record carries
 `id`, `cwd`, `title`, `mtime`, `live` and `kind` always, and beyond them only
 what is set: `pid`, `tty`, `tmux`, `zellij`, `parent`, `frozen`, `prompts`,
-`todo`, `comment`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
+`todo`, `comment`, `autoCompact`, `task`, `entrypoint`, `spec`/`plan`, `agent`, `window`/`windows`,
 `projectCwd`/`projectType`, `worktree`,
 `shell`/`shellCmd`, `disconnected`, `wait` (declared by `claude-wt wait set`: `{kind, ask, clearBy?, setAt}`, see [claude-wt.md](claude-wt.md)), and the `head`/`headId` of a session started by
 [`claude-wt-new`](children.md). An
@@ -15,6 +15,9 @@ empty value — `""`, `0`, `false`, `null`, `[]` — is left out rather than sen
 the reader treats a missing key exactly as it treated the empty one. Two
 exceptions: a `live` session always carries a numeric `pid` (zero when only an
 open window makes it live), and an `agent` record always carries `updated`.
+`autoCompact` is the other way round: it is only ever `false` (the picker's
+auto-compact is turned off for the session) and is sent as such; no key means
+on.
 Inside `agent` the same rule applies, and `lastSummary` is left out whenever
 `summary` is set, since the reader only falls back to it on an empty `summary`.
 
@@ -212,6 +215,21 @@ or leave it out of a tiling layout. Only a real `true` counts: a tracker of an
 older version writes no such field, and anything else reads as an ordinary
 window — a dimmed row for an open window costs more than an undimmed one for a
 hidden window.
+
+## `--auto-compact <id> on|off [host]`
+
+The picker's auto-compact (it types `/compact` into a session idle for almost
+the hour the prompt cache lives, via `claude-wt session compact`, see
+[claude-wt.md](claude-wt.md)) can be turned off per session. The flag lives on
+this machine, like the comments, so every picker reads the same one from
+`--state`: `~/.ccfzf.autocompact.json` (`CCFZF_AUTOCOMPACT_FILE`, empty turns
+reading and writing off), `{<sessionId>: {off: true, at, host}}`. `on` removes
+the entry, `off` writes it; other entries are kept, the file is replaced
+atomically. A bad id or a value other than `on`/`off` is exit 2. fzf is not
+needed. The session then carries `autoCompact: false` in `--state`, and a
+toggle changes the `fingerprint`. The picker's clock for the idle time is
+`agent.cacheAt` (the last reply that touched the prompt cache), already in the
+`agent` record.
 
 ## Degradation
 

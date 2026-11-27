@@ -33,7 +33,7 @@ import {
 const SSH_TIMEOUT_MS = 45000;
 const lc = (x) => String(x ?? '').toLowerCase();
 
-function where(env) {
+export function where(env) {
   const home = env.HOME;
   return {
     sessionsDir: env.CLAUDE_WT_SESSIONS_DIR || join(home, '.claude', 'sessions'),
@@ -44,7 +44,8 @@ function where(env) {
 }
 
 // Запись окна сессии в файле трекера её машины: {pid, app, title} и куда ssh.
-function trackerWindow(windowsDir, host, id) {
+// where, trackerWindow и call зовёт и session compact.
+export function trackerWindow(windowsDir, host, id) {
   let files = [];
   try { files = readdirSync(windowsDir).filter((f) => f.endsWith('.json')); } catch {}
   let best = null;
@@ -81,7 +82,7 @@ function ssh(bin, host, body) {
 }
 
 // Вызов скрипта → {ok, result} | {code, error, sent}. sent: ушло ли что-то в панель.
-function call(w, host, mode, args) {
+export function call(w, host, mode, args) {
   const r = ssh(w.ssh, host, payload(mode, args));
   const sends = mode !== 'probe';
   if (r.result?.ok === true) return { ok: true, result: r.result, sent: Boolean(r.result.sent) };

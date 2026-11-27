@@ -9,7 +9,7 @@ context fill. Most of that is written by Claude Code hooks into
 
 | Hook | Events | Writes |
 |---|---|---|
-| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start, who started the turn (`turnFrom`) and whether its end is quiet (`quiet`, [below](#turn-origin-and-quiet)); `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction; removes `<id>.wait.json` when a prompt answers it ([below](#declared-wait)). Also sets the terminal progress bar (OSC 9;4) |
+| [`wt-progress.sh`](../hooks/wt-progress.sh) | UserPromptSubmit, Pre/PostToolUse, Notification, Stop, StopFailure, Pre/PostCompact | `<id>.state.json` — state, summary, prompt, question, branch, PR, turn start, who started the turn (`turnFrom`) and whether its end is quiet (`quiet`, [below](#turn-origin-and-quiet)); `prs.json` — PR per `<cwd>#<branch>`; `<id>.precompact` across a compaction (the picker's auto-compact is quiet, [below](#auto-compact)); removes `<id>.wait.json` when a prompt answers it ([below](#declared-wait)). Also sets the terminal progress bar (OSC 9;4) |
 | [`claude-wt-statusline.sh`](../hooks/claude-wt-statusline.sh) | `statusLine`, plus `--hook` on UserPromptSubmit and PreToolUse:Skill | `<id>.status.json` — cost and context %. Hooks get neither number; the status line gets both, together with the context window size. Then it runs `ccstatusline` with the untouched input and prints its output. With `--hook` it writes nothing and prints nothing: it only passes the hook input to `ccstatusline --hook` |
 | [`claude-wt-agent-state.sh`](../hooks/claude-wt-agent-state.sh) | SessionStart, PostCompact | `<id>.meta.json` — id, cwd, transcript, source, the claude pid and its start time. The pid is what ties a process to the session it writes after `/clear` or compaction — see [live-detection.md](live-detection.md) |
 | [`ccfzf-dump.sh`](../hooks/ccfzf-dump.sh) | SessionStart | Runs `ccfzf --dump` in the background (≈0.4 s wall, on every SessionStart: startup, resume, clear, compact) |
@@ -109,6 +109,33 @@ carries it. A reader silences a quiet session only if its window was seen after
 directories, the same variables the CLI reads. `ccfzf --state` passes the three
 fields in the `agent` record (`quiet` only when `true`, `loudAt` when set), and
 `claude-wt waiting --json` in each entry.
+
+## Auto-compact
+
+`/compact` does not fire UserPromptSubmit (the 15 live `state.json` with
+`event: compact` on 2026-11-27 keep the prompt and `turnAt` of the turn
+before), so neither `turnFrom` nor the declared wait changes: only
+PreCompact/PostCompact see it. On PreCompact the finished state, `updated`
+and the trigger go to `<id>.precompact`; PostCompact puts them back with the
+old `updated` (`KEEP_UPDATED`), so a compaction never makes a session look
+unseen.
+
+A `/compact` typed by hand (`trigger: manual`) also puts `review` to `idle`:
+what is compacted has been dealt with. The picker's auto-compact
+(`claude-wt session compact`) arrives the same way, `trigger: manual`, and is
+told apart by the journal: a `sending` line with `command: "compact"`,
+`step: "enter"`, this session's `id` and an `atSec` no older than 120 s in
+`~/.ccfzf/typed.jsonl` (`CLAUDE_WT_TYPED_LOG`). Then the trigger is stored as
+`autocompact`, and PostCompact changes the seen state in neither direction
+(head's decision of 2026-11-27): `review` stays `review`, `updated` and
+`loudAt` stay, and `quiet` is set to `true` (for a `review` or `idle` session),
+so windows11-manager mutes the WezTerm bell; the button keeps flashing while
+the last loud result is unseen (`loudAt`). `wait.json` is not touched. The
+idle notification that follows sees `idle` and leaves the record alone, as
+before. From `review` it would turn the session `idle` and recompute `quiet`
+from the human's turn (loud, with the bell), so PostCompact leaves a marker
+`<id>.autocompact` and the first idle notification after it leaves the record
+alone too; the next `start` removes the marker.
 
 ## Why the dump hook
 
