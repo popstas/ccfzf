@@ -13,6 +13,12 @@ input="$(cat 2>/dev/null || true)"
 state_dir="${CLAUDE_WT_STATE_DIR:-$HOME/.claude/claude-wt}"
 children_dir="${CCFZF_CHILDREN_DIR:-$HOME/.ccfzf/children}"
 sessions_dir="$HOME/.claude/sessions"
+# Журнал `claude-wt session type|compact` (cli/lib/commands/session-type.mjs).
+typed_log="${CLAUDE_WT_TYPED_LOG:-$HOME/.ccfzf/typed.jsonl}"
+
+# Сколько секунд строка-намерение `session compact` считается свежей для
+# PreCompact: Enter ушёл, сжатие начинается сразу, хук приходит за секунды.
+AUTOCOMPACT_FRESH=120
 
 # Сколько на stop перепроверять «тихий» ход, пока не найдётся активный потомок
 # (см. quiet_verdict): head шлёт ребёнку задачу последним шагом хода, и
@@ -931,6 +937,24 @@ quiet_verdict() {
   echo false
 }
 
+# Этот /compact набрал автокомпакт пикера (`claude-wt session compact`), а не
+# человек: свежая строка-намерение Enter этой сессии в журнале. Ручной и
+# автоматический приходят хуку одинаково (PreCompact `trigger: manual`), а
+# UserPromptSubmit у /compact нет вовсе — других признаков нет. Строки
+# `session type` не в счёт: у них нет `command: "compact"`.
+autocompact_sent() {
+  local sid="$1"
+  [ -n "$sid" ] && [ -f "$typed_log" ] || return 1
+  tail -n 200 -- "$typed_log" 2>/dev/null | jq -R -e -n --arg sid "$sid" \
+      --argjson now "$(date +%s)" --argjson fresh "$AUTOCOMPACT_FRESH" '
+    [inputs | fromjson? | objects
+     | select(.command == "compact" and .id == $sid
+              and .result == "sending" and .step == "enter"
+              and (.atSec | type) == "number"
+              and $now - .atSec <= $fresh and .atSec - $now <= 5)]
+    | length > 0' >/dev/null 2>&1
+}
+
 case "$event" in
   compact)
     # Автосжатие приходит и после конца хода: PreCompact/PostCompact без
@@ -947,12 +971,21 @@ case "$event" in
     # чем уже разобрались, — звать после этого нечем. Вопрос остаётся
     # вопросом: агент на нём по-прежнему стоит.
     #
+    # Автокомпакт пикера (autocompact_sent) — тоже `trigger: manual`, но он
+    # состояние просмотра не меняет ни в какую сторону (решение head 27.11,
+    # 4a): review остаётся review, `updated` и `loudAt` прежние, ход тихий
+    # (`quiet: true` — менеджер глушит звонок WezTerm; мигание непрочитанного
+    # итога он оставляет по loudAt). Решается на PreCompact, пока строка
+    # журнала свежая: PostCompact приходит через минуты, и кладётся вместо
+    # `manual` словом `autocompact`.
+    #
     # Файл — «состояние updated trigger» одной строкой; прежний формат (одно
     # слово) читается тоже: остальные поля тогда пустые.
     keep="$state_dir/$sid.precompact"
     if [ "$hook" = "PreCompact" ] && [ -n "$sid" ]; then
       prev="$(jq -r '"\(.state // "") \(.updated // 0)"' "$state_dir/$sid.state.json" 2>/dev/null || true)"
       trigger="$(jq -r '.trigger // empty' <<<"$input" 2>/dev/null || true)"
+      if [ "$trigger" = "manual" ] && autocompact_sent "$sid"; then trigger=autocompact; fi
       case "${prev%% *}" in
         review|idle|question) printf '%s %s' "$prev" "$trigger" >"$keep" 2>/dev/null || true ;;
         *) rm -f -- "$keep" 2>/dev/null || true ;;
@@ -961,7 +994,11 @@ case "$event" in
       read -r prev prev_updated trigger <"$keep" 2>/dev/null || true
       rm -f -- "$keep" 2>/dev/null || true
       if [ "$trigger" = "manual" ] && [ "$prev" = "review" ]; then prev=idle; fi
-      KEEP_UPDATED="${prev_updated:-}" save_state "$prev" || true
+      quiet_keep=""
+      if [ "$trigger" = "autocompact" ]; then
+        case "$prev" in review | idle) quiet_keep=true ;; esac
+      fi
+      QUIET="$quiet_keep" KEEP_UPDATED="${prev_updated:-}" save_state "$prev" || true
       if [ "$prev" = "question" ]; then emit "$(printf '\033]9;4;4;22\007')"
       else emit "$(printf '\033]9;4;0;0\007')"; fi
       exit 0
