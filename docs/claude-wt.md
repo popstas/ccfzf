@@ -29,6 +29,8 @@ claude-wt session unread <session>       mark your session unseen for the picker
 claude-wt session seen <session>         mark your session seen: clears unread, puts the taskbar light out
 claude-wt session type <child> <text> [--enter]  type into your child's input box, as by hand
 claude-wt session type <child> --check   show your child's input box, type nothing
+claude-wt session compact <session> [--min-idle <min>] [--dry-run]
+                                         /compact into an idle session's empty input box (the picker's auto-compact)
 
 claude-wt session find --session-id <id> [--timeout s] [--interval s] | --name <n> | --list [--cwd c]
 claude-wt session rename --session-id <id> --to <name> | --cancel [--settings f]
@@ -290,6 +292,65 @@ between sessions: no sender, no `from`.
   twice, and `--enter` then only presses Enter. Anything else is left to the
   human.
 
+### `session compact`: the picker's auto-compact
+
+`session compact <session> [--min-idle <min>] [--dry-run]` types `/compact`
+into the input box of an idle session and presses Enter. It is what the
+picker's auto-compact timer calls over ssh (Stas's decisions of 2026-11-27): a
+session idle for almost the hour the prompt cache lives is compacted while the
+cache is still warm. The text is fixed, so the command cannot type anything
+else, and `session type` keeps its children-only rule.
+
+- **Any session, no caller.** `CLAUDE_CODE_SESSION_ID` is not needed and there
+  is no "own sessions" or "spawned, not adopted" check: the picker is not a
+  session.
+- **The same gates as `session type`.** Idle in the registry, no `question` in
+  the hooks' `state.json`, a single-pane WezTerm window whose title is the
+  session, the input box on screen and empty — any text in it, `/compact`
+  included, is refused: the human is there. `/compact` goes in as a paste,
+  Enter only after the registry is checked again and `/compact` is seen in the
+  box.
+- **Turned off per session.** A session marked `autoCompact: false` in
+  `ccfzf --state` (`ccfzf --auto-compact <id> off`, see [state.md](state.md))
+  is refused with `disabled`.
+- **`--min-idle <min>`** refuses unless `<min>` minutes passed since the last
+  reply that used the prompt cache (`agent.cacheAt` in `ccfzf --state`), not
+  since `updated`: the idle notification and a failed turn move `updated`
+  without a request to the API. No `cacheAt` — refused. The upper bound (the
+  cache is already gone after an hour) is the picker's business.
+- **`--dry-run`** runs every check and the probe, types nothing and writes
+  nothing to the journal.
+- **The reason is machine-readable.** A refusal carries `reason`, a slug the
+  picker logs, and `error`, the text for the human:
+
+  | `reason` | code | meaning |
+  |---|---|---|
+  | `usage` | 1 | bad arguments or an option of another command |
+  | `state` | 1 | `ccfzf --state` failed |
+  | `not-found` / `ambiguous` | 2 / 1 | no such session / several by that name |
+  | `disabled` | 1 | auto-compact is off for the session |
+  | `not-running` | 1 | no registry record or its pid is gone |
+  | `question` | 1 | a question or a permission dialog (registry `waiting`, hook `question`) |
+  | `not-idle` | 1 | busy, or any other non-idle status |
+  | `min-idle` | 1 | idle for less than `--min-idle`, or no `cacheAt` |
+  | `no-window` | 2 | no window, or the tracker of its machine has none |
+  | `not-wezterm` | 1 | another terminal, or the tracker gives no pid |
+  | `ssh` | 1 | ssh did not connect, or the script refused (no socket, a failed send) |
+  | `wrong-window` | 1 | several panes, or the pane title is another session |
+  | `dialog` | 1 | no input box on screen |
+  | `input-busy` | 1 | the input box is not empty |
+  | `not-landed` | 1 | `/compact` is not seen in the box after the paste; Enter not sent |
+  | `journal` | 1 | `typed.jsonl` is not writable; nothing typed |
+  | `unknown` | 3 | sent, then the connection dropped: never resend |
+
+  With `--json` a line is `{code, ok, result, reason?, error?, id, name, host}`,
+  `result` being `ok`, `dry-run`, `refused` or `unknown`.
+- **Logged** to the same `~/.ccfzf/typed.jsonl`, with `command: "compact"`,
+  `id`, `name`, `host`, `text`, `minIdle`, `result`, `reason`, `error`,
+  `step`, `typed`, and `atSec` (unix seconds). The `sending` line written
+  before Enter (`step: "enter"`) is what the hook reads to tell the picker's
+  `/compact` from one typed by hand ([hooks.md](hooks.md#auto-compact)).
+
 ## Session and head commands
 
 `session find`, `session rename`, `session close`, `session spawn`, `head mark`
@@ -338,7 +399,7 @@ A snapshot that lists no sessions by id is refused: an empty list means
 | 0 | done, or accepted when `pending: true` |
 | 1 | refused; the reason is on stderr and in `error` with `--json` |
 | 2 | not found: session, window, snapshot or machine |
-| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon`, `window badge` and `window taskbar` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window; `session type` only after `--check` (see above) |
+| 3 | outcome unknown (timeout, or the connection dropped after the request was sent). `focus`, `layout`, `place`, `session unread`, `session seen`, `window icon`, `window badge` and `window taskbar` are safe to retry; `snapshot restore`, `session open` and `session spawn` are not — they could open a second window; `session type` only after `--check` (see above); `session compact` never (`reason: unknown`) |
 
 ## Environment
 
@@ -352,7 +413,7 @@ and `CLAUDE_WT_GH_TIMEOUT_MS` (8000), for `wait` `CLAUDE_WT_STATE_DIR`
 commands read `~/.claude/sessions` and `~/.ccfzf/prompts` under `HOME`, and
 keep the overrides of their scripts: `SESSION_RENAME_DIR` (the rename queue)
 and `SPAWN_TEST_HEAD_MODE` (tests only: the head's permission mode instead of
-its transcript). `session type` reads `CLAUDE_WT_SESSIONS_DIR`
+its transcript). `session type` and `session compact` read `CLAUDE_WT_SESSIONS_DIR`
 (`~/.claude/sessions`), `CLAUDE_WT_STATE_DIR` (`~/.claude/claude-wt`), writes
 `CLAUDE_WT_TYPED_LOG` (`~/.ccfzf/typed.jsonl`) and runs `CLAUDE_WT_SSH`
 (`ssh`).

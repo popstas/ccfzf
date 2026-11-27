@@ -135,6 +135,7 @@ Note that `--expect` takes these keys away from fzf itself: `ctrl-f` no longer m
 | `CCFZF_SENDQ_FILE` | `$XDG_CACHE_HOME/ccfzf/sendq.json` | last send-queue sample of each ssh socket, so two neighbouring `--state` calls can tell a broken link (`disconnected`); empty turns the flag off |
 | `CCFZF_WINDOWS_FILE` | `~/.ccfzf.sessions.claude-wt.json` | file *written by someone else*, read by `--state` and `--dump`; empty turns it off |
 | `CCFZF_WORKTREES_FILE` | `~/.ccfzf/worktrees.json` | memory of git worktrees seen (worktree → main repo, branch), so the sessions of a removed worktree stay under the main project; empty turns writing it off |
+| `CCFZF_AUTOCOMPACT_FILE` | `~/.ccfzf.autocompact.json` | sessions whose auto-compact in the picker is turned off (`ccfzf --auto-compact <id> on\|off [host]`), shown as `autoCompact: false` in `--state`; empty turns it off |
 | `CCFZF_CHILDREN_DIR` | `~/.ccfzf/children` | records of sessions started by `claude-wt-new`, read by `--state`; empty turns it off |
 | `CCFZF_VAULTS_CONFIG` | `~/.claude/vaults-config.md` | Obsidian vaults whose `tasks.md` gives a session its `task` in `--state` (a `- Сессия <name>` sub-item under the task); missing file — no field, empty turns it off |
 | `CCFZF_HEADS_DIR` | `~/.ccfzf/heads` | head marks: `claude-wt-new` opens a child only for a running session marked here |
