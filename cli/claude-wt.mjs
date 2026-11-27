@@ -31,6 +31,11 @@ Commands:
                                          over ssh; refused unless the child is idle with an empty input box:
                                          never into a permission dialog). Logged to ~/.ccfzf/typed.jsonl
   session type <child> --check           show the child's input box, type nothing
+  session compact <session> [--min-idle <min>] [--dry-run]
+                                         type /compact into an idle session's empty input box and press Enter
+                                         (the picker's auto-compact; any session, no caller needed; WezTerm
+                                         over ssh; refused if auto-compact is off for it, or it was idle less
+                                         than <min> minutes since its last cached reply). Logged to typed.jsonl
 
 Session and head commands (moved from the skill scripts; arguments, JSON and exit
 codes are compatible with the skill scripts: one JSON line on stdout, always):
@@ -56,6 +61,8 @@ Options:
   --tree            waiting: group by head -> children
   --enter           session type: press Enter after the text (sends it)
   --check           session type: only read the child's input box
+  --min-idle MIN    session compact: refuse unless idle this many minutes (since cacheAt)
+  --dry-run         session compact: every check and the probe, nothing typed or logged
   --                the rest are positional (a text starting with "-")
   -h, --help        this help
 
@@ -71,7 +78,7 @@ Exit codes:
 `;
 
 // Флаги со значением и без; позиционные — всё остальное по порядку.
-const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions', '--zone', '--kind', '--ask', '--clear-by']);
+const VALUE_FLAGS = new Set(['--url', '--machine', '--sessions', '--zone', '--kind', '--ask', '--clear-by', '--min-idle']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -82,6 +89,7 @@ function parseArgs(argv) {
     if (a === '--json') opts.json = true;
     else if (a === '--enter') opts.enter = true;
     else if (a === '--check') opts.check = true;
+    else if (a === '--dry-run') opts['dry-run'] = true;
     else if (a === '--clear') opts.clear = true;
     else if (a === '--tree') opts.tree = true;
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -119,6 +127,7 @@ const COMMANDS = {
   'session unread': cmd('session-mark', 'unread'),
   'session seen': cmd('session-mark', 'seen'),
   'session type': cmd('session-type'),
+  'session compact': cmd('session-compact'),
 };
 
 // Команды, переехавшие из скриптов скиллов: argv им — как скрипту, мимо общего
