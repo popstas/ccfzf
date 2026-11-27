@@ -91,6 +91,42 @@ def test_autocompact_keeps_review_and_is_quiet():
         w.close()
 
 
+def test_autocompact_from_review_survives_the_next_idle_notice():
+    # Claude Code может прислать «waiting for your input» и после сжатия: из
+    # review оно перевело бы сессию в idle и пересчитало бы quiet по ходу
+    # человека — громко, вместе со звонком. Первое такое уведомление после
+    # автокомпакта запись не трогает.
+    w = CompactWorld()
+    try:
+        before = finished(w)
+        w.journal()
+        w.compact()
+        raw = w.raw()
+        w.idle_notice()
+        assert w.raw() == raw
+        s = w.state()
+        assert s["state"] == "review" and s["quiet"] is True, s
+        assert s["updated"] == before["updated"], (s, before)
+    finally:
+        w.close()
+
+
+def test_a_new_turn_after_an_autocompact_ends_as_usual():
+    # Метка автокомпакта живёт до следующего хода: дальше всё как всегда.
+    w = CompactWorld()
+    try:
+        finished(w)
+        w.journal(age=200)  # старая строка: следующий /compact будет ручным
+        w.journal()
+        w.compact()
+        s = w.turn("ещё")
+        assert s["state"] == "review" and s["quiet"] is False, s
+        s = w.idle_notice()
+        assert s["state"] == "idle", s
+    finally:
+        w.close()
+
+
 def test_autocompact_of_an_idle_session_stays_idle_and_quiet_after_the_notice():
     w = CompactWorld()
     try:

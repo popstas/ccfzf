@@ -132,7 +132,10 @@ told apart by the journal: a `sending` line with `command: "compact"`,
 so windows11-manager mutes the WezTerm bell; the button keeps flashing while
 the last loud result is unseen (`loudAt`). `wait.json` is not touched. The
 idle notification that follows sees `idle` and leaves the record alone, as
-before.
+before. From `review` it would turn the session `idle` and recompute `quiet`
+from the human's turn (loud, with the bell), so PostCompact leaves a marker
+`<id>.autocompact` and the first idle notification after it leaves the record
+alone too; the next `start` removes the marker.
 
 ## Why the dump hook
 

@@ -999,6 +999,15 @@ case "$event" in
         case "$prev" in review | idle) quiet_keep=true ;; esac
       fi
       QUIET="$quiet_keep" KEEP_UPDATED="${prev_updated:-}" save_state "$prev" || true
+      # Уведомление о простое после сжатия перевело бы review в idle и
+      # пересчитало бы quiet по ходу человека (громко, со звонком). Метка
+      # велит первому такому уведомлению запись не трогать; снимает её и
+      # start следующего хода.
+      if [ "$trigger" = "autocompact" ] && [ "$prev" = "review" ]; then
+        : >"$state_dir/$sid.autocompact" 2>/dev/null || true
+      else
+        rm -f -- "$state_dir/$sid.autocompact" 2>/dev/null || true
+      fi
       if [ "$prev" = "question" ]; then emit "$(printf '\033]9;4;4;22\007')"
       else emit "$(printf '\033]9;4;0;0\007')"; fi
       exit 0
@@ -1013,7 +1022,11 @@ case "$event" in
     # и без этого события хук свалился бы в `unknown` с серым баром.
     # Происхождение промпта считается один раз: им пользуются и turnFrom, и
     # снятие ожидания.
-    if [ "$event" = "start" ]; then TURN_ORIGIN="$(turn_origin || true)"; fi
+    if [ "$event" = "start" ]; then
+      TURN_ORIGIN="$(turn_origin || true)"
+      sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
+      [ -n "$sid" ] && rm -f -- "$state_dir/$sid.autocompact" 2>/dev/null || true
+    fi
     save_state active || true
     if [ "$event" = "start" ]; then prune_state || true; wait_clear_on_prompt || true; fi
     emit "$(printf '\033]9;4;1;100\007')"
@@ -1037,6 +1050,15 @@ case "$event" in
         # /compact превратился бы в `attention` и снова позвал бы.
         sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
         prev="$(jq -r '"\(.state // "") \(.updated // 0)"' "$state_dir/$sid.state.json" 2>/dev/null || true)"
+        # Первое уведомление после автокомпакта из review (метка с PostCompact)
+        # — тоже мимо записи: автокомпакт состояние просмотра не меняет.
+        if [ -n "$sid" ] && [ -f "$state_dir/$sid.autocompact" ]; then
+          rm -f -- "$state_dir/$sid.autocompact" 2>/dev/null || true
+          if [ "${prev%% *}" = "review" ]; then
+            emit "$(printf '\033]9;4;0;0\007')"
+            exit 0
+          fi
+        fi
         if [ "${prev%% *}" = "idle" ]; then
           emit "$(printf '\033]9;4;0;0\007')"
           exit 0
