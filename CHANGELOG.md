@@ -1,6 +1,27 @@
 # Changelog
 
 
+## v0.19.0 - 2026-11-27
+
+### Features
+
+- hooks: The picker's auto-compact keeps the review state and is quiet
+- cli: Claude-wt session compact <session> [--min-idle] [--dry-run]
+- state: Per-session auto-compact flag (ccfzf --auto-compact <id> on|off)
+- hooks: An external wait declared in a human or head turn makes it quiet
+- hooks: An answered question no longer makes the turn loud
+- hooks: A turn with a question is never quiet
+- hooks: LoudAt, stricter quiet
+- hooks: TurnFrom and quiet in state.json for quiet head turns
+
+### Bug Fixes
+
+- hooks: An auto-compact from review survives the next idle notification
+
+### Documentation
+
+- Session compact, the auto-compact flag and the quiet auto-compact hook
+
 ## v0.18.0 - 2026-11-26
 
 ### Features
