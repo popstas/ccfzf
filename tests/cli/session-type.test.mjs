@@ -107,6 +107,21 @@ test('заголовок панели: глиф и └ снимаются, то�
   assert.ok(!titleMatches('', ['']));
 });
 
+test('заголовок панели внутри zellij: приставка «<сессия> | » снимается до глифа', () => {
+  // Живой заголовок 28.11 на nb: автокомпакт отказал `wrong-window` сессии
+  // bike-choice-head, потому что сверял «popstas | ✳ bike-choice-head» с именем.
+  assert.equal(normTitle('popstas | ✳ bike-choice-head'), 'bike-choice-head');
+  assert.ok(titleMatches('popstas | ✳ bike-choice-head', ['bike-choice-head']));
+  assert.deepEqual(
+    pickPane(JSON.stringify([{ pane_id: 0, title: 'popstas | ✳ bike-choice-head' }]), ['bike-choice-head']),
+    { pane: 0, title: 'popstas | ✳ bike-choice-head' },
+  );
+  // Приставка — одно слово: заголовок чужого окна с « | » внутри остаётся целым.
+  assert.equal(normTitle('Some App | thing'), 'Some App | thing');
+  // Другая панель zellij в фокусе — другой заголовок, и отказ остаётся.
+  assert.ok(!titleMatches('popstas | ✳ other-session', ['bike-choice-head']));
+});
+
 test('pickPane: одна панель с заголовком ребёнка, иначе отказ', () => {
   assert.deepEqual(pickPane(LIST, ['└child-one']), { pane: 0, title: '✳ child-one' });
   assert.match(pickPane('[]', ['x']).error, /no panes/);
