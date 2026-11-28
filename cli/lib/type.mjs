@@ -63,7 +63,16 @@ export function readiness(rec, hook, { isAlive = alive } = {}) {
 // Заголовок панели — `<глиф> <имя>` (`✳ .waiting`, `◐ .session-type`), у
 // строки агрегатора — `└имя`. Снимается всё, что до первой буквы, цифры,
 // точки, `_` или `-`.
-export const normTitle = (t) => String(t ?? '').replace(/^[^\p{L}\p{N}._-]+/u, '').trim();
+//
+// Внутри zellij заголовок панели WezTerm — `<сессия zellij> | <панель>`
+// (`popstas | ✳ bike-choice-head`): без снятия приставки автокомпакт отказывал
+// `wrong-window` каждой такой сессии (28.11). Снимается до глифа, тем же
+// правилом, что `ZELLIJ_PREFIX` в windows11-manager (`title-helpers.js`): имя
+// сессии zellij — одно слово, поэтому «Some App | thing» остаётся целым. Сверка
+// при этом не слабеет: zellij показывает заголовок панели в фокусе, а
+// `send-text` попадает в неё же.
+const ZELLIJ_PREFIX = /^[^\s|]+ \| /u;
+export const normTitle = (t) => String(t ?? '').trim().replace(ZELLIJ_PREFIX, '').replace(/^[^\p{L}\p{N}._-]+/u, '').trim();
 
 export function titleMatches(paneTitle, names) {
   const t = normTitle(paneTitle);
